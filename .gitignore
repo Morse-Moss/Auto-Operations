@@ -1,0 +1,11 @@
+node_modules/
+data/
+.tmp_docx_media/
+.claude/
+*.docx
+*.log
+.env
+.env.*
+dist/
+coverage/
+.DS_Store
