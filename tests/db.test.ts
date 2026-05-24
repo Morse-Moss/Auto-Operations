@@ -532,6 +532,244 @@ describe('CollectorRepository', () => {
     });
   });
 
+  it('finds the latest finished run and ignores running runs', () => {
+    const firstRunId = repository.createRun({
+      keyword: '护肤',
+      days: 7,
+      limitHotwords: 3,
+      limitNotes: 20,
+    });
+    repository.finishRun(firstRunId, 'success');
+
+    const latestFinishedRunId = repository.createRun({
+      keyword: '咖啡',
+      days: 30,
+      limitHotwords: 5,
+      limitNotes: 10,
+    });
+    repository.finishRun(latestFinishedRunId, 'partial_success', 'collector', '部分失败');
+
+    const runningRunId = repository.createRun({
+      keyword: '露营',
+      days: 7,
+      limitHotwords: 2,
+      limitNotes: 20,
+    });
+
+    expect(repository.findLatestFinishedRun()).toMatchObject({
+      id: latestFinishedRunId,
+      keyword: '咖啡',
+      status: 'partial_success',
+      errorStage: 'collector',
+      errorMessage: '部分失败',
+    });
+    expect(repository.findRunById(runningRunId)).toMatchObject({
+      id: runningRunId,
+      status: 'running',
+      finishedAt: null,
+    });
+  });
+
+  it('uses detail likes when list likes are missing in hot word contributions', () => {
+    const runId = repository.createRun({
+      keyword: '护肤',
+      days: 7,
+      limitHotwords: 3,
+      limitNotes: 20,
+    });
+    db
+      .prepare(`
+        insert into notes (
+          run_id,
+          source_keyword,
+          hot_word,
+          huitun_note_key,
+          title,
+          is_video,
+          published_at,
+          tags_json,
+          likes,
+          list_likes
+        ) values (?, '护肤', '早C晚A', 'note-legacy-likes', '旧库笔记', 0, '2026-05-01', '[]', 321, null)
+      `)
+      .run(runId);
+
+    expect(repository.getRunReportData(runId).hotWordContributions).toEqual([
+      { hotWord: '早C晚A', notes: 1, topLikes: 321, bestRank: null },
+    ]);
+  });
+
+  it('deduplicates physically duplicated note export rows by stable identity', () => {
+    db.exec('drop index idx_notes_stable_identity');
+    const runId = repository.createRun({
+      keyword: '护肤',
+      days: 7,
+      limitHotwords: 3,
+      limitNotes: 20,
+    });
+    const insertDuplicate = db.prepare(`
+      insert into notes (
+        run_id,
+        source_keyword,
+        hot_word,
+        huitun_note_key,
+        title,
+        is_video,
+        published_at,
+        tags_json,
+        likes,
+        list_likes,
+        updated_record_at
+      ) values (?, '护肤', '早C晚A', 'note-null-date', ?, 0, null, '[]', ?, ?, ?)
+    `);
+    insertDuplicate.run(runId, '旧记录', 100, 100, '2026-05-01 00:00:00');
+    insertDuplicate.run(runId, '新记录', 200, 200, '2026-05-02 00:00:00');
+
+    const rows = repository.listNoteExportRows(runId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ title: '新记录', likes: 200, huitunNoteKey: 'note-null-date' });
+  });
+
+  it('builds report data and de-duplicated note export rows for a run', () => {
+    const runId = repository.createRun({
+      keyword: '护肤',
+      days: 7,
+      limitHotwords: 3,
+      limitNotes: 20,
+    });
+
+    repository.insertHotWordSnapshot(runId, {
+      word: '早C晚A',
+      days: 7,
+      pageUrl: 'https://xhs.huitun.com/#/hotWords/hot_word_detail?hotWord=早C晚A',
+      heatText: '1,510',
+      relatedNotesText: '26',
+      totalInteractionsText: '1.4w',
+      overview: { 热度值: '1,510' },
+    });
+    repository.insertRawSnapshot(runId, {
+      kind: 'parse_note_detail_error',
+      objectKey: 'note-2',
+      pageUrl: 'https://xhs.huitun.com/#/hotWords/hot_word_detail?hotWord=早C晚A',
+      textContent: '详情失败',
+      htmlContent: null,
+    });
+
+    repository.upsertNote(
+      runId,
+      '护肤',
+      {
+        hotWord: '早C晚A',
+        huitunNoteKey: 'note-1',
+        title: '第一篇',
+        authorName: '作者A',
+        authorLevel: 'Lv3',
+        coverUrl: null,
+        isVideo: false,
+        videoDuration: null,
+        publishedAt: '2026-05-01',
+        updatedAt: '2026-05-02',
+        tags: ['精华', '抗老'],
+        estimatedReads: 1000,
+        likes: 120,
+        collects: 30,
+        comments: 4,
+        listRank: 2,
+        listPage: 1,
+      },
+      {
+        huitunNoteKey: 'note-1',
+        estimatedExposure: 5000,
+        estimatedReads: 1100,
+        likes: 125,
+        collects: 32,
+        comments: 5,
+        shares: 2,
+        authorFollowers: 20000,
+        authorNoteCount: 88,
+        authorTotalLikesCollects: 900000,
+        readExposureRatioText: '22%',
+        readFollowerRatioText: '5.5%',
+      },
+    );
+
+    repository.upsertNote(
+      runId,
+      '护肤',
+      {
+        hotWord: '早C晚A',
+        huitunNoteKey: 'note-2',
+        title: '第二篇',
+        authorName: '作者B',
+        authorLevel: null,
+        coverUrl: null,
+        isVideo: true,
+        videoDuration: '00:30',
+        publishedAt: '2026-05-02',
+        updatedAt: '2026-05-03',
+        tags: ['修护'],
+        estimatedReads: 800,
+        likes: 80,
+        collects: 20,
+        comments: 3,
+        listRank: 1,
+        listPage: 1,
+      },
+      null,
+    );
+
+    repository.upsertNote(
+      runId,
+      '护肤',
+      {
+        hotWord: '早C晚A',
+        huitunNoteKey: 'note-2',
+        title: '第二篇更新',
+        authorName: '作者B',
+        authorLevel: null,
+        coverUrl: null,
+        isVideo: true,
+        videoDuration: '00:30',
+        publishedAt: '2026-05-02',
+        updatedAt: '2026-05-04',
+        tags: ['修护', '敏感肌'],
+        estimatedReads: 900,
+        likes: 90,
+        collects: 22,
+        comments: 4,
+        listRank: 1,
+        listPage: 1,
+      },
+      null,
+    );
+
+    repository.finishRun(runId, 'partial_success');
+
+    expect(repository.getRunReportData(runId)).toMatchObject({
+      run: {
+        id: runId,
+        keyword: '护肤',
+        status: 'partial_success',
+        days: 7,
+      },
+      totals: {
+        hotWords: 0,
+        hotWordSnapshots: 1,
+        notes: 2,
+        detailedNotes: 1,
+        rawSnapshots: 1,
+      },
+      detailCoverageRate: 0.5,
+      likesCompletenessRate: 1,
+      rawSnapshotsByKind: { parse_note_detail_error: 1 },
+      hotWordContributions: [{ hotWord: '早C晚A', notes: 2, topLikes: 120, bestRank: 1 }],
+    });
+
+    expect(repository.listNoteExportRows(runId).map((row) => row.huitunNoteKey)).toEqual(['note-2', 'note-1']);
+    expect(repository.listNoteExportRows(runId)).toHaveLength(2);
+  });
+
   it('rolls back all hot words when a mid-batch row fails', () => {
     const runId = repository.createRun({
       keyword: '护肤',

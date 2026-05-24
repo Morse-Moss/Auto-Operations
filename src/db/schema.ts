@@ -96,7 +96,6 @@ export function initializeSchema(db: DatabaseSync): void {
 
     create index if not exists idx_hot_words_run_id on hot_words(run_id);
     create index if not exists idx_hot_word_snapshots_run_id on hot_word_snapshots(run_id);
-    create unique index if not exists idx_notes_stable_identity on notes(huitun_note_key, coalesce(published_at, ''));
     create index if not exists idx_notes_run_id on notes(run_id);
     create index if not exists idx_notes_huitun_note_key on notes(huitun_note_key);
     create index if not exists idx_notes_run_note_key on notes(run_id, huitun_note_key);
@@ -104,7 +103,36 @@ export function initializeSchema(db: DatabaseSync): void {
     create index if not exists idx_raw_snapshots_object_key on raw_snapshots(object_key);
   `);
 
+  ensureColumn(db, 'collection_runs', 'error_stage', 'text');
+  ensureColumn(db, 'collection_runs', 'error_message', 'text');
+  ensureColumn(db, 'notes', 'estimated_exposure', 'integer');
+  ensureColumn(db, 'notes', 'shares', 'integer');
+  ensureColumn(db, 'notes', 'author_followers', 'integer');
+  ensureColumn(db, 'notes', 'author_note_count', 'integer');
+  ensureColumn(db, 'notes', 'author_total_likes_collects', 'integer');
+  ensureColumn(db, 'notes', 'read_exposure_ratio_text', 'text');
+  ensureColumn(db, 'notes', 'read_follower_ratio_text', 'text');
   ensureColumn(db, 'notes', 'list_rank', 'integer');
   ensureColumn(db, 'notes', 'list_page', 'integer');
   ensureColumn(db, 'notes', 'list_likes', 'integer');
+  ensureColumn(db, 'notes', 'updated_record_at', 'text');
+  db.exec('update notes set updated_record_at = current_timestamp where updated_record_at is null');
+  db.exec(`
+    delete from notes
+    where id not in (
+      select id
+      from (
+        select
+          id,
+          row_number() over (
+            partition by huitun_note_key, coalesce(published_at, '')
+            order by updated_record_at desc, id desc
+          ) as identity_rank
+        from notes
+      )
+      where identity_rank = 1
+    );
+
+    create unique index if not exists idx_notes_stable_identity on notes(huitun_note_key, coalesce(published_at, ''));
+  `);
 }

@@ -7,6 +7,12 @@ import { Command, InvalidArgumentError } from 'commander';
 import { collectHotWordRows } from './browser/hotword-search.js';
 import { collectHotWordSnapshot, collectTopLikedNoteRows, openHotWordDetail } from './browser/hotword-detail.js';
 import {
+  exportRunNotesToCsv,
+  generateReportText,
+  type ExportCommandOptions,
+  type ReportCommandOptions,
+} from './reporting/commands.js';
+import {
   capturePageSnapshot,
   createHuitunSession,
   HUITUN_LOGIN_REQUIRED_MESSAGE,
@@ -18,7 +24,6 @@ import {
   effectiveNoteLimit,
   type CollectionQualityReport,
   type HotWordCollectionQuality,
-  type LikesSortVerification,
 } from './collection-quality.js';
 import { selectDistinctNotesForTarget } from './collection-target.js';
 import type { CollectorRepository } from './db/repositories.js';
@@ -39,6 +44,15 @@ interface CliOptions {
   headless: boolean;
 }
 
+interface ReportCliOptions {
+  runId?: number;
+  dbPath: string;
+}
+
+interface ExportCliOptions extends ReportCliOptions {
+  output: string;
+}
+
 function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -57,7 +71,7 @@ function parseDays(value: string): SupportedDays {
   return parsed as SupportedDays;
 }
 
-function createProgram(): Command {
+function createCollectionProgram(): Command {
   return new Command()
     .name('xhs-huitun-collector')
     .description('Collect Huitun hot words and note metrics into local SQLite')
@@ -71,8 +85,35 @@ function createProgram(): Command {
     .option('--headless', '保留参数：本 CLI 连接既有浏览器，不启动 headless 浏览器', false);
 }
 
+function createProgram(): Command {
+  return createCollectionProgram()
+    .addCommand(new Command('report').description('Show a readable summary for a Huitun collection run'))
+    .addCommand(new Command('export').description('Export de-duplicated Huitun hot note rows to CSV'));
+}
+
+function argvWithoutSubcommand(argv: string[]): string[] {
+  return [argv[0] ?? 'node', argv[1] ?? 'src/cli.ts', ...argv.slice(3)];
+}
+
+function createReportProgram(): Command {
+  return new Command()
+    .name('xhs-huitun-collector report')
+    .description('Show a readable summary for a Huitun collection run')
+    .option('--run-id <id>', '采集 run id；未传时选择最近已结束 run', (value) => parsePositiveInteger(value, '--run-id'))
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite');
+}
+
+function createExportProgram(): Command {
+  return new Command()
+    .name('xhs-huitun-collector export')
+    .description('Export de-duplicated Huitun hot note rows to CSV')
+    .option('--run-id <id>', '采集 run id；未传时选择最近已结束 run', (value) => parsePositiveInteger(value, '--run-id'))
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
+    .requiredOption('--output <path>', 'CSV 输出路径');
+}
+
 function parseOptions(argv = process.argv): CollectorOptions {
-  const program = createProgram();
+  const program = createCollectionProgram();
   program.exitOverride();
   program.parse(argv);
   const options = program.opts<CliOptions>();
@@ -87,6 +128,43 @@ function parseOptions(argv = process.argv): CollectorOptions {
     cdpUrl: options.cdpUrl,
     headless: options.headless,
   };
+}
+
+function parseReportOptions(argv = process.argv): ReportCommandOptions {
+  const program = createReportProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<ReportCliOptions>();
+
+  return {
+    runId: options.runId,
+    dbPath: options.dbPath,
+  };
+}
+
+function parseExportOptions(argv = process.argv): ExportCommandOptions {
+  const program = createExportProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<ExportCliOptions>();
+
+  return {
+    runId: options.runId,
+    dbPath: options.dbPath,
+    output: options.output,
+  };
+}
+
+function isCommanderExitError(error: unknown): error is { code: string; exitCode: number } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    'exitCode' in error &&
+    typeof error.code === 'string' &&
+    error.code.startsWith('commander.') &&
+    typeof error.exitCode === 'number'
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -319,14 +397,43 @@ async function collect(options: CollectorOptions): Promise<{
   }
 }
 
-async function main(): Promise<void> {
-  const options = parseOptions();
+async function main(argv = process.argv): Promise<void> {
+  const command = argv[2];
+
+  if (command === 'report') {
+    console.log(generateReportText(parseReportOptions(argv)));
+    return;
+  }
+
+  if (command === 'export') {
+    const result = exportRunNotesToCsv(parseExportOptions(argv));
+    console.log(`Exported ${result.rowCount} notes from run #${result.runId} to ${result.output}`);
+    return;
+  }
+
+  if (argv.includes('--help') || argv.includes('-h')) {
+    const program = createProgram();
+    program.exitOverride();
+    program.parse(argv);
+    return;
+  }
+
+  const options = parseOptions(argv);
   const result = await collect(options);
   console.log(JSON.stringify(result));
 }
 
 if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? '')).href) {
-  await main();
+  try {
+    await main();
+  } catch (error) {
+    if (isCommanderExitError(error)) {
+      process.exitCode = error.exitCode;
+    } else {
+      console.error(errorMessage(error));
+      process.exitCode = 1;
+    }
+  }
 }
 
-export { collect, createProgram, formatRawSnapshotTextContent, parseOptions };
+export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions };

@@ -9,6 +9,116 @@ import type {
   RawSnapshotInput,
   RunStatus,
 } from '../types.js';
+import type {
+  CollectionRunRecord,
+  HotWordContribution,
+  NoteExportRow,
+  RunReportData,
+} from '../reporting/types.js';
+
+interface CollectionRunDbRow {
+  id: number;
+  keyword: string;
+  days: number;
+  limit_hotwords: number;
+  limit_notes: number;
+  status: RunStatus;
+  started_at: string;
+  finished_at: string | null;
+  error_stage: string | null;
+  error_message: string | null;
+}
+
+interface HotWordContributionDbRow {
+  hotWord: string;
+  notes: number;
+  topLikes: number | null;
+  bestRank: number | null;
+}
+
+interface NoteExportDbRow {
+  id: number;
+  runId: number;
+  sourceKeyword: string;
+  hotWord: string;
+  listRank: number | null;
+  listPage: number | null;
+  title: string;
+  authorName: string | null;
+  isVideo: number;
+  publishedAt: string | null;
+  likes: number | null;
+  collects: number | null;
+  comments: number | null;
+  shares: number | null;
+  estimatedReads: number | null;
+  estimatedExposure: number | null;
+  authorFollowers: number | null;
+  authorNoteCount: number | null;
+  readExposureRatioText: string | null;
+  readFollowerRatioText: string | null;
+  tagsJson: string;
+  huitunNoteKey: string;
+}
+
+function mapCollectionRun(row: CollectionRunDbRow): CollectionRunRecord {
+  return {
+    id: row.id,
+    keyword: row.keyword,
+    days: row.days,
+    limitHotwords: row.limit_hotwords,
+    limitNotes: row.limit_notes,
+    status: row.status,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    errorStage: row.error_stage,
+    errorMessage: row.error_message,
+  };
+}
+
+function mapHotWordContribution(row: HotWordContributionDbRow): HotWordContribution {
+  return {
+    hotWord: row.hotWord,
+    notes: row.notes,
+    topLikes: row.topLikes,
+    bestRank: row.bestRank,
+  };
+}
+
+function mapNoteExportRow(row: NoteExportDbRow): NoteExportRow {
+  return {
+    id: row.id,
+    runId: row.runId,
+    sourceKeyword: row.sourceKeyword,
+    hotWord: row.hotWord,
+    listRank: row.listRank,
+    listPage: row.listPage,
+    title: row.title,
+    authorName: row.authorName,
+    isVideo: row.isVideo,
+    publishedAt: row.publishedAt,
+    likes: row.likes,
+    collects: row.collects,
+    comments: row.comments,
+    shares: row.shares,
+    estimatedReads: row.estimatedReads,
+    estimatedExposure: row.estimatedExposure,
+    authorFollowers: row.authorFollowers,
+    authorNoteCount: row.authorNoteCount,
+    readExposureRatioText: row.readExposureRatioText,
+    readFollowerRatioText: row.readFollowerRatioText,
+    tagsJson: row.tagsJson,
+    huitunNoteKey: row.huitunNoteKey,
+  };
+}
+
+function ratio(numerator: number, denominator: number): number {
+  if (denominator === 0) {
+    return 0;
+  }
+
+  return numerator / denominator;
+}
 
 export class CollectorRepository {
   constructor(private readonly db: DatabaseSync) {}
@@ -63,6 +173,142 @@ export class CollectorRepository {
       .prepare('select kind, count(*) as count from raw_snapshots where run_id = :runId group by kind order by kind')
       .all({ runId }) as Array<{ kind: string; count: number }>;
     return Object.fromEntries(rows.map((row) => [row.kind, row.count]));
+  }
+
+  findLatestFinishedRun(): CollectionRunRecord | null {
+    const row = this.db
+      .prepare(`
+        select *
+        from collection_runs
+        where status != 'running'
+        order by finished_at desc, id desc
+        limit 1
+      `)
+      .get() as CollectionRunDbRow | undefined;
+
+    return row ? mapCollectionRun(row) : null;
+  }
+
+  findRunById(runId: number): CollectionRunRecord | null {
+    const row = this.db
+      .prepare('select * from collection_runs where id = :runId')
+      .get({ runId }) as CollectionRunDbRow | undefined;
+
+    return row ? mapCollectionRun(row) : null;
+  }
+
+  getRunReportData(runId: number): RunReportData {
+    const run = this.findRunById(runId);
+    if (!run) {
+      throw new Error(`Collection run not found: ${runId}`);
+    }
+
+    const totals = {
+      hotWords: this.countHotWordsForRun(runId),
+      hotWordSnapshots: this.countHotWordSnapshotsForRun(runId),
+      notes: this.countNotesForRun(runId),
+      detailedNotes: this.countDetailedNotesForRun(runId),
+      rawSnapshots: this.countRawSnapshotsForRun(runId),
+    };
+    const likesCompletedRow = this.db
+      .prepare(`
+        select count(*) as count
+        from notes
+        where run_id = :runId
+          and coalesce(list_likes, likes) is not null
+      `)
+      .get({ runId }) as { count: number };
+    const hotWordContributions = (
+      this.db
+        .prepare(`
+          select
+            hot_word as hotWord,
+            count(*) as notes,
+            max(coalesce(list_likes, likes)) as topLikes,
+            min(list_rank) as bestRank
+          from notes
+          where run_id = :runId
+          group by hot_word
+          order by notes desc, hotWord asc
+        `)
+        .all({ runId }) as unknown as HotWordContributionDbRow[]
+    ).map(mapHotWordContribution);
+
+    return {
+      run,
+      totals,
+      detailCoverageRate: ratio(totals.detailedNotes, totals.notes),
+      likesCompletenessRate: ratio(likesCompletedRow.count, totals.notes),
+      rawSnapshotsByKind: this.countRawSnapshotsByKindForRun(runId),
+      hotWordContributions,
+    };
+  }
+
+  listNoteExportRows(runId: number): NoteExportRow[] {
+    const rows = this.db
+      .prepare(`
+        with ranked_notes as (
+          select
+            id,
+            run_id as runId,
+            source_keyword as sourceKeyword,
+            hot_word as hotWord,
+            list_rank as listRank,
+            list_page as listPage,
+            title,
+            author_name as authorName,
+            is_video as isVideo,
+            published_at as publishedAt,
+            likes,
+            collects,
+            comments,
+            shares,
+            estimated_reads as estimatedReads,
+            estimated_exposure as estimatedExposure,
+            author_followers as authorFollowers,
+            author_note_count as authorNoteCount,
+            read_exposure_ratio_text as readExposureRatioText,
+            read_follower_ratio_text as readFollowerRatioText,
+            tags_json as tagsJson,
+            huitun_note_key as huitunNoteKey,
+            row_number() over (
+              partition by huitun_note_key, coalesce(published_at, '')
+              order by updated_record_at desc, id desc
+            ) as identity_rank,
+            list_likes
+          from notes
+          where run_id = :runId
+        )
+        select
+          id,
+          runId,
+          sourceKeyword,
+          hotWord,
+          listRank,
+          listPage,
+          title,
+          authorName,
+          isVideo,
+          publishedAt,
+          likes,
+          collects,
+          comments,
+          shares,
+          estimatedReads,
+          estimatedExposure,
+          authorFollowers,
+          authorNoteCount,
+          readExposureRatioText,
+          readFollowerRatioText,
+          tagsJson,
+          huitunNoteKey
+        from ranked_notes
+        where identity_rank = 1
+        order by hotWord asc, (listRank is null) asc, listRank asc, (list_likes is null) asc, list_likes desc, id asc
+      `)
+      .all({ runId }) as unknown as NoteExportDbRow[];
+
+    return rows.map(mapNoteExportRow);
   }
 
   createRun(input: CollectionRunInput): number {
@@ -215,7 +461,8 @@ export class CollectorRepository {
           read_follower_ratio_text,
           list_rank,
           list_page,
-          list_likes
+          list_likes,
+          updated_record_at
         ) values (
           :runId,
           :sourceKeyword,
@@ -243,7 +490,8 @@ export class CollectorRepository {
           :readFollowerRatioText,
           :listRank,
           :listPage,
-          :listLikes
+          :listLikes,
+          current_timestamp
         )
         on conflict(huitun_note_key, coalesce(published_at, '')) do update set
           run_id = excluded.run_id,
