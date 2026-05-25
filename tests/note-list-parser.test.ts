@@ -208,6 +208,97 @@ describe('collectTopLikedNoteRows', () => {
     expect(result.rows[19]).toMatchObject({ huitunNoteKey: 'note-20', likes: 81, listRank: 20, listPage: 1 });
     expect(result.likesSort.status).toBe('verified');
   });
+
+  it('scrolls the note table to load more rows before accepting a short visible list', async () => {
+    const headers = ['笔记', '发布时间', '预估阅读量', '点赞', '收藏', '评论'];
+    let visibleRows = 10;
+    const rows = Array.from({ length: 20 }, (_, index) => {
+      const likes = 100 - index;
+      return {
+        getAttribute: vi.fn().mockResolvedValue(`note-${index + 1}`),
+        locator: vi.fn((selector: string) => {
+          if (selector === 'td') {
+            return {
+              allTextContents: vi.fn().mockResolvedValue([
+                `热点笔记${index + 1}\n作者\n路人`,
+                '2026-05-19 16:39:27',
+                String(1000 - index),
+                String(likes),
+                '5',
+                '1',
+              ]),
+            };
+          }
+          if (selector === 'img') {
+            return { count: vi.fn().mockResolvedValue(0) };
+          }
+          if (selector === '[class*="note_title"]') {
+            return { count: vi.fn().mockResolvedValue(1), first: vi.fn(() => ({ textContent: vi.fn().mockResolvedValue(`热点笔记${index + 1}`) })) };
+          }
+          if (selector === '[class*="live_anchor"] [class*="one_line"]') {
+            return { count: vi.fn().mockResolvedValue(1), first: vi.fn(() => ({ textContent: vi.fn().mockResolvedValue('作者') })) };
+          }
+          if (selector === '[class*="live_anchor"] span[style*="137"]') {
+            return { count: vi.fn().mockResolvedValue(1), first: vi.fn(() => ({ textContent: vi.fn().mockResolvedValue('路人') })) };
+          }
+          if (selector === '[class*="duration"] span, [class*="duration"]') {
+            return { count: vi.fn().mockResolvedValue(0) };
+          }
+          if (selector === 'div') {
+            return { allTextContents: vi.fn().mockResolvedValue(['更新时间：2026-05-21 10:57:10']) };
+          }
+          if (selector === '[class*="item_tag"]') {
+            return { allTextContents: vi.fn().mockResolvedValue(['热点']) };
+          }
+          return { count: vi.fn().mockResolvedValue(0), allTextContents: vi.fn().mockResolvedValue([]) };
+        }),
+      };
+    });
+    const rowLocator = {
+      count: vi.fn().mockImplementation(() => Promise.resolve(visibleRows)),
+      nth: vi.fn((index: number) => rows[index]),
+      last: vi.fn(() => ({
+        scrollIntoViewIfNeeded: vi.fn().mockResolvedValue(undefined),
+        boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 100, height: 30 }),
+      })),
+    };
+    const headerLocator = {
+      allTextContents: vi.fn().mockResolvedValue(headers),
+      filter: vi.fn(() => ({
+        count: vi.fn().mockResolvedValue(1),
+        first: vi.fn(() => ({
+          click: vi.fn().mockResolvedValue(undefined),
+          getAttribute: vi.fn().mockResolvedValue('descending'),
+          locator: vi.fn(() => ({ count: vi.fn().mockResolvedValue(1) })),
+        })),
+      })),
+    };
+    const page = {
+      locator: vi.fn((selector: string) => {
+        if (selector === 'tr.ant-table-row') return rowLocator;
+        if (selector === 'thead th') return headerLocator;
+        if (selector === '.ant-spin-spinning') return { count: vi.fn().mockResolvedValue(0) };
+        return { count: vi.fn().mockResolvedValue(0) };
+      }),
+      evaluate: vi.fn().mockResolvedValue(undefined),
+      mouse: {
+        move: vi.fn().mockResolvedValue(undefined),
+        wheel: vi.fn().mockImplementation(() => {
+          visibleRows = 20;
+          return Promise.resolve();
+        }),
+      },
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+
+    const result = await collectTopLikedNoteRows(page, '游戏', 20);
+
+    expect(page.mouse.wheel).toHaveBeenCalled();
+    expect(result.rows).toHaveLength(20);
+    expect(result.rows[19]).toMatchObject({ huitunNoteKey: 'note-20', likes: 81, listRank: 20, listPage: 1 });
+    expect(result.likesSort.status).toBe('verified');
+  });
 });
 
 describe('collectNoteDetail', () => {

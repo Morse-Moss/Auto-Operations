@@ -253,8 +253,23 @@ export async function openNoteListPage(page: Page, pageIndex: number): Promise<v
   await waitForNoteTableSettled(page);
 }
 
+async function scrollNoteTable(page: Page): Promise<void> {
+  const lastRow = page.locator('tr.ant-table-row').last();
+  await lastRow.scrollIntoViewIfNeeded().catch(() => undefined);
+
+  const box = await lastRow.boundingBox().catch(() => null);
+  if (box !== null) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  }
+
+  await page.mouse.wheel(0, 1200);
+  await waitForNoteTableSettled(page);
+}
+
 async function collectVisibleVerifiedNoteRows(page: Page, hotWord: string, targetLimit: number): Promise<NoteListCollectionResult> {
   const deadline = Date.now() + 30_000;
+  const payloadsByKey = new Map<string, NoteDomPayload>();
+  let unchangedScrolls = 0;
   let lastResult: NoteListCollectionResult = {
     rows: [],
     likesSort: {
@@ -267,17 +282,39 @@ async function collectVisibleVerifiedNoteRows(page: Page, hotWord: string, targe
 
   while (Date.now() < deadline) {
     const headers = await visibleTableHeaders(page);
-    const payloads = await collectVisibleNotePayloads(page, headers, targetLimit, 1);
-    const rows = parseNoteRowsFromDomPayload(hotWord, payloads)
+    const visiblePayloads = await collectVisibleNotePayloads(page, headers, targetLimit, 1);
+    const previousCount = payloadsByKey.size;
+
+    for (const payload of visiblePayloads) {
+      if (payload.key && !payloadsByKey.has(payload.key)) {
+        payloadsByKey.set(payload.key, payload);
+      }
+    }
+
+    const rows = parseNoteRowsFromDomPayload(hotWord, Array.from(payloadsByKey.values()))
       .slice(0, targetLimit)
       .map((row, index) => ({ ...row, listRank: index + 1, listPage: 1 }));
     const likesSort = verifyLikesDescending(rows);
     lastResult = { rows, likesSort };
 
-    if (likesSort.status === 'verified' || (likesSort.status === 'insufficient_data' && rows.length > 0)) {
+    if (likesSort.status === 'verified' && rows.length >= targetLimit) {
       return lastResult;
     }
 
+    if (payloadsByKey.size >= targetLimit) {
+      if (likesSort.status === 'verified' || likesSort.status === 'insufficient_data') return lastResult;
+      throw new Error('灰豚笔记列表点赞倒序验证失败，跳过该热词以避免采集非爆文样本。');
+    }
+
+    unchangedScrolls = payloadsByKey.size === previousCount ? unchangedScrolls + 1 : 0;
+    if (unchangedScrolls >= 3 && rows.length > 0) {
+      if (likesSort.status === 'violated') {
+        throw new Error('灰豚笔记列表点赞倒序验证失败，跳过该热词以避免采集非爆文样本。');
+      }
+      return lastResult;
+    }
+
+    await scrollNoteTable(page);
     await page.waitForTimeout(500);
   }
 

@@ -56,6 +56,16 @@ export function parseHotWordRowsFromCells(sourceKeyword: string, tableRows: stri
   return parsedRows;
 }
 
+export function prioritizeExactHotWordRows(keyword: string, rows: HotWordRow[]): HotWordRow[] {
+  const normalizedKeyword = keyword.trim();
+  return [...rows].sort((left, right) => {
+    const leftExact = left.word.trim() === normalizedKeyword;
+    const rightExact = right.word.trim() === normalizedKeyword;
+    if (leftExact === rightExact) return left.rankIndex - right.rankIndex;
+    return leftExact ? -1 : 1;
+  });
+}
+
 export async function collectHotWordRows(
   page: Page,
   keyword: string,
@@ -84,12 +94,22 @@ export async function collectHotWordRows(
   const rowLocator = page.locator('.ant-table-tbody:visible tr.ant-table-row');
   await rowLocator.first().waitFor({ state: 'visible' });
 
-  const tableRows: string[][] = [];
-  const rowCount = await rowLocator.count();
+  const deadline = Date.now() + 10_000;
+  let parsedRows: HotWordRow[] = [];
 
-  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-    tableRows.push(await rowLocator.nth(rowIndex).locator('td').allTextContents());
+  while (Date.now() < deadline) {
+    const tableRows: string[][] = [];
+    const rowCount = await rowLocator.count();
+
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      tableRows.push(await rowLocator.nth(rowIndex).locator('td').allTextContents());
+    }
+
+    parsedRows = parseHotWordRowsFromCells(keyword, tableRows);
+    if (parsedRows.length > 0) break;
+
+    await page.waitForTimeout(250);
   }
 
-  return parseHotWordRowsFromCells(keyword, tableRows).slice(0, limitHotwords);
+  return prioritizeExactHotWordRows(keyword, parsedRows).slice(0, limitHotwords);
 }

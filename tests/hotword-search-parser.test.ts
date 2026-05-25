@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseHotWordRowsFromCells } from '../src/browser/hotword-search.js';
+import { parseHotWordRowsFromCells, prioritizeExactHotWordRows } from '../src/browser/hotword-search.js';
 
 import type { HotWordRow } from '../src/types.js';
 
@@ -68,5 +68,15 @@ describe('parseHotWordRowsFromCells', () => {
     ];
 
     expect(parseHotWordRowsFromCells('浴缸', rows)).toEqual(expected);
+  });
+
+  it('prioritizes exact keyword matches before fuzzy hot words', () => {
+    const rows = parseHotWordRowsFromCells('游戏', [
+      ['游戯', '1,900', '30', '9w', '游戏 100%'],
+      ['游戏', '1,500', '50', '8w', '游戏 100%'],
+      ['游戏日常', '1,000', '20', '3w', '游戏 100%'],
+    ]);
+
+    expect(prioritizeExactHotWordRows('游戏', rows).map((row) => row.word)).toEqual(['游戏', '游戯', '游戏日常']);
   });
 });
