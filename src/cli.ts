@@ -6,6 +6,7 @@ import { Command, InvalidArgumentError } from 'commander';
 
 import { collectHotWordRows } from './browser/hotword-search.js';
 import { collectHotWordSnapshot, collectTopLikedNoteRows, openHotWordDetail } from './browser/hotword-detail.js';
+import { parseXhsSortKeys } from './browser/xhs-search.js';
 import {
   exportRunNotesToCsv,
   generateReportText,
@@ -28,6 +29,7 @@ import {
 import { selectDistinctNotesForTarget } from './collection-target.js';
 import type { CollectorRepository } from './db/repositories.js';
 import type { CollectorOptions, RunStatus } from './types.js';
+import type { XhsSearchSortKey } from './xhs-types.js';
 
 const SUPPORTED_DAYS = [7, 30, 90, 180] as const;
 
@@ -51,6 +53,28 @@ interface ReportCliOptions {
 
 interface ExportCliOptions extends ReportCliOptions {
   output: string;
+}
+
+interface XhsSearchCliOptions {
+  keyword?: string;
+  fromHuitunRunId?: number;
+  limitKeywords: number;
+  sorts?: string;
+  limitPerSort: number;
+  withDetails: boolean;
+  dbPath: string;
+  cdpUrl: string;
+}
+
+export interface XhsSearchCommandOptions {
+  keyword?: string;
+  fromHuitunRunId?: number;
+  limitKeywords: number;
+  sorts: XhsSearchSortKey[];
+  limitPerSort: number;
+  withDetails: boolean;
+  dbPath: string;
+  cdpUrl: string;
 }
 
 function parsePositiveInteger(value: string, name: string): number {
@@ -88,7 +112,8 @@ function createCollectionProgram(): Command {
 function createProgram(): Command {
   return createCollectionProgram()
     .addCommand(new Command('report').description('Show a readable summary for a Huitun collection run'))
-    .addCommand(new Command('export').description('Export de-duplicated Huitun hot note rows to CSV'));
+    .addCommand(new Command('export').description('Export de-duplicated Huitun hot note rows to CSV'))
+    .addCommand(createXhsSearchSubcommand());
 }
 
 function argvWithoutSubcommand(argv: string[]): string[] {
@@ -110,6 +135,27 @@ function createExportProgram(): Command {
     .option('--run-id <id>', '采集 run id；未传时选择最近已结束 run', (value) => parsePositiveInteger(value, '--run-id'))
     .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
     .requiredOption('--output <path>', 'CSV 输出路径');
+}
+
+function addXhsSearchOptions(program: Command): Command {
+  return program
+    .description('Parse options for secondary XHS search collection')
+    .option('--keyword <keyword>', '手动输入的小红书搜索关键词')
+    .option('--from-huitun-run-id <id>', '从灰豚采集 run 中读取关键词', (value) => parsePositiveInteger(value, '--from-huitun-run-id'))
+    .option('--limit-keywords <count>', '最多使用灰豚 run 中的关键词数量', (value) => parsePositiveInteger(value, '--limit-keywords'), 10)
+    .option('--sorts <list>', '逗号分隔的小红书搜索排序键')
+    .option('--limit-per-sort <count>', '每个排序最多采集笔记数量', (value) => parsePositiveInteger(value, '--limit-per-sort'), 20)
+    .option('--with-details', '采集小红书笔记详情', false)
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
+    .option('--cdp-url <url>', '已登录浏览器的 CDP 地址', 'http://127.0.0.1:9222');
+}
+
+function createXhsSearchProgram(): Command {
+  return addXhsSearchOptions(new Command().name('xhs-huitun-collector xhs-search'));
+}
+
+function createXhsSearchSubcommand(): Command {
+  return addXhsSearchOptions(new Command('xhs-search'));
 }
 
 function parseOptions(argv = process.argv): CollectorOptions {
@@ -152,6 +198,30 @@ function parseExportOptions(argv = process.argv): ExportCommandOptions {
     runId: options.runId,
     dbPath: options.dbPath,
     output: options.output,
+  };
+}
+
+function parseXhsSearchOptions(argv = process.argv): XhsSearchCommandOptions {
+  const program = createXhsSearchProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<XhsSearchCliOptions>();
+  const hasKeyword = options.keyword !== undefined;
+  const hasHuitunRunId = options.fromHuitunRunId !== undefined;
+
+  if (hasKeyword === hasHuitunRunId) {
+    throw new Error('xhs-search requires exactly one of --keyword or --from-huitun-run-id');
+  }
+
+  return {
+    keyword: options.keyword,
+    fromHuitunRunId: options.fromHuitunRunId,
+    limitKeywords: options.limitKeywords,
+    sorts: parseXhsSortKeys(options.sorts),
+    limitPerSort: options.limitPerSort,
+    withDetails: options.withDetails,
+    dbPath: options.dbPath,
+    cdpUrl: options.cdpUrl,
   };
 }
 
@@ -411,6 +481,13 @@ async function main(argv = process.argv): Promise<void> {
     return;
   }
 
+  if (command === 'xhs-search') {
+    const { collectXhsSearch } = await import('./xhs-search-collector.js');
+    const result = await collectXhsSearch(parseXhsSearchOptions(argv));
+    console.log(JSON.stringify(result));
+    return;
+  }
+
   if (argv.includes('--help') || argv.includes('-h')) {
     const program = createProgram();
     program.exitOverride();
@@ -436,4 +513,4 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? '')).href) {
   }
 }
 
-export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions };
+export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions, parseXhsSearchOptions };

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
-import { parseExportOptions, parseOptions, parseReportOptions } from '../src/cli.js';
+import { parseExportOptions, parseOptions, parseReportOptions, parseXhsSearchOptions } from '../src/cli.js';
 
 describe('parseOptions', () => {
   it('parses global target note collection options', () => {
@@ -75,11 +75,71 @@ describe('parseOptions', () => {
     );
   });
 
+  it('parses xhs-search manual keyword defaults', () => {
+    expect(parseXhsSearchOptions(['node', 'src/cli.ts', 'xhs-search', '--keyword', '护肤'])).toEqual({
+      keyword: '护肤',
+      fromHuitunRunId: undefined,
+      limitKeywords: 10,
+      sorts: ['latest', 'most_liked', 'most_commented', 'most_collected'],
+      limitPerSort: 20,
+      withDetails: false,
+      dbPath: 'data/xhs-ops.sqlite',
+      cdpUrl: 'http://127.0.0.1:9222',
+    });
+  });
+
+  it('parses xhs-search Huitun run source options', () => {
+    expect(
+      parseXhsSearchOptions([
+        'node',
+        'src/cli.ts',
+        'xhs-search',
+        '--from-huitun-run-id',
+        '123',
+        '--limit-keywords',
+        '5',
+        '--sorts',
+        'latest,most_collected',
+        '--limit-per-sort',
+        '12',
+        '--with-details',
+        '--db-path',
+        'data/custom.sqlite',
+        '--cdp-url',
+        'http://127.0.0.1:9333',
+      ]),
+    ).toEqual({
+      keyword: undefined,
+      fromHuitunRunId: 123,
+      limitKeywords: 5,
+      sorts: ['latest', 'most_collected'],
+      limitPerSort: 12,
+      withDetails: true,
+      dbPath: 'data/custom.sqlite',
+      cdpUrl: 'http://127.0.0.1:9333',
+    });
+  });
+
+  it('requires exactly one xhs-search source', () => {
+    expect(() => parseXhsSearchOptions(['node', 'src/cli.ts', 'xhs-search'])).toThrow(
+      'xhs-search requires exactly one of --keyword or --from-huitun-run-id',
+    );
+    expect(() => parseXhsSearchOptions(['node', 'src/cli.ts', 'xhs-search', '--keyword', '护肤', '--from-huitun-run-id', '123'])).toThrow(
+      'xhs-search requires exactly one of --keyword or --from-huitun-run-id',
+    );
+  });
+
+  it('propagates invalid xhs-search sort key errors', () => {
+    expect(() => parseXhsSearchOptions(['node', 'src/cli.ts', 'xhs-search', '--keyword', '护肤', '--sorts', 'latest,bad'])).toThrow(
+      'Unsupported XHS sort key: bad',
+    );
+  });
+
   it('requires export output path', () => {
     expect(() => parseExportOptions(['node', 'src/cli.ts', 'export'])).toThrow("required option '--output <path>' not specified");
   });
 
-  it('prints root help with report and export commands', () => {
+  it('prints root help with report, export, and xhs-search commands', () => {
     const result = spawnSync('node', ['--no-warnings', './node_modules/tsx/dist/cli.mjs', 'src/cli.ts', '--help'], {
       encoding: 'utf8',
     });
@@ -87,6 +147,56 @@ describe('parseOptions', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('report');
     expect(result.stdout).toContain('export');
+    expect(result.stdout).toContain('xhs-search');
+    expect(result.stderr).not.toContain('CommanderError');
+  });
+
+  it('prints xhs-search help with real command options', () => {
+    const result = spawnSync('node', ['--no-warnings', './node_modules/tsx/dist/cli.mjs', 'src/cli.ts', 'xhs-search', '--help'], {
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage: xhs-huitun-collector xhs-search [options]');
+    expect(result.stdout).toContain('--keyword');
+    expect(result.stdout).toContain('--from-huitun-run-id');
+    expect(result.stdout).toContain('--sorts');
+    expect(result.stderr).not.toContain('CommanderError');
+  });
+
+  it('routes real xhs-search source validation errors through the xhs-search parser', () => {
+    const result = spawnSync('node', ['--no-warnings', './node_modules/tsx/dist/cli.mjs', 'src/cli.ts', 'xhs-search'], {
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('xhs-search requires exactly one of --keyword or --from-huitun-run-id');
+    expect(result.stderr).not.toContain('too many arguments');
+    expect(result.stderr).not.toContain('CommanderError');
+  });
+
+  it('routes valid real xhs-search invocations to collection instead of the placeholder', () => {
+    const result = spawnSync(
+      'node',
+      [
+        '--no-warnings',
+        './node_modules/tsx/dist/cli.mjs',
+        'src/cli.ts',
+        'xhs-search',
+        '--keyword',
+        '护肤',
+        '--db-path',
+        ':memory:',
+        '--cdp-url',
+        'http://127.0.0.1:1',
+      ],
+      { encoding: 'utf8' },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain('xhs-search collection is not wired yet');
+    expect(result.stderr).toContain('无法连接浏览器 CDP：http://127.0.0.1:1');
+    expect(result.stderr).not.toContain('too many arguments');
     expect(result.stderr).not.toContain('CommanderError');
   });
 

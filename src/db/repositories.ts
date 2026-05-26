@@ -9,6 +9,7 @@ import type {
   RawSnapshotInput,
   RunStatus,
 } from '../types.js';
+import type { XhsRawSnapshotInput, XhsSearchNoteRow, XhsSearchRunInput } from '../xhs-types.js';
 import type {
   CollectionRunRecord,
   HotWordContribution,
@@ -579,5 +580,251 @@ export class CollectorRepository {
         textContent: snapshot.textContent,
         htmlContent: snapshot.htmlContent,
       });
+  }
+
+  createXhsSearchRun(input: XhsSearchRunInput): number {
+    const result = this.db
+      .prepare(`
+        insert into xhs_search_runs (
+          source,
+          source_run_id,
+          keyword,
+          sorts_json,
+          limit_per_sort,
+          with_details,
+          status
+        ) values (
+          :source,
+          :sourceRunId,
+          :keyword,
+          :sortsJson,
+          :limitPerSort,
+          :withDetails,
+          'running'
+        )
+      `)
+      .run({
+        source: input.source,
+        sourceRunId: input.sourceRunId,
+        keyword: input.keyword,
+        sortsJson: JSON.stringify(input.sorts),
+        limitPerSort: input.limitPerSort,
+        withDetails: input.withDetails ? 1 : 0,
+      });
+
+    return Number(result.lastInsertRowid);
+  }
+
+  finishXhsSearchRun(runId: number, status: RunStatus, errorStage?: string, errorMessage?: string): void {
+    this.db
+      .prepare(`
+        update xhs_search_runs
+        set status = :status,
+            finished_at = current_timestamp,
+            error_stage = :errorStage,
+            error_message = :errorMessage
+        where id = :runId
+      `)
+      .run({
+        runId,
+        status,
+        errorStage: errorStage ?? null,
+        errorMessage: errorMessage ?? null,
+      });
+  }
+
+  upsertXhsSearchNotes(runId: number, rows: XhsSearchNoteRow[]): void {
+    const upsert = this.db.prepare(`
+      insert into xhs_search_notes (
+        run_id,
+        keyword,
+        sort_key,
+        sort_label,
+        rank_index,
+        feed_id,
+        xsec_token,
+        search_result_url,
+        explore_url,
+        title,
+        author_name,
+        author_profile_url,
+        cover_url,
+        published_at_text,
+        metric_text,
+        detail_text,
+        detail_tags_json,
+        detail_comment_count_text,
+        detail_like_text,
+        detail_collect_text,
+        detail_share_text,
+        note_type,
+        cover_alt_text,
+        raw_detail_text,
+        source_topic_texts_json,
+        source_comments_json,
+        media_sources_json,
+        analysis_source_text,
+        raw_card_text,
+        updated_record_at
+      ) values (
+        :runId,
+        :keyword,
+        :sortKey,
+        :sortLabel,
+        :rankIndex,
+        :feedId,
+        :xsecToken,
+        :searchResultUrl,
+        :exploreUrl,
+        :title,
+        :authorName,
+        :authorProfileUrl,
+        :coverUrl,
+        :publishedAtText,
+        :metricText,
+        :detailText,
+        :detailTagsJson,
+        :detailCommentCountText,
+        :detailLikeText,
+        :detailCollectText,
+        :detailShareText,
+        :noteType,
+        :coverAltText,
+        :rawDetailText,
+        :sourceTopicTextsJson,
+        :sourceCommentsJson,
+        :mediaSourcesJson,
+        :analysisSourceText,
+        :rawCardText,
+        current_timestamp
+      )
+      on conflict(run_id, keyword, sort_key, feed_id) do update set
+        sort_label = excluded.sort_label,
+        rank_index = excluded.rank_index,
+        xsec_token = excluded.xsec_token,
+        search_result_url = excluded.search_result_url,
+        explore_url = coalesce(excluded.explore_url, xhs_search_notes.explore_url),
+        title = excluded.title,
+        author_name = excluded.author_name,
+        author_profile_url = excluded.author_profile_url,
+        cover_url = excluded.cover_url,
+        published_at_text = excluded.published_at_text,
+        metric_text = excluded.metric_text,
+        detail_text = coalesce(excluded.detail_text, xhs_search_notes.detail_text),
+        detail_tags_json = case
+          when excluded.detail_tags_json != '[]' then excluded.detail_tags_json
+          else xhs_search_notes.detail_tags_json
+        end,
+        detail_comment_count_text = coalesce(excluded.detail_comment_count_text, xhs_search_notes.detail_comment_count_text),
+        detail_like_text = coalesce(excluded.detail_like_text, xhs_search_notes.detail_like_text),
+        detail_collect_text = coalesce(excluded.detail_collect_text, xhs_search_notes.detail_collect_text),
+        detail_share_text = coalesce(excluded.detail_share_text, xhs_search_notes.detail_share_text),
+        note_type = case
+          when excluded.note_type != 'unknown' then excluded.note_type
+          else xhs_search_notes.note_type
+        end,
+        cover_alt_text = coalesce(excluded.cover_alt_text, xhs_search_notes.cover_alt_text),
+        raw_detail_text = coalesce(excluded.raw_detail_text, xhs_search_notes.raw_detail_text),
+        source_topic_texts_json = case
+          when excluded.source_topic_texts_json != '[]' then excluded.source_topic_texts_json
+          else xhs_search_notes.source_topic_texts_json
+        end,
+        source_comments_json = case
+          when excluded.source_comments_json != '[]' then excluded.source_comments_json
+          else xhs_search_notes.source_comments_json
+        end,
+        media_sources_json = case
+          when excluded.media_sources_json != '[]' then excluded.media_sources_json
+          else xhs_search_notes.media_sources_json
+        end,
+        analysis_source_text = coalesce(excluded.analysis_source_text, xhs_search_notes.analysis_source_text),
+        raw_card_text = excluded.raw_card_text,
+        updated_record_at = current_timestamp
+    `);
+
+    this.db.exec('savepoint upsert_xhs_search_notes_batch');
+    try {
+      for (const row of rows) {
+        upsert.run({
+          runId,
+          keyword: row.keyword,
+          sortKey: row.sortKey,
+          sortLabel: row.sortLabel,
+          rankIndex: row.rankIndex,
+          feedId: row.feedId,
+          xsecToken: row.xsecToken,
+          searchResultUrl: row.searchResultUrl,
+          exploreUrl: row.exploreUrl,
+          title: row.title,
+          authorName: row.authorName,
+          authorProfileUrl: row.authorProfileUrl,
+          coverUrl: row.coverUrl,
+          publishedAtText: row.publishedAtText,
+          metricText: row.metricText,
+          detailText: row.detailText,
+          detailTagsJson: JSON.stringify(row.detailTags),
+          detailCommentCountText: row.detailCommentCountText,
+          detailLikeText: row.detailLikeText,
+          detailCollectText: row.detailCollectText,
+          detailShareText: row.detailShareText,
+          noteType: row.noteType,
+          coverAltText: row.coverAltText,
+          rawDetailText: row.rawDetailText,
+          sourceTopicTextsJson: JSON.stringify(row.sourceTopicTexts),
+          sourceCommentsJson: JSON.stringify(row.sourceComments),
+          mediaSourcesJson: JSON.stringify(row.mediaSources),
+          analysisSourceText: row.analysisSourceText,
+          rawCardText: row.rawCardText,
+        });
+      }
+      this.db.exec('release upsert_xhs_search_notes_batch');
+    } catch (error) {
+      this.db.exec('rollback to upsert_xhs_search_notes_batch');
+      this.db.exec('release upsert_xhs_search_notes_batch');
+      throw error;
+    }
+  }
+
+  insertXhsRawSnapshot(runId: number, snapshot: XhsRawSnapshotInput): void {
+    this.db
+      .prepare(`
+        insert into xhs_raw_snapshots (
+          run_id,
+          kind,
+          object_key,
+          page_url,
+          text_content,
+          html_content
+        ) values (
+          :runId,
+          :kind,
+          :objectKey,
+          :pageUrl,
+          :textContent,
+          :htmlContent
+        )
+      `)
+      .run({
+        runId,
+        kind: snapshot.kind,
+        objectKey: snapshot.objectKey,
+        pageUrl: snapshot.pageUrl,
+        textContent: snapshot.textContent,
+        htmlContent: snapshot.htmlContent,
+      });
+  }
+
+  listHotWordKeywordsForRun(runId: number, limit: number): string[] {
+    const rows = this.db
+      .prepare(`
+        select word
+        from hot_words
+        where run_id = :runId
+        order by rank_index asc, id asc
+        limit :limit
+      `)
+      .all({ runId, limit }) as Array<{ word: string }>;
+
+    return rows.map((row) => row.word);
   }
 }
