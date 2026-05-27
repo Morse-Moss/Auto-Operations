@@ -62,6 +62,24 @@ interface NoteExportDbRow {
   huitunNoteKey: string;
 }
 
+interface XhsSearchStoredDetailDbRow {
+  feed_id: string;
+  xsec_token: string | null;
+  explore_url: string | null;
+  detail_text: string | null;
+  detail_tags_json: string;
+  detail_comment_count_text: string | null;
+  detail_like_text: string | null;
+  detail_collect_text: string | null;
+  detail_share_text: string | null;
+  note_type: XhsSearchNoteRow['noteType'];
+  raw_detail_text: string | null;
+  source_topic_texts_json: string;
+  source_comments_json: string;
+  media_sources_json: string;
+  analysis_source_text: string | null;
+}
+
 function mapCollectionRun(row: CollectionRunDbRow): CollectionRunRecord {
   return {
     id: row.id,
@@ -119,6 +137,38 @@ function ratio(numerator: number, denominator: number): number {
   }
 
   return numerator / denominator;
+}
+
+function parseJsonArray<T>(value: string | null): T[] {
+  if (value === null || value === '') {
+    return [];
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as T[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function nonEmptyTextScore(value: string | null): number {
+  return (value?.trim() ?? '') === '' ? 0 : 1;
+}
+
+function storedDetailScore(row: XhsSearchStoredDetailDbRow): number {
+  return nonEmptyTextScore(row.detail_text)
+    + parseJsonArray<unknown>(row.detail_tags_json).length
+    + nonEmptyTextScore(row.detail_comment_count_text)
+    + nonEmptyTextScore(row.detail_like_text)
+    + nonEmptyTextScore(row.detail_collect_text)
+    + nonEmptyTextScore(row.detail_share_text)
+    + (row.note_type === 'unknown' ? 0 : 1)
+    + nonEmptyTextScore(row.raw_detail_text)
+    + parseJsonArray<unknown>(row.source_topic_texts_json).length
+    + parseJsonArray<unknown>(row.source_comments_json).length
+    + parseJsonArray<unknown>(row.media_sources_json).length
+    + nonEmptyTextScore(row.analysis_source_text);
 }
 
 export class CollectorRepository {
@@ -631,6 +681,74 @@ export class CollectorRepository {
         errorStage: errorStage ?? null,
         errorMessage: errorMessage ?? null,
       });
+  }
+
+  applyExistingXhsDetails(rows: XhsSearchNoteRow[]): XhsSearchNoteRow[] {
+    if (rows.length === 0) {
+      return rows;
+    }
+
+    const feedIds = [...new Set(rows.map((row) => row.feedId))];
+    const placeholders = feedIds.map(() => '?').join(', ');
+    const storedRows = this.db.prepare(`
+      select
+        feed_id,
+        xsec_token,
+        explore_url,
+        detail_text,
+        detail_tags_json,
+        detail_comment_count_text,
+        detail_like_text,
+        detail_collect_text,
+        detail_share_text,
+        note_type,
+        raw_detail_text,
+        source_topic_texts_json,
+        source_comments_json,
+        media_sources_json,
+        analysis_source_text
+      from xhs_search_notes
+      where feed_id in (${placeholders})
+        and (
+          coalesce(trim(detail_text), '') != ''
+          or coalesce(trim(raw_detail_text), '') != ''
+          or media_sources_json != '[]'
+        )
+      order by updated_record_at desc, id desc
+    `).all(...feedIds) as unknown as XhsSearchStoredDetailDbRow[];
+    const detailsByFeedId = new Map<string, XhsSearchStoredDetailDbRow>();
+
+    for (const storedRow of storedRows) {
+      const previousRow = detailsByFeedId.get(storedRow.feed_id);
+      if (previousRow === undefined || storedDetailScore(storedRow) > storedDetailScore(previousRow)) {
+        detailsByFeedId.set(storedRow.feed_id, storedRow);
+      }
+    }
+
+    return rows.map((row) => {
+      const storedRow = detailsByFeedId.get(row.feedId);
+      if (storedRow === undefined) {
+        return row;
+      }
+
+      return {
+        ...row,
+        xsecToken: row.xsecToken ?? storedRow.xsec_token,
+        exploreUrl: row.exploreUrl ?? storedRow.explore_url,
+        detailText: storedRow.detail_text,
+        detailTags: parseJsonArray(storedRow.detail_tags_json),
+        detailCommentCountText: storedRow.detail_comment_count_text,
+        detailLikeText: storedRow.detail_like_text,
+        detailCollectText: storedRow.detail_collect_text,
+        detailShareText: storedRow.detail_share_text,
+        noteType: storedRow.note_type === 'unknown' ? row.noteType : storedRow.note_type,
+        rawDetailText: storedRow.raw_detail_text,
+        sourceTopicTexts: row.sourceTopicTexts.length > 0 ? row.sourceTopicTexts : parseJsonArray(storedRow.source_topic_texts_json),
+        sourceComments: parseJsonArray(storedRow.source_comments_json),
+        mediaSources: parseJsonArray(storedRow.media_sources_json),
+        analysisSourceText: row.analysisSourceText ?? storedRow.analysis_source_text,
+      };
+    });
   }
 
   upsertXhsSearchNotes(runId: number, rows: XhsSearchNoteRow[]): void {

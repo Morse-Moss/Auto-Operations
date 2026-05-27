@@ -179,6 +179,8 @@ describe('XHS search collector helpers', () => {
       detailDelayMinMs: 0,
       detailDelayMaxMs: 0,
       detailBudget: 30,
+      stopOnRateLimit: true,
+      resumeMissingDetails: true,
     }, detailState);
 
     expect(xhsDetailMocks.collectXhsNoteDetail).toHaveBeenCalledWith(detailPage, row.searchResultUrl, {
@@ -208,6 +210,113 @@ describe('XHS search collector helpers', () => {
     });
   });
 
+  it('detects rows that already have useful detail evidence', () => {
+    expect(xhsSearchCollector.hasUsefulXhsDetail(noteRow())).toBe(false);
+    expect(xhsSearchCollector.hasUsefulXhsDetail(noteRow({ detailText: '正文' }))).toBe(true);
+    expect(xhsSearchCollector.hasUsefulXhsDetail(noteRow({ rawDetailText: '原始详情' }))).toBe(true);
+    expect(xhsSearchCollector.hasUsefulXhsDetail(noteRow({ mediaSources: [{ kind: 'image', url: 'https://example.com/a.jpg', posterUrl: null, altText: null }] }))).toBe(true);
+  });
+
+  it('skips rows with existing detail evidence when resume is enabled', async () => {
+    const rowWithDetail = noteRow({ feedId: 'feed-a', detailText: '已有详情' });
+    const rowWithoutDetail = noteRow({ feedId: 'feed-b', title: 'B' });
+    const detailPage = {
+      setDefaultTimeout: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const session = {
+      context: {
+        newPage: vi.fn().mockResolvedValue(detailPage),
+      },
+    } as unknown as XhsSession;
+    xhsDetailMocks.collectXhsNoteDetail.mockResolvedValue({
+      feedId: 'feed-b',
+      xsecToken: 'detail-token',
+      exploreUrl: 'https://www.xiaohongshu.com/explore/feed-b?xsec_token=detail-token',
+      detailText: '新详情',
+      tags: ['护肤'],
+      commentCountText: null,
+      likeText: null,
+      collectText: null,
+      shareText: null,
+      noteType: 'image',
+      rawDetailText: '详情页完整文本',
+      sourceTopicTexts: ['护肤'],
+      sourceComments: [],
+      mediaSources: [],
+      analysisSourceText: '标题：B',
+    });
+
+    const detailState = { detailBudgetUsed: 0, rateLimited: false, detailBudgetExhausted: false };
+    const result = await xhsSearchCollector.enrichXhsSearchRowsWithDetails(
+      session,
+      [rowWithDetail, rowWithoutDetail],
+      {
+        detailDelayMinMs: 0,
+        detailDelayMaxMs: 0,
+        detailBudget: 30,
+        stopOnRateLimit: true,
+        resumeMissingDetails: true,
+      },
+      detailState,
+    );
+
+    expect(session.context.newPage).toHaveBeenCalledTimes(1);
+    expect(xhsDetailMocks.collectXhsNoteDetail).toHaveBeenCalledTimes(1);
+    expect(xhsDetailMocks.collectXhsNoteDetail).toHaveBeenCalledWith(detailPage, rowWithoutDetail.searchResultUrl, expect.any(Object));
+    expect(result.rows[0]).toBe(rowWithDetail);
+    expect(result.rows[1]).toMatchObject({ feedId: 'feed-b', detailText: '新详情' });
+    expect(detailState.detailBudgetUsed).toBe(1);
+  });
+
+  it('collects details for rows with existing detail evidence when resume is disabled', async () => {
+    const rowWithDetail = noteRow({ feedId: 'feed-a', detailText: '已有详情' });
+    const detailPage = {
+      setDefaultTimeout: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const session = {
+      context: {
+        newPage: vi.fn().mockResolvedValue(detailPage),
+      },
+    } as unknown as XhsSession;
+    xhsDetailMocks.collectXhsNoteDetail.mockResolvedValue({
+      feedId: 'feed-a',
+      xsecToken: 'detail-token',
+      exploreUrl: 'https://www.xiaohongshu.com/explore/feed-a?xsec_token=detail-token',
+      detailText: '刷新详情',
+      tags: ['护肤'],
+      commentCountText: null,
+      likeText: null,
+      collectText: null,
+      shareText: null,
+      noteType: 'image',
+      rawDetailText: '刷新详情原文',
+      sourceTopicTexts: ['护肤'],
+      sourceComments: [],
+      mediaSources: [],
+      analysisSourceText: '标题：A',
+    });
+
+    const detailState = { detailBudgetUsed: 0, rateLimited: false, detailBudgetExhausted: false };
+    const result = await xhsSearchCollector.enrichXhsSearchRowsWithDetails(
+      session,
+      [rowWithDetail],
+      {
+        detailDelayMinMs: 0,
+        detailDelayMaxMs: 0,
+        detailBudget: 30,
+        stopOnRateLimit: true,
+        resumeMissingDetails: false,
+      },
+      detailState,
+    );
+
+    expect(session.context.newPage).toHaveBeenCalledTimes(1);
+    expect(result.rows[0]).toMatchObject({ feedId: 'feed-a', detailText: '刷新详情' });
+    expect(detailState.detailBudgetUsed).toBe(1);
+  });
+
   it('keeps original rows when opening a detail page fails', async () => {
     const row = noteRow();
     const session = {
@@ -228,6 +337,8 @@ describe('XHS search collector helpers', () => {
           detailDelayMinMs: 0,
           detailDelayMaxMs: 0,
           detailBudget: 30,
+          stopOnRateLimit: true,
+          resumeMissingDetails: true,
         },
         detailState,
       ),
@@ -236,6 +347,161 @@ describe('XHS search collector helpers', () => {
       detailFailures: [{ feedId: 'feed-1', message: 'Cannot open detail page', rateLimited: false }],
     });
     expect(detailState.detailBudgetUsed).toBe(0);
+  });
+
+  it('uses existing stored detail evidence when resume is enabled', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'xhs-search-resume-stored-detail-test-'));
+    const dbPath = join(tempDir, 'collector.sqlite');
+    const completeDetailRow = noteRow({
+      keyword: '护肤',
+      sortKey: 'latest',
+      feedId: 'feed-a',
+      xsecToken: 'old-token',
+      title: 'A old',
+      detailText: '已有详情',
+      detailTags: ['旧标签'],
+      detailLikeText: '88',
+      rawDetailText: '已有详情原文',
+      sourceTopicTexts: ['旧主题'],
+      sourceComments: [{ contentText: '旧评论', authorName: '评论作者', likeText: '7', rawText: '评论作者 旧评论 7' }],
+      mediaSources: [{ kind: 'image', url: 'https://example.com/a.jpg', posterUrl: null, altText: '旧图' }],
+      analysisSourceText: '旧分析文本',
+    });
+    const sparseDetailRow = noteRow({
+      keyword: '护肤',
+      sortKey: 'latest',
+      feedId: 'feed-a',
+      xsecToken: 'newer-token',
+      title: 'A newer sparse',
+      detailText: '较新但稀疏详情',
+      sourceTopicTexts: [],
+      mediaSources: [],
+    });
+    const freshRows = [
+      noteRow({ keyword: '护肤', sortKey: 'latest', feedId: 'feed-a', xsecToken: 'fresh-token', rankIndex: 1, title: 'A fresh', sourceTopicTexts: ['新主题'], analysisSourceText: '新分析文本' }),
+      noteRow({ keyword: '护肤', sortKey: 'latest', feedId: 'feed-b', rankIndex: 2, title: 'B fresh' }),
+    ];
+    const db = openDatabase(dbPath);
+    try {
+      initializeSchema(db);
+      const repository = new CollectorRepository(db);
+      const completeRunId = repository.createXhsSearchRun({
+        source: 'manual_keyword',
+        sourceRunId: null,
+        keyword: '护肤',
+        sorts: ['latest'],
+        limitPerSort: 2,
+        withDetails: true,
+      });
+      repository.upsertXhsSearchNotes(completeRunId, [completeDetailRow]);
+      repository.finishXhsSearchRun(completeRunId, 'partial_success');
+
+      const sparseRunId = repository.createXhsSearchRun({
+        source: 'manual_keyword',
+        sourceRunId: null,
+        keyword: '护肤',
+        sorts: ['latest'],
+        limitPerSort: 2,
+        withDetails: true,
+      });
+      repository.upsertXhsSearchNotes(sparseRunId, [sparseDetailRow]);
+      db.prepare('update xhs_search_notes set source_comments_json = ?, media_sources_json = ? where run_id = ? and feed_id = ?').run('not-json', '[]', sparseRunId, 'feed-a');
+      repository.finishXhsSearchRun(sparseRunId, 'partial_success');
+    } finally {
+      db.close();
+    }
+
+    const detailPage = {
+      setDefaultTimeout: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const session = {
+      page: {},
+      context: {
+        newPage: vi.fn().mockResolvedValue(detailPage),
+      },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as XhsSession;
+
+    xhsSessionMocks.createXhsSession.mockResolvedValue(session);
+    xhsSearchMocks.openXhsSearchPage.mockResolvedValue(undefined);
+    xhsSearchMocks.collectXhsSearchNoteRows.mockResolvedValue(freshRows);
+    xhsDetailMocks.collectXhsNoteDetail.mockResolvedValue({
+      feedId: 'feed-b',
+      xsecToken: 'detail-token-b',
+      exploreUrl: 'https://www.xiaohongshu.com/explore/feed-b?xsec_token=detail-token-b',
+      detailText: '新详情 B',
+      tags: ['新标签'],
+      commentCountText: null,
+      likeText: null,
+      collectText: null,
+      shareText: null,
+      noteType: 'image',
+      rawDetailText: '详情页完整文本 B',
+      sourceTopicTexts: ['护肤'],
+      sourceComments: [],
+      mediaSources: [],
+      analysisSourceText: '标题：B',
+    });
+
+    try {
+      const result = await xhsSearchCollector.collectXhsSearch({
+        keyword: '护肤',
+        limitKeywords: 10,
+        sorts: ['latest'],
+        limitPerSort: 2,
+        withDetails: true,
+        detailDelayMinMs: 0,
+        detailDelayMaxMs: 0,
+        detailBudget: 30,
+        stopOnRateLimit: true,
+        resumeMissingDetails: true,
+        dbPath,
+        cdpUrl: 'http://127.0.0.1:9222',
+      });
+
+      expect(session.context.newPage).toHaveBeenCalledTimes(1);
+      expect(xhsDetailMocks.collectXhsNoteDetail).toHaveBeenCalledWith(detailPage, freshRows[1].searchResultUrl, expect.any(Object));
+      expect(result.detailBudgetUsed).toBe(1);
+      expect(result.runs).toEqual([{ runId: 3, keyword: '护肤', status: 'success', noteCount: 2 }]);
+
+      const resultDb = openDatabase(dbPath);
+      try {
+        const notes = resultDb.prepare('select feed_id, xsec_token, title, detail_text, detail_tags_json, detail_like_text, raw_detail_text, source_topic_texts_json, source_comments_json, media_sources_json, analysis_source_text from xhs_search_notes where run_id = 3 order by rank_index').all();
+        expect(notes).toEqual([
+          {
+            feed_id: 'feed-a',
+            xsec_token: 'fresh-token',
+            title: 'A fresh',
+            detail_text: '已有详情',
+            detail_tags_json: '["旧标签"]',
+            detail_like_text: '88',
+            raw_detail_text: '已有详情原文',
+            source_topic_texts_json: '["新主题"]',
+            source_comments_json: '[{"contentText":"旧评论","authorName":"评论作者","likeText":"7","rawText":"评论作者 旧评论 7"}]',
+            media_sources_json: '[{"kind":"image","url":"https://example.com/a.jpg","posterUrl":null,"altText":"旧图"}]',
+            analysis_source_text: '新分析文本',
+          },
+          {
+            feed_id: 'feed-b',
+            xsec_token: 'detail-token-b',
+            title: 'B fresh',
+            detail_text: '新详情 B',
+            detail_tags_json: '["新标签"]',
+            detail_like_text: null,
+            raw_detail_text: '详情页完整文本 B',
+            source_topic_texts_json: '["护肤"]',
+            source_comments_json: '[]',
+            media_sources_json: '[]',
+            analysis_source_text: '标题：B',
+          },
+        ]);
+      } finally {
+        resultDb.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('does not spend detail budget when opening a page fails and attempts later rows', async () => {
@@ -492,6 +758,164 @@ describe('XHS search collector helpers', () => {
           error_message: 'XHS rate limited: error_code=300013 访问频繁，请稍后再试',
         });
         expect(snapshots).toEqual([{ kind: 'xhs_rate_limited', object_key: '护肤:latest:feed-a' }]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not open later detail pages in the same sort after XHS rate limit', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'xhs-search-intra-sort-rate-limit-test-'));
+    const dbPath = join(tempDir, 'collector.sqlite');
+    const rows = [
+      noteRow({ keyword: '护肤', feedId: 'feed-a', rankIndex: 1, title: 'A' }),
+      noteRow({ keyword: '护肤', feedId: 'feed-b', rankIndex: 2, title: 'B' }),
+    ];
+    const detailPage = {
+      setDefaultTimeout: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const session = {
+      page: {},
+      context: {
+        newPage: vi.fn().mockResolvedValue(detailPage),
+      },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as XhsSession;
+
+    xhsSessionMocks.createXhsSession.mockResolvedValue(session);
+    xhsSearchMocks.openXhsSearchPage.mockResolvedValue(undefined);
+    xhsSessionMocks.captureXhsPageSnapshot.mockResolvedValue({
+      url: 'https://www.xiaohongshu.com/search_result?keyword=护肤',
+      text: '访问频繁，请稍后再试',
+      html: '<html></html>',
+    });
+    xhsSearchMocks.collectXhsSearchNoteRows.mockResolvedValueOnce(rows);
+    xhsDetailMocks.collectXhsNoteDetail
+      .mockRejectedValueOnce(
+        new XhsRateLimitError(
+          'XHS rate limited: error_code=300013 访问频繁，请稍后再试',
+          'https://www.xiaohongshu.com/website-login/error?error_code=300013',
+          '访问频繁，请稍后再试',
+        ),
+      )
+      .mockResolvedValueOnce({
+        feedId: 'feed-b',
+        xsecToken: 'detail-token-b',
+        exploreUrl: 'https://www.xiaohongshu.com/explore/feed-b?xsec_token=detail-token-b',
+        detailText: '不应该采集到的详情',
+        tags: ['护肤'],
+        commentCountText: '2',
+        likeText: '10',
+        collectText: '9',
+        shareText: '1',
+        noteType: 'image',
+        rawDetailText: '不应该采集到的详情原文',
+        sourceTopicTexts: ['护肤'],
+        sourceComments: [],
+        mediaSources: [],
+        analysisSourceText: '标题：B',
+      });
+
+    try {
+      const result = await xhsSearchCollector.collectXhsSearch({
+        keyword: '护肤',
+        limitKeywords: 10,
+        sorts: ['latest'],
+        limitPerSort: 2,
+        withDetails: true,
+        detailDelayMinMs: 0,
+        detailDelayMaxMs: 0,
+        detailBudget: 30,
+        stopOnRateLimit: true,
+        resumeMissingDetails: true,
+        dbPath,
+        cdpUrl: 'http://127.0.0.1:9222',
+      });
+
+      expect(result.rateLimited).toBe(true);
+      expect(session.context.newPage).toHaveBeenCalledTimes(1);
+      expect(xhsDetailMocks.collectXhsNoteDetail).toHaveBeenCalledTimes(1);
+      expect(result.runs).toEqual([{ runId: 1, keyword: '护肤', status: 'partial_success', noteCount: 2 }]);
+
+      const db = openDatabase(dbPath);
+      try {
+        const notes = db.prepare('select feed_id, detail_text from xhs_search_notes order by rank_index').all();
+        expect(notes).toEqual([
+          { feed_id: 'feed-a', detail_text: null },
+          { feed_id: 'feed-b', detail_text: null },
+        ]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records ordinary detail failures before a later XHS rate-limit failure', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'xhs-search-rate-limit-prior-failure-test-'));
+    const dbPath = join(tempDir, 'collector.sqlite');
+    const rows = [
+      noteRow({ keyword: '护肤', feedId: 'feed-a', rankIndex: 1, title: 'A' }),
+      noteRow({ keyword: '护肤', feedId: 'feed-b', rankIndex: 2, title: 'B' }),
+    ];
+    const detailPage = {
+      setDefaultTimeout: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const session = {
+      page: {},
+      context: {
+        newPage: vi.fn().mockResolvedValue(detailPage),
+      },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as XhsSession;
+
+    xhsSessionMocks.createXhsSession.mockResolvedValue(session);
+    xhsSearchMocks.openXhsSearchPage.mockResolvedValue(undefined);
+    xhsSessionMocks.captureXhsPageSnapshot.mockResolvedValue({
+      url: 'https://www.xiaohongshu.com/search_result?keyword=护肤',
+      text: '访问频繁，请稍后再试',
+      html: '<html></html>',
+    });
+    xhsSearchMocks.collectXhsSearchNoteRows.mockResolvedValueOnce(rows);
+    xhsDetailMocks.collectXhsNoteDetail
+      .mockRejectedValueOnce(new Error('detail timeout'))
+      .mockRejectedValueOnce(
+        new XhsRateLimitError(
+          'XHS rate limited: error_code=300013 访问频繁，请稍后再试',
+          'https://www.xiaohongshu.com/website-login/error?error_code=300013',
+          '访问频繁，请稍后再试',
+        ),
+      );
+
+    try {
+      const result = await xhsSearchCollector.collectXhsSearch({
+        keyword: '护肤',
+        limitKeywords: 10,
+        sorts: ['latest'],
+        limitPerSort: 2,
+        withDetails: true,
+        detailDelayMinMs: 0,
+        detailDelayMaxMs: 0,
+        detailBudget: 30,
+        stopOnRateLimit: true,
+        resumeMissingDetails: true,
+        dbPath,
+        cdpUrl: 'http://127.0.0.1:9222',
+      });
+
+      expect(result.rateLimited).toBe(true);
+      const db = openDatabase(dbPath);
+      try {
+        const snapshots = db.prepare('select kind, object_key from xhs_raw_snapshots order by id').all();
+        expect(snapshots).toEqual([
+          { kind: 'xhs_detail_collection_error', object_key: '护肤:latest:feed-a' },
+          { kind: 'xhs_rate_limited', object_key: '护肤:latest:feed-b' },
+        ]);
       } finally {
         db.close();
       }
@@ -820,6 +1244,62 @@ describe('XHS search collector helpers', () => {
         ]);
       } finally {
         resultDb.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not mark over-fetched replacement rows as seen before saving them', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'xhs-search-seen-limit-test-'));
+    const dbPath = join(tempDir, 'collector.sqlite');
+    const session = {
+      page: {},
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as XhsSession;
+
+    xhsSessionMocks.createXhsSession.mockResolvedValue(session);
+    xhsSearchMocks.openXhsSearchPage.mockResolvedValue(undefined);
+    xhsSearchMocks.collectXhsSearchNoteRows
+      .mockResolvedValueOnce([
+        noteRow({ sortKey: 'most_liked', sortLabel: '最多点赞', feedId: 'feed-a', rankIndex: 1, title: 'A' }),
+      ])
+      .mockResolvedValueOnce([
+        noteRow({ sortKey: 'most_commented', sortLabel: '最多评论', feedId: 'feed-b', rankIndex: 1, title: 'B' }),
+        noteRow({ sortKey: 'most_commented', sortLabel: '最多评论', feedId: 'feed-c', rankIndex: 2, title: 'C' }),
+      ])
+      .mockResolvedValueOnce([
+        noteRow({ sortKey: 'most_collected', sortLabel: '最多收藏', feedId: 'feed-c', rankIndex: 1, title: 'C collected' }),
+        noteRow({ sortKey: 'most_collected', sortLabel: '最多收藏', feedId: 'feed-d', rankIndex: 2, title: 'D' }),
+      ]);
+
+    try {
+      const result = await xhsSearchCollector.collectXhsSearch({
+        keyword: '护肤',
+        limitKeywords: 10,
+        sorts: ['most_liked', 'most_commented', 'most_collected'],
+        limitPerSort: 1,
+        withDetails: false,
+        detailDelayMinMs: 0,
+        detailDelayMaxMs: 0,
+        detailBudget: 30,
+        stopOnRateLimit: true,
+        resumeMissingDetails: true,
+        dbPath,
+        cdpUrl: 'http://127.0.0.1:9222',
+      });
+
+      expect(result.runs).toEqual([{ runId: 1, keyword: '护肤', status: 'success', noteCount: 3 }]);
+      const db = openDatabase(dbPath);
+      try {
+        const rows = db.prepare('select sort_key, feed_id, title from xhs_search_notes order by sort_key').all();
+        expect(rows).toEqual([
+          { sort_key: 'most_collected', feed_id: 'feed-c', title: 'C collected' },
+          { sort_key: 'most_commented', feed_id: 'feed-b', title: 'B' },
+          { sort_key: 'most_liked', feed_id: 'feed-a', title: 'A' },
+        ]);
+      } finally {
+        db.close();
       }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

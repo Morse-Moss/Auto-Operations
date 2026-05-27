@@ -31,6 +31,8 @@ interface XhsDetailDelayOptions {
 
 interface XhsDetailBudgetOptions extends XhsDetailDelayOptions {
   detailBudget: number;
+  stopOnRateLimit: boolean;
+  resumeMissingDetails: boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -127,6 +129,12 @@ export function dedupeXhsSearchRowsByFeedId(rows: XhsSearchNoteRow[]): XhsSearch
   return dedupedRows;
 }
 
+export function hasUsefulXhsDetail(row: XhsSearchNoteRow): boolean {
+  return (row.detailText?.trim() ?? '') !== ''
+    || (row.rawDetailText?.trim() ?? '') !== ''
+    || row.mediaSources.length > 0;
+}
+
 export async function enrichXhsSearchRowsWithDetails(
   session: XhsSession,
   rows: XhsSearchNoteRow[],
@@ -141,6 +149,11 @@ export async function enrichXhsSearchRowsWithDetails(
       detailState.detailBudgetExhausted = true;
       enrichedRows.push(...rows.slice(index));
       break;
+    }
+
+    if (options.resumeMissingDetails && hasUsefulXhsDetail(row)) {
+      enrichedRows.push(row);
+      continue;
     }
 
     let detailPage;
@@ -161,7 +174,12 @@ export async function enrichXhsSearchRowsWithDetails(
       enrichedRows.push(applyDetail(row, detail));
     } catch (error) {
       enrichedRows.push(row);
-      detailFailures.push({ feedId: row.feedId, message: errorMessage(error), rateLimited: isXhsRateLimitError(error) });
+      const rateLimited = isXhsRateLimitError(error);
+      detailFailures.push({ feedId: row.feedId, message: errorMessage(error), rateLimited });
+      if (rateLimited && options.stopOnRateLimit) {
+        enrichedRows.push(...rows.slice(index + 1));
+        break;
+      }
     } finally {
       await detailPage?.close().catch(() => undefined);
     }
@@ -187,10 +205,15 @@ function removeSeenFeedIds(rows: XhsSearchNoteRow[], seenFeedIds: Set<string>): 
       continue;
     }
 
-    seenFeedIds.add(row.feedId);
     uniqueRows.push({ ...row, rankIndex: uniqueRows.length + 1 });
   }
   return uniqueRows;
+}
+
+function markSeenFeedIds(rows: XhsSearchNoteRow[], seenFeedIds: Set<string>): void {
+  for (const row of rows) {
+    seenFeedIds.add(row.feedId);
+  }
 }
 
 function xhsSortErrorKind(message: string): string {
@@ -237,6 +260,9 @@ async function collectSortRows(
   const requestedLimit = options.limitPerSort + seenFeedIds.size;
   let rows = removeSeenFeedIds(dedupeXhsSearchRowsByFeedId(await collectXhsSearchNoteRows(session.page, keyword, sortKey, requestedLimit)), seenFeedIds)
     .slice(0, options.limitPerSort);
+  if (options.resumeMissingDetails) {
+    rows = repository.applyExistingXhsDetails(rows);
+  }
   let status: RunStatus = 'success';
 
   if (rows.length < options.limitPerSort) {
@@ -263,6 +289,22 @@ async function collectSortRows(
       if (result.detailFailures.length > 0) {
         status = 'partial_success';
         const rateLimitFailure = result.detailFailures.find((failure) => failure.rateLimited);
+
+        for (const failure of result.detailFailures) {
+          if (failure.rateLimited && options.stopOnRateLimit) {
+            continue;
+          }
+
+          await tryInsertXhsRawSnapshotFromPage(
+            repository,
+            runId,
+            session,
+            'xhs_detail_collection_error',
+            `${keyword}:${sortKey}:${failure.feedId}`,
+            failure.message,
+          );
+        }
+
         if (rateLimitFailure !== undefined && options.stopOnRateLimit) {
           detailState.rateLimited = true;
           detailState.rateLimitContext = {
@@ -280,17 +322,6 @@ async function collectSortRows(
             rateLimitFailure.message,
           );
           return { rows, status };
-        }
-
-        for (const failure of result.detailFailures) {
-          await tryInsertXhsRawSnapshotFromPage(
-            repository,
-            runId,
-            session,
-            'xhs_detail_collection_error',
-            `${keyword}:${sortKey}:${failure.feedId}`,
-            failure.message,
-          );
         }
       }
 
@@ -334,6 +365,7 @@ async function collectSingleXhsKeyword(
           status = 'partial_success';
         }
         repository.upsertXhsSearchNotes(runId, result.rows);
+        markSeenFeedIds(result.rows, seenFeedIds);
         noteCount += result.rows.length;
         if (detailState.rateLimited && options.stopOnRateLimit) {
           break;
