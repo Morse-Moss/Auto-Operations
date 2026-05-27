@@ -3,12 +3,105 @@ import { describe, expect, it } from 'vitest';
 
 import {
   collectXhsNoteDetail,
+  isXhsRateLimitError,
+  isXhsRateLimitSignal,
   parseXhsInitialStateNoteDetail,
   parseXhsNoteDetailFromText,
   shouldRejectShortExploreUrl,
+  XhsRateLimitError,
 } from '../src/browser/xhs-note-detail.js';
 
 describe('XHS note detail helpers', () => {
+  it('detects website-login rate limit URL', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/website-login/error?error_code=300013&error_msg=%E8%AE%BF%E9%97%AE%E9%A2%91%E7%B9%81%EF%BC%8C%E8%AF%B7%E7%A8%8D%E5%90%8E%E5%86%8D%E8%AF%95',
+      text: '',
+      message: '',
+    })).toBe(true);
+  });
+
+  it('XhsRateLimitError exposes expected fields and type guard', () => {
+    const error = new XhsRateLimitError(
+      'XHS rate limited: error_code=300013 访问频繁，请稍后再试',
+      'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      '访问频繁，请稍后再试',
+    );
+
+    expect(error.name).toBe('XhsRateLimitError');
+    expect(error.finalUrl).toBe('https://www.xiaohongshu.com/explore/feed1?xsec_token=token');
+    expect(error.pageText).toBe('访问频繁，请稍后再试');
+    expect(isXhsRateLimitError(error)).toBe(true);
+    expect(isXhsRateLimitError(new Error('plain error'))).toBe(false);
+  });
+
+  it('detects error_code=300013 on normal XHS explore URLs', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      text: '',
+      message: 'error_code=300013',
+    })).toBe(true);
+  });
+
+  it('does not detect longer error codes as 300013', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/website-login/error?error_code=3000130',
+      text: '',
+      message: '',
+    })).toBe(false);
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      text: '',
+      message: 'error_code=3000130',
+    })).toBe(false);
+  });
+
+  it('detects text', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      text: '访问频繁，请稍后再试',
+      message: '',
+    })).toBe(true);
+  });
+
+  it('detects XHS URL plus 请稍后再试 without 访问频繁', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      text: '请稍后再试',
+      message: '',
+    })).toBe(true);
+  });
+
+  it('does not infer XHS host from missing or empty URLs for 请稍后再试', () => {
+    expect(isXhsRateLimitSignal({ text: '请稍后再试' })).toBe(false);
+    expect(isXhsRateLimitSignal({ url: null, text: '请稍后再试' })).toBe(false);
+    expect(isXhsRateLimitSignal({ url: '', text: '请稍后再试' })).toBe(false);
+  });
+
+  it('detects URL-encoded rate-limit query text on explicit XHS hosts', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/explore/feed1?error_msg=%E8%AE%BF%E9%97%AE%E9%A2%91%E7%B9%81',
+    })).toBe(true);
+    expect(isXhsRateLimitSignal({
+      url: 'https://xiaohongshu.com/explore/feed1?error_msg=%E8%AF%B7%E7%A8%8D%E5%90%8E%E5%86%8D%E8%AF%95',
+    })).toBe(true);
+  });
+
+  it('does not detect non-XHS URL plus 请稍后再试 as a rate limit', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://example.com/explore/feed1?xsec_token=token',
+      text: '请稍后再试',
+      message: '',
+    })).toBe(false);
+  });
+
+  it('ordinary detail errors not rate limits', () => {
+    expect(isXhsRateLimitSignal({
+      url: 'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      text: '内容不存在',
+      message: 'XHS detail page feed id mismatch',
+    })).toBe(false);
+  });
+
   it('rejects short explore URLs without xsec_token only', () => {
     expect(shouldRejectShortExploreUrl('/explore/feed1')).toBe(true);
     expect(shouldRejectShortExploreUrl('https://www.xiaohongshu.com/explore/feed1')).toBe(true);
@@ -322,6 +415,73 @@ describe('XHS note detail helpers', () => {
     await expect(collectXhsNoteDetail(page, '/search_result/originalFeed?xsec_token=originalToken')).rejects.toThrow(
       'XHS detail page feed id mismatch: expected originalFeed, got finalFeed.',
     );
+  });
+
+  it('collectXhsNoteDetail converts goto error_code=300013 into XhsRateLimitError with best-effort page evidence', async () => {
+    const page = {
+      goto: async () => { throw new Error('error_code=300013'); },
+      url: () => 'https://www.xiaohongshu.com/website-login/error?error_code=300013',
+      locator: () => ({ innerText: async () => '访问频繁，请稍后再试' }),
+    } as unknown as Page;
+
+    await expect(collectXhsNoteDetail(page, '/search_result/feed1?xsec_token=token')).rejects.toMatchObject({
+      name: 'XhsRateLimitError',
+      finalUrl: 'https://www.xiaohongshu.com/website-login/error?error_code=300013',
+      pageText: '访问频繁，请稍后再试',
+    });
+  });
+
+  it('collectXhsNoteDetail throws XhsRateLimitError when page.url() is website-login error and body text is rate-limited', async () => {
+    const page = {
+      goto: async () => undefined,
+      waitForLoadState: async () => undefined,
+      url: () => 'https://www.xiaohongshu.com/website-login/error?error_code=300013&error_msg=%E8%AE%BF%E9%97%AE%E9%A2%91%E7%B9%81%EF%BC%8C%E8%AF%B7%E7%A8%8D%E5%90%8E%E5%86%8D%E8%AF%95',
+      locator: () => ({ innerText: async () => '访问频繁，请稍后再试' }),
+    } as unknown as Page;
+
+    await expect(collectXhsNoteDetail(page, '/search_result/feed1?xsec_token=token')).rejects.toBeInstanceOf(XhsRateLimitError);
+  });
+
+  it('collectXhsNoteDetail throws XhsRateLimitError before feed-id mismatch when final URL is a different normal note and body text is rate-limited', async () => {
+    const page = {
+      goto: async () => undefined,
+      waitForLoadState: async () => undefined,
+      url: () => 'https://www.xiaohongshu.com/explore/finalFeed?xsec_token=finalToken',
+      locator: () => ({ innerText: async () => '访问频繁，请稍后再试' }),
+    } as unknown as Page;
+
+    await expect(collectXhsNoteDetail(page, '/search_result/originalFeed?xsec_token=originalToken')).rejects.toMatchObject({
+      name: 'XhsRateLimitError',
+      finalUrl: 'https://www.xiaohongshu.com/explore/finalFeed?xsec_token=finalToken',
+      pageText: '访问频繁，请稍后再试',
+    });
+  });
+
+  it('collectXhsNoteDetail throws XhsRateLimitError before parsing ordinary detail when final URL is a normal note URL and body text is rate-limited', async () => {
+    const page = {
+      goto: async () => undefined,
+      waitForLoadState: async () => undefined,
+      url: () => 'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      evaluate: async (callback: unknown) => {
+        const source = String(callback);
+        if (source.includes('__INITIAL_STATE__')) {
+          return {};
+        }
+        throw new Error(`unexpected evaluate: ${source}`);
+      },
+      locator: (selector: string) => {
+        if (selector !== 'body') {
+          throw new Error(`unexpected locator: ${selector}`);
+        }
+        return { innerText: async () => '访问频繁，请稍后再试' };
+      },
+    } as unknown as Page;
+
+    await expect(collectXhsNoteDetail(page, '/search_result/feed1?xsec_token=token')).rejects.toMatchObject({
+      name: 'XhsRateLimitError',
+      finalUrl: 'https://www.xiaohongshu.com/explore/feed1?xsec_token=token',
+      pageText: '访问频繁，请稍后再试',
+    });
   });
 
   it('collectXhsNoteDetail throws for short explore URL before navigation', async () => {

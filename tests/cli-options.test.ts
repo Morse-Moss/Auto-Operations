@@ -83,9 +83,76 @@ describe('parseOptions', () => {
       sorts: ['latest', 'most_liked', 'most_commented', 'most_collected'],
       limitPerSort: 20,
       withDetails: false,
+      detailDelayMinMs: 20000,
+      detailDelayMaxMs: 60000,
+      detailBudget: 30,
+      stopOnRateLimit: true,
+      resumeMissingDetails: true,
       dbPath: 'data/xhs-ops.sqlite',
       cdpUrl: 'http://127.0.0.1:9222',
     });
+  });
+
+  it('parses xhs-search detail safety defaults', () => {
+    expect(parseXhsSearchOptions(['node', 'src/cli.ts', 'xhs-search', '--keyword', '护肤'])).toMatchObject({
+      detailDelayMinMs: 20000,
+      detailDelayMaxMs: 60000,
+      detailBudget: 30,
+      stopOnRateLimit: true,
+      resumeMissingDetails: true,
+    });
+  });
+
+  it('parses explicit xhs-search detail safety options', () => {
+    expect(
+      parseXhsSearchOptions([
+        'node',
+        'src/cli.ts',
+        'xhs-search',
+        '--keyword',
+        '护肤',
+        '--with-details',
+        '--detail-delay-min-ms',
+        '1000',
+        '--detail-delay-max-ms',
+        '2000',
+        '--detail-budget',
+        '2',
+        '--no-stop-on-rate-limit',
+        '--no-resume-missing-details',
+      ]),
+    ).toMatchObject({
+      withDetails: true,
+      detailDelayMinMs: 1000,
+      detailDelayMaxMs: 2000,
+      detailBudget: 2,
+      stopOnRateLimit: false,
+      resumeMissingDetails: false,
+    });
+  });
+
+  it('rejects invalid xhs-search detail safety options', () => {
+    expect(() => parseXhsSearchOptions(['node', 'src/cli.ts', 'xhs-search', '--keyword', '护肤', '--detail-delay-min-ms', '-1'])).toThrow(
+      '--detail-delay-min-ms 必须是非负整数，收到：-1',
+    );
+
+    expect(() =>
+      parseXhsSearchOptions([
+        'node',
+        'src/cli.ts',
+        'xhs-search',
+        '--keyword',
+        '护肤',
+        '--detail-delay-min-ms',
+        '2000',
+        '--detail-delay-max-ms',
+        '1000',
+      ]),
+    ).toThrow('--detail-delay-max-ms 必须大于等于 --detail-delay-min-ms');
+
+    expect(() => parseXhsSearchOptions(['node', 'src/cli.ts', 'xhs-search', '--keyword', '护肤', '--detail-budget', '0'])).toThrow(
+      '--detail-budget 必须是正整数，收到：0',
+    );
   });
 
   it('parses xhs-search Huitun run source options', () => {
@@ -115,6 +182,11 @@ describe('parseOptions', () => {
       sorts: ['latest', 'most_collected'],
       limitPerSort: 12,
       withDetails: true,
+      detailDelayMinMs: 20000,
+      detailDelayMaxMs: 60000,
+      detailBudget: 30,
+      stopOnRateLimit: true,
+      resumeMissingDetails: true,
       dbPath: 'data/custom.sqlite',
       cdpUrl: 'http://127.0.0.1:9333',
     });
@@ -161,6 +233,11 @@ describe('parseOptions', () => {
     expect(result.stdout).toContain('--keyword');
     expect(result.stdout).toContain('--from-huitun-run-id');
     expect(result.stdout).toContain('--sorts');
+    expect(result.stdout).toContain('--detail-delay-min-ms');
+    expect(result.stdout).toContain('--detail-delay-max-ms');
+    expect(result.stdout).toContain('--detail-budget');
+    expect(result.stdout).toContain('--no-stop-on-rate-limit');
+    expect(result.stdout).toContain('--no-resume-missing-details');
     expect(result.stderr).not.toContain('CommanderError');
   });
 

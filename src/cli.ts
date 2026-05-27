@@ -62,6 +62,11 @@ interface XhsSearchCliOptions {
   sorts?: string;
   limitPerSort: number;
   withDetails: boolean;
+  detailDelayMinMs: number;
+  detailDelayMaxMs: number;
+  detailBudget: number;
+  stopOnRateLimit: boolean;
+  resumeMissingDetails: boolean;
   dbPath: string;
   cdpUrl: string;
 }
@@ -73,6 +78,11 @@ export interface XhsSearchCommandOptions {
   sorts: XhsSearchSortKey[];
   limitPerSort: number;
   withDetails: boolean;
+  detailDelayMinMs: number;
+  detailDelayMaxMs: number;
+  detailBudget: number;
+  stopOnRateLimit: boolean;
+  resumeMissingDetails: boolean;
   dbPath: string;
   cdpUrl: string;
 }
@@ -81,6 +91,15 @@ function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new InvalidArgumentError(`${name} 必须是正整数，收到：${value}`);
+  }
+
+  return parsed;
+}
+
+function parseNonNegativeInteger(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError(`${name} 必须是非负整数，收到：${value}`);
   }
 
   return parsed;
@@ -146,6 +165,11 @@ function addXhsSearchOptions(program: Command): Command {
     .option('--sorts <list>', '逗号分隔的小红书搜索排序键')
     .option('--limit-per-sort <count>', '每个排序最多采集笔记数量', (value) => parsePositiveInteger(value, '--limit-per-sort'), 20)
     .option('--with-details', '采集小红书笔记详情', false)
+    .option('--detail-delay-min-ms <ms>', '详情页之间的最小等待毫秒数', (value) => parseNonNegativeInteger(value, '--detail-delay-min-ms'), 20_000)
+    .option('--detail-delay-max-ms <ms>', '详情页之间的最大等待毫秒数', (value) => parseNonNegativeInteger(value, '--detail-delay-max-ms'), 60_000)
+    .option('--detail-budget <count>', '单次命令最多打开的详情页数量', (value) => parsePositiveInteger(value, '--detail-budget'), 30)
+    .option('--no-stop-on-rate-limit', '遇到小红书访问频繁时不熔断')
+    .option('--no-resume-missing-details', '不跳过已有详情的笔记')
     .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
     .option('--cdp-url <url>', '已登录浏览器的 CDP 地址', 'http://127.0.0.1:9222');
 }
@@ -213,6 +237,10 @@ function parseXhsSearchOptions(argv = process.argv): XhsSearchCommandOptions {
     throw new Error('xhs-search requires exactly one of --keyword or --from-huitun-run-id');
   }
 
+  if (options.detailDelayMaxMs < options.detailDelayMinMs) {
+    throw new Error('--detail-delay-max-ms 必须大于等于 --detail-delay-min-ms');
+  }
+
   return {
     keyword: options.keyword,
     fromHuitunRunId: options.fromHuitunRunId,
@@ -220,6 +248,11 @@ function parseXhsSearchOptions(argv = process.argv): XhsSearchCommandOptions {
     sorts: parseXhsSortKeys(options.sorts),
     limitPerSort: options.limitPerSort,
     withDetails: options.withDetails,
+    detailDelayMinMs: options.detailDelayMinMs,
+    detailDelayMaxMs: options.detailDelayMaxMs,
+    detailBudget: options.detailBudget,
+    stopOnRateLimit: options.stopOnRateLimit,
+    resumeMissingDetails: options.resumeMissingDetails,
     dbPath: options.dbPath,
     cdpUrl: options.cdpUrl,
   };

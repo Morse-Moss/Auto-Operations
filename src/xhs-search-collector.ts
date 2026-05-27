@@ -1,12 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-import { collectXhsNoteDetail } from './browser/xhs-note-detail.js';
+import { collectXhsNoteDetail, isXhsRateLimitError } from './browser/xhs-note-detail.js';
 import { collectXhsSearchNoteRows, openXhsSearchPage, XHS_LOGIN_REQUIRED_MESSAGE } from './browser/xhs-search.js';
 import { captureXhsPageSnapshot, createXhsSession, type XhsSession } from './browser/xhs-session.js';
 import type { XhsSearchCommandOptions } from './cli.js';
 import type { CollectorRepository } from './db/repositories.js';
 import type { RunStatus } from './types.js';
-import type { XhsNoteDetail, XhsSearchNoteRow, XhsSearchSortKey } from './xhs-types.js';
+import type { XhsDetailSafetyState, XhsNoteDetail, XhsSearchNoteRow, XhsSearchSortKey } from './xhs-types.js';
 
 interface XhsSearchCollectorRunResult {
   runId: number;
@@ -15,9 +15,22 @@ interface XhsSearchCollectorRunResult {
   noteCount: number;
 }
 
-interface XhsSearchCollectorResult {
+interface XhsSearchCollectorResult extends XhsDetailSafetyState {
   runs: XhsSearchCollectorRunResult[];
   dbPath: string;
+}
+
+interface XhsDetailCollectionState extends XhsDetailSafetyState {
+  detailBudgetExhausted: boolean;
+}
+
+interface XhsDetailDelayOptions {
+  detailDelayMinMs: number;
+  detailDelayMaxMs: number;
+}
+
+interface XhsDetailBudgetOptions extends XhsDetailDelayOptions {
+  detailBudget: number;
 }
 
 function errorMessage(error: unknown): string {
@@ -80,6 +93,22 @@ function applyDetail(row: XhsSearchNoteRow, detail: XhsNoteDetail): XhsSearchNot
 interface XhsDetailFailure {
   feedId: string;
   message: string;
+  rateLimited: boolean;
+}
+
+export function randomIntegerInRange(min: number, max: number): number {
+  const lowerBound = Math.ceil(min);
+  const upperBound = Math.floor(max);
+  return Math.floor(Math.random() * (upperBound - lowerBound + 1)) + lowerBound;
+}
+
+export async function waitForXhsDetailDelay(options: XhsDetailDelayOptions): Promise<void> {
+  const delayMs = randomIntegerInRange(options.detailDelayMinMs, options.detailDelayMaxMs);
+  if (delayMs <= 0) {
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 export function dedupeXhsSearchRowsByFeedId(rows: XhsSearchNoteRow[]): XhsSearchNoteRow[] {
@@ -101,16 +130,27 @@ export function dedupeXhsSearchRowsByFeedId(rows: XhsSearchNoteRow[]): XhsSearch
 export async function enrichXhsSearchRowsWithDetails(
   session: XhsSession,
   rows: XhsSearchNoteRow[],
+  options: XhsDetailBudgetOptions,
+  detailState: XhsDetailCollectionState,
 ): Promise<{ rows: XhsSearchNoteRow[]; detailFailures: XhsDetailFailure[] }> {
   const enrichedRows: XhsSearchNoteRow[] = [];
   const detailFailures: XhsDetailFailure[] = [];
 
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    if (detailState.detailBudgetUsed >= options.detailBudget) {
+      detailState.detailBudgetExhausted = true;
+      enrichedRows.push(...rows.slice(index));
+      break;
+    }
+
     let detailPage;
+    let openedDetailPage = false;
 
     try {
       detailPage = await session.context.newPage();
+      openedDetailPage = true;
       detailPage.setDefaultTimeout(30_000);
+      detailState.detailBudgetUsed += 1;
       const detail = await collectXhsNoteDetail(detailPage, row.searchResultUrl, {
         title: row.title,
         noteType: row.noteType,
@@ -121,9 +161,19 @@ export async function enrichXhsSearchRowsWithDetails(
       enrichedRows.push(applyDetail(row, detail));
     } catch (error) {
       enrichedRows.push(row);
-      detailFailures.push({ feedId: row.feedId, message: errorMessage(error) });
+      detailFailures.push({ feedId: row.feedId, message: errorMessage(error), rateLimited: isXhsRateLimitError(error) });
     } finally {
       await detailPage?.close().catch(() => undefined);
+    }
+
+    if (openedDetailPage && detailState.detailBudgetUsed >= options.detailBudget) {
+      detailState.detailBudgetExhausted = true;
+    }
+
+    const hasAnotherRow = index < rows.length - 1;
+    const hasRemainingBudget = detailState.detailBudgetUsed < options.detailBudget;
+    if (openedDetailPage && hasAnotherRow && hasRemainingBudget) {
+      await waitForXhsDetailDelay(options);
     }
   }
 
@@ -155,6 +205,25 @@ function xhsSortErrorKind(message: string): string {
   return 'xhs_search_sort_error';
 }
 
+async function insertXhsDetailBudgetExhaustedSnapshot(
+  repository: CollectorRepository,
+  runId: number,
+  session: XhsSession,
+  keyword: string,
+  sortKey: XhsSearchSortKey,
+  options: XhsSearchCommandOptions,
+  detailState: XhsDetailCollectionState,
+): Promise<void> {
+  await tryInsertXhsRawSnapshotFromPage(
+    repository,
+    runId,
+    session,
+    'xhs_detail_budget_exhausted',
+    `${keyword}:${sortKey}`,
+    `Detail budget exhausted. Used ${detailState.detailBudgetUsed}/${options.detailBudget}.`,
+  );
+}
+
 async function collectSortRows(
   repository: CollectorRepository,
   session: XhsSession,
@@ -163,6 +232,7 @@ async function collectSortRows(
   sortKey: XhsSearchSortKey,
   options: XhsSearchCommandOptions,
   seenFeedIds: Set<string>,
+  detailState: XhsDetailCollectionState,
 ): Promise<{ rows: XhsSearchNoteRow[]; status: RunStatus }> {
   const requestedLimit = options.limitPerSort + seenFeedIds.size;
   let rows = removeSeenFeedIds(dedupeXhsSearchRowsByFeedId(await collectXhsSearchNoteRows(session.page, keyword, sortKey, requestedLimit)), seenFeedIds)
@@ -182,20 +252,51 @@ async function collectSortRows(
   }
 
   if (options.withDetails) {
-    const result = await enrichXhsSearchRowsWithDetails(session, rows);
-    rows = result.rows;
-
-    if (result.detailFailures.length > 0) {
+    if (detailState.detailBudgetExhausted || detailState.detailBudgetUsed >= options.detailBudget) {
       status = 'partial_success';
-      for (const failure of result.detailFailures) {
-        await tryInsertXhsRawSnapshotFromPage(
-          repository,
-          runId,
-          session,
-          'xhs_detail_collection_error',
-          `${keyword}:${sortKey}:${failure.feedId}`,
-          failure.message,
-        );
+      detailState.detailBudgetExhausted = true;
+      await insertXhsDetailBudgetExhaustedSnapshot(repository, runId, session, keyword, sortKey, options, detailState);
+    } else {
+      const result = await enrichXhsSearchRowsWithDetails(session, rows, options, detailState);
+      rows = result.rows;
+
+      if (result.detailFailures.length > 0) {
+        status = 'partial_success';
+        const rateLimitFailure = result.detailFailures.find((failure) => failure.rateLimited);
+        if (rateLimitFailure !== undefined && options.stopOnRateLimit) {
+          detailState.rateLimited = true;
+          detailState.rateLimitContext = {
+            keyword,
+            sortKey,
+            feedId: rateLimitFailure.feedId,
+            message: rateLimitFailure.message,
+          };
+          await tryInsertXhsRawSnapshotFromPage(
+            repository,
+            runId,
+            session,
+            'xhs_rate_limited',
+            `${keyword}:${sortKey}:${rateLimitFailure.feedId}`,
+            rateLimitFailure.message,
+          );
+          return { rows, status };
+        }
+
+        for (const failure of result.detailFailures) {
+          await tryInsertXhsRawSnapshotFromPage(
+            repository,
+            runId,
+            session,
+            'xhs_detail_collection_error',
+            `${keyword}:${sortKey}:${failure.feedId}`,
+            failure.message,
+          );
+        }
+      }
+
+      if (detailState.detailBudgetExhausted) {
+        status = 'partial_success';
+        await insertXhsDetailBudgetExhaustedSnapshot(repository, runId, session, keyword, sortKey, options, detailState);
       }
     }
   }
@@ -209,6 +310,7 @@ async function collectSingleXhsKeyword(
   options: XhsSearchCommandOptions,
   keyword: string,
   sourceRunId: number | null,
+  detailState: XhsDetailCollectionState,
 ): Promise<XhsSearchCollectorRunResult> {
   const runId = repository.createXhsSearchRun({
     source: sourceRunId === null ? 'manual_keyword' : 'huitun_run',
@@ -227,12 +329,15 @@ async function collectSingleXhsKeyword(
 
     for (const sortKey of options.sorts) {
       try {
-        const result = await collectSortRows(repository, session, runId, keyword, sortKey, options, seenFeedIds);
+        const result = await collectSortRows(repository, session, runId, keyword, sortKey, options, seenFeedIds, detailState);
         if (result.status === 'partial_success') {
           status = 'partial_success';
         }
         repository.upsertXhsSearchNotes(runId, result.rows);
         noteCount += result.rows.length;
+        if (detailState.rateLimited && options.stopOnRateLimit) {
+          break;
+        }
       } catch (error) {
         status = 'partial_success';
         const message = errorMessage(error);
@@ -240,7 +345,12 @@ async function collectSingleXhsKeyword(
       }
     }
 
-    repository.finishXhsSearchRun(runId, status);
+    if (detailState.rateLimited && detailState.rateLimitContext?.keyword === keyword) {
+      repository.finishXhsSearchRun(runId, 'partial_success', 'xhs_rate_limited', detailState.rateLimitContext.message);
+      status = 'partial_success';
+    } else {
+      repository.finishXhsSearchRun(runId, status);
+    }
     return { runId, keyword, status, noteCount };
   } catch (error) {
     const message = errorMessage(error);
@@ -284,12 +394,22 @@ export async function collectXhsSearch(options: XhsSearchCommandOptions): Promis
 
     session = await createXhsSession(options.cdpUrl);
 
+    const detailState: XhsDetailCollectionState = { detailBudgetUsed: 0, rateLimited: false, detailBudgetExhausted: false };
     const runs: XhsSearchCollectorRunResult[] = [];
     for (const keyword of keywords) {
-      runs.push(await collectSingleXhsKeyword(repository, session, options, keyword, options.fromHuitunRunId ?? null));
+      runs.push(await collectSingleXhsKeyword(repository, session, options, keyword, options.fromHuitunRunId ?? null, detailState));
+      if (detailState.rateLimited && options.stopOnRateLimit) {
+        break;
+      }
     }
 
-    return { runs, dbPath: options.dbPath };
+    return {
+      runs,
+      dbPath: options.dbPath,
+      detailBudgetUsed: detailState.detailBudgetUsed,
+      rateLimited: detailState.rateLimited,
+      rateLimitContext: detailState.rateLimitContext,
+    };
   } finally {
     await session?.close();
     db?.close();

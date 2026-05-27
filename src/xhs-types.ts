@@ -122,3 +122,16 @@ export interface XhsRawSnapshotInput {
   textContent: string;
   htmlContent: string | null;
 }
+
+export interface XhsRateLimitContext {
+  keyword: string;
+  sortKey: XhsSearchSortKey;
+  feedId: string;
+  message: string;
+}
+
+export interface XhsDetailSafetyState {
+  detailBudgetUsed: number;
+  rateLimited: boolean;
+  rateLimitContext?: XhsRateLimitContext;
+}

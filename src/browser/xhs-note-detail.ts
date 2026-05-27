@@ -5,6 +5,68 @@ import { extractXhsNoteIdentity } from './xhs-search.js';
 
 const XHS_NOTE_URL_BASE = 'https://www.xiaohongshu.com';
 const SHORT_EXPLORE_REJECT_MESSAGE = 'XHS detail navigation requires a search_result URL or explore URL with xsec_token.';
+const XHS_RATE_LIMIT_MESSAGE = 'XHS rate limited: error_code=300013 访问频繁，请稍后再试';
+
+export class XhsRateLimitError extends Error {
+  constructor(
+    message: string,
+    readonly finalUrl: string,
+    readonly pageText: string,
+  ) {
+    super(message);
+    this.name = 'XhsRateLimitError';
+  }
+}
+
+export function isXhsRateLimitError(error: unknown): error is XhsRateLimitError {
+  return error instanceof XhsRateLimitError;
+}
+
+function decodeUrlText(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function hasXhsRateLimitErrorCode(value: string): boolean {
+  return /(?:^|[^\w])error_code\s*=\s*300013(?!\d)/.test(value);
+}
+
+export function isXhsRateLimitSignal(input: { url?: string | null; text?: string | null; message?: string | null }): boolean {
+  const url = input.url ?? '';
+  const text = input.text ?? '';
+  const message = input.message ?? '';
+  const explicitUrl = typeof input.url === 'string' && input.url.trim() !== '';
+  const decodedUrl = decodeUrlText(url);
+  const combined = `${url}\n${decodedUrl}\n${text}\n${message}`;
+
+  let hostname = '';
+  let pathname = '';
+  if (explicitUrl) {
+    try {
+      const parsedUrl = new URL(url);
+      hostname = parsedUrl.hostname;
+      pathname = parsedUrl.pathname;
+    } catch {
+      hostname = '';
+      pathname = '';
+    }
+  }
+
+  const isXhsHost = hostname === 'xiaohongshu.com' || hostname === 'www.xiaohongshu.com';
+  if (isXhsHost && pathname === '/website-login/error' && hasXhsRateLimitErrorCode(combined)) {
+    return true;
+  }
+  if (hasXhsRateLimitErrorCode(combined)) {
+    return true;
+  }
+  if (combined.includes('访问频繁')) {
+    return true;
+  }
+  return isXhsHost && combined.includes('请稍后再试');
+}
 
 export interface ParsedXhsDetailText {
   detailText: string | null;
@@ -397,6 +459,36 @@ export function parseXhsNoteDetailFromText(text: string): ParsedXhsDetailText {
   };
 }
 
+async function readBodyInnerText(page: Page): Promise<string> {
+  try {
+    return await page.locator('body').innerText();
+  } catch {
+    return '';
+  }
+}
+
+function readPageUrl(page: Page): string {
+  try {
+    return page.url();
+  } catch {
+    return '';
+  }
+}
+
+function createXhsRateLimitError(finalUrl: string, pageText: string): XhsRateLimitError {
+  return new XhsRateLimitError(XHS_RATE_LIMIT_MESSAGE, finalUrl, pageText);
+}
+
+async function throwIfXhsRateLimited(page: Page, input: { url?: string | null; text?: string | null; message?: string | null }): Promise<void> {
+  if (!isXhsRateLimitSignal(input)) {
+    return;
+  }
+
+  const finalUrl = input.url ?? readPageUrl(page);
+  const pageText = input.text ?? await readBodyInnerText(page);
+  throw createXhsRateLimitError(finalUrl, pageText);
+}
+
 async function collectVisibleDetailText(page: Page): Promise<string | null> {
   try {
     const value = await page.evaluate(() => {
@@ -526,15 +618,26 @@ export async function collectXhsNoteDetail(page: Page, searchResultUrl: string, 
 
   const navigationUrl = new URL(searchResultUrl, XHS_NOTE_URL_BASE).href;
   const requestedIdentity = extractXhsNoteIdentity(navigationUrl);
-  await page.goto(navigationUrl, { waitUntil: 'domcontentloaded' });
+  try {
+    await page.goto(navigationUrl, { waitUntil: 'domcontentloaded' });
+  } catch (error) {
+    await throwIfXhsRateLimited(page, { url: readPageUrl(page), message: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
   try {
     await page.waitForLoadState('networkidle');
-  } catch {
+  } catch (error) {
+    await throwIfXhsRateLimited(page, { url: readPageUrl(page), message: error instanceof Error ? error.message : String(error) });
     // Xiaohongshu pages often keep connections open; DOM content is enough for the fallback parser.
   }
 
-  const finalUrl = page.url();
+  const finalUrl = readPageUrl(page);
+  await throwIfXhsRateLimited(page, { url: finalUrl });
+
   const identity = extractXhsNoteIdentity(finalUrl);
+  const text = await readBodyInnerText(page);
+  await throwIfXhsRateLimited(page, { url: finalUrl, text });
+
   if (identity === null) {
     throw new Error(`XHS detail page did not resolve to a note URL: ${finalUrl}`);
   }
@@ -548,8 +651,6 @@ export async function collectXhsNoteDetail(page: Page, searchResultUrl: string, 
   } catch {
     initialState = null;
   }
-
-  const text = await page.locator('body').innerText();
   const parsed = parseXhsInitialStateNoteDetail(initialState, identity.feedId) ?? parseXhsNoteDetailFromText(text);
   const visibleDetailText = await collectVisibleDetailText(page);
   const mediaSources = uniqueMediaSources([...parsed.mediaSources, ...await collectXhsMediaSources(page)]);
