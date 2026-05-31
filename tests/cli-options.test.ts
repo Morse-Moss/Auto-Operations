@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
-import { parseExportOptions, parseOptions, parseReportOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsSearchOptions } from '../src/cli.js';
+import { parseExportOptions, parseOptions, parseReportOptions, parseXhsAnalysisSourceOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsPipelineCheckOptions, parseXhsSearchOptions } from '../src/cli.js';
 
 describe('parseOptions', () => {
   it('parses global target note collection options', () => {
@@ -93,6 +93,84 @@ describe('parseOptions', () => {
       dbPath: 'data/xhs-ops.sqlite',
       manifestPath: 'data/manifest.json',
       dryRun: true,
+    });
+  });
+
+  it('parses xhs-pipeline-check defaults', () => {
+    expect(parseXhsPipelineCheckOptions(['node', 'src/cli.ts', 'xhs-pipeline-check', '--run-id', '32'])).toEqual({
+      runId: 32,
+      dbPath: 'data/xhs-ops.sqlite',
+      manifestPath: undefined,
+      syncReportPath: undefined,
+      outputDir: undefined,
+    });
+  });
+
+  it('parses xhs-pipeline-check explicit artifact paths', () => {
+    expect(parseXhsPipelineCheckOptions([
+      'node',
+      'src/cli.ts',
+      'xhs-pipeline-check',
+      '--run-id',
+      '32',
+      '--db-path',
+      'data/custom.sqlite',
+      '--manifest',
+      'data/custom-manifest.json',
+      '--sync-report',
+      'data/custom-sync-report.json',
+      '--output-dir',
+      'data/custom-check',
+    ])).toEqual({
+      runId: 32,
+      dbPath: 'data/custom.sqlite',
+      manifestPath: 'data/custom-manifest.json',
+      syncReportPath: 'data/custom-sync-report.json',
+      outputDir: 'data/custom-check',
+    });
+  });
+
+  it('rejects invalid xhs-pipeline-check run ids', () => {
+    expect(() => parseXhsPipelineCheckOptions(['node', 'src/cli.ts', 'xhs-pipeline-check', '--run-id', '0'])).toThrow(
+      '--run-id 必须是正整数，收到：0',
+    );
+  });
+
+  it('parses xhs-analysis-source defaults', () => {
+    expect(parseXhsAnalysisSourceOptions(['node', 'src/cli.ts', 'xhs-analysis-source', '--run-id', '32'])).toEqual({
+      runId: 32,
+      dbPath: 'data/xhs-ops.sqlite',
+      manifestPath: undefined,
+      syncReportPath: undefined,
+      pipelineCheckPath: undefined,
+      outputDir: undefined,
+    });
+  });
+
+  it('parses xhs-analysis-source explicit artifact paths', () => {
+    expect(parseXhsAnalysisSourceOptions([
+      'node',
+      'src/cli.ts',
+      'xhs-analysis-source',
+      '--run-id',
+      '32',
+      '--db-path',
+      'data/custom.sqlite',
+      '--manifest',
+      'data/custom-manifest.json',
+      '--sync-report',
+      'data/custom-sync-report.json',
+      '--pipeline-check',
+      'data/custom-check.json',
+      '--output-dir',
+      'data/custom-analysis-source',
+    ])).toEqual({
+      runId: 32,
+      dbPath: 'data/custom.sqlite',
+      manifestPath: 'data/custom-manifest.json',
+      syncReportPath: 'data/custom-sync-report.json',
+      pipelineCheckPath: 'data/custom-check.json',
+      outputDir: 'data/custom-analysis-source',
     });
   });
 
@@ -241,6 +319,37 @@ describe('parseOptions', () => {
     expect(result.stdout).toContain('report');
     expect(result.stdout).toContain('export');
     expect(result.stdout).toContain('xhs-search');
+    expect(result.stdout).toContain('xhs-pipeline-check');
+    expect(result.stdout).toContain('xhs-analysis-source');
+    expect(result.stderr).not.toContain('CommanderError');
+  });
+
+  it('prints xhs-analysis-source help with artifact options', () => {
+    const result = spawnSync('node', ['--no-warnings', './node_modules/tsx/dist/cli.mjs', 'src/cli.ts', 'xhs-analysis-source', '--help'], {
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage: xhs-huitun-collector xhs-analysis-source [options]');
+    expect(result.stdout).toContain('--run-id');
+    expect(result.stdout).toContain('--manifest');
+    expect(result.stdout).toContain('--sync-report');
+    expect(result.stdout).toContain('--pipeline-check');
+    expect(result.stdout).toContain('--output-dir');
+    expect(result.stderr).not.toContain('CommanderError');
+  });
+
+  it('prints xhs-pipeline-check help with artifact options', () => {
+    const result = spawnSync('node', ['--no-warnings', './node_modules/tsx/dist/cli.mjs', 'src/cli.ts', 'xhs-pipeline-check', '--help'], {
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage: xhs-huitun-collector xhs-pipeline-check [options]');
+    expect(result.stdout).toContain('--run-id');
+    expect(result.stdout).toContain('--manifest');
+    expect(result.stdout).toContain('--sync-report');
+    expect(result.stdout).toContain('--output-dir');
     expect(result.stderr).not.toContain('CommanderError');
   });
 

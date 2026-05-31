@@ -88,6 +88,23 @@ interface XhsFeishuSyncCliOptions {
   dryRun: boolean;
 }
 
+interface XhsPipelineCheckCliOptions {
+  runId?: number;
+  dbPath: string;
+  manifest?: string;
+  syncReport?: string;
+  outputDir?: string;
+}
+
+interface XhsAnalysisSourceCliOptions {
+  runId?: number;
+  dbPath: string;
+  manifest?: string;
+  syncReport?: string;
+  pipelineCheck?: string;
+  outputDir?: string;
+}
+
 export interface XhsSearchCommandOptions {
   keyword?: string;
   fromHuitunRunId?: number;
@@ -119,6 +136,23 @@ export interface XhsFeishuSyncCommandOptions {
   dbPath: string;
   manifestPath?: string;
   dryRun: boolean;
+}
+
+export interface XhsPipelineCheckCommandOptions {
+  runId: number;
+  dbPath: string;
+  manifestPath?: string;
+  syncReportPath?: string;
+  outputDir?: string;
+}
+
+export interface XhsAnalysisSourceCommandOptions {
+  runId: number;
+  dbPath: string;
+  manifestPath?: string;
+  syncReportPath?: string;
+  pipelineCheckPath?: string;
+  outputDir?: string;
 }
 
 function parsePositiveInteger(value: string, name: string): number {
@@ -168,7 +202,9 @@ function createProgram(): Command {
     .addCommand(new Command('export').description('Export de-duplicated Huitun hot note rows to CSV'))
     .addCommand(createXhsSearchSubcommand())
     .addCommand(createXhsMediaArchiveSubcommand())
-    .addCommand(createXhsFeishuSyncSubcommand());
+    .addCommand(createXhsFeishuSyncSubcommand())
+    .addCommand(createXhsPipelineCheckSubcommand())
+    .addCommand(createXhsAnalysisSourceSubcommand());
 }
 
 function argvWithoutSubcommand(argv: string[]): string[] {
@@ -250,6 +286,41 @@ function createXhsFeishuSyncProgram(): Command {
 function createXhsFeishuSyncSubcommand(): Command {
   const program = createXhsFeishuSyncProgram();
   program.name('xhs-sync-feishu');
+  return program;
+}
+
+function createXhsPipelineCheckProgram(): Command {
+  return new Command()
+    .name('xhs-huitun-collector xhs-pipeline-check')
+    .description('Check whether an XHS run completed the SQLite/media/Feishu pipeline')
+    .requiredOption('--run-id <id>', '小红书搜索 run id', (value) => parsePositiveInteger(value, '--run-id'))
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
+    .option('--manifest <path>', '媒体归档 manifest 路径；默认 data/xhs-media/run-<id>/manifest.json')
+    .option('--sync-report <path>', '飞书同步报告路径；默认 data/feishu-sync/run-<id>/sync-report.json')
+    .option('--output-dir <path>', '检查报告输出目录；默认 data/xhs-pipeline-check/run-<id>');
+}
+
+function createXhsPipelineCheckSubcommand(): Command {
+  const program = createXhsPipelineCheckProgram();
+  program.name('xhs-pipeline-check');
+  return program;
+}
+
+function createXhsAnalysisSourceProgram(): Command {
+  return new Command()
+    .name('xhs-huitun-collector xhs-analysis-source')
+    .description('Build analysis-source artifacts for an XHS search run')
+    .requiredOption('--run-id <id>', '小红书搜索 run id', (value) => parsePositiveInteger(value, '--run-id'))
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
+    .option('--manifest <path>', '媒体归档 manifest 路径；默认 data/xhs-media/run-<id>/manifest.json')
+    .option('--sync-report <path>', '飞书同步报告路径；默认 data/feishu-sync/run-<id>/sync-report.json')
+    .option('--pipeline-check <path>', 'pipeline 检查报告路径；默认 data/xhs-pipeline-check/run-<id>/check.json')
+    .option('--output-dir <path>', '分析源输出目录；默认 data/xhs-analysis-source/run-<id>');
+}
+
+function createXhsAnalysisSourceSubcommand(): Command {
+  const program = createXhsAnalysisSourceProgram();
+  program.name('xhs-analysis-source');
   return program;
 }
 
@@ -368,6 +439,45 @@ function parseXhsFeishuSyncOptions(argv = process.argv): XhsFeishuSyncCommandOpt
     dbPath: options.dbPath,
     manifestPath: options.manifest,
     dryRun: options.dryRun,
+  };
+}
+
+function parseXhsPipelineCheckOptions(argv = process.argv): XhsPipelineCheckCommandOptions {
+  const program = createXhsPipelineCheckProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<XhsPipelineCheckCliOptions>();
+
+  if (options.runId === undefined) {
+    throw new Error('xhs-pipeline-check requires --run-id');
+  }
+
+  return {
+    runId: options.runId,
+    dbPath: options.dbPath,
+    manifestPath: options.manifest,
+    syncReportPath: options.syncReport,
+    outputDir: options.outputDir,
+  };
+}
+
+function parseXhsAnalysisSourceOptions(argv = process.argv): XhsAnalysisSourceCommandOptions {
+  const program = createXhsAnalysisSourceProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<XhsAnalysisSourceCliOptions>();
+
+  if (options.runId === undefined) {
+    throw new Error('xhs-analysis-source requires --run-id');
+  }
+
+  return {
+    runId: options.runId,
+    dbPath: options.dbPath,
+    manifestPath: options.manifest,
+    syncReportPath: options.syncReport,
+    pipelineCheckPath: options.pipelineCheck,
+    outputDir: options.outputDir,
   };
 }
 
@@ -648,6 +758,20 @@ async function main(argv = process.argv): Promise<void> {
     return;
   }
 
+  if (command === 'xhs-pipeline-check') {
+    const { checkXhsPipeline } = await import('./xhs-pipeline-check.js');
+    const result = checkXhsPipeline(parseXhsPipelineCheckOptions(argv));
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  if (command === 'xhs-analysis-source') {
+    const { buildXhsAnalysisSource } = await import('./xhs-analysis-source.js');
+    const result = buildXhsAnalysisSource(parseXhsAnalysisSourceOptions(argv));
+    console.log(JSON.stringify(result));
+    return;
+  }
+
   if (argv.includes('--help') || argv.includes('-h')) {
     const program = createProgram();
     program.exitOverride();
@@ -673,4 +797,4 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? '')).href) {
   }
 }
 
-export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsSearchOptions };
+export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions, parseXhsAnalysisSourceOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsPipelineCheckOptions, parseXhsSearchOptions };
