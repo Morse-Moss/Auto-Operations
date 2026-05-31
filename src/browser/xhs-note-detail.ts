@@ -508,6 +508,25 @@ async function collectVisibleDetailText(page: Page): Promise<string | null> {
   }
 }
 
+async function collectVideoUrlsFromPerformance(page: Page): Promise<XhsMediaSource[]> {
+  try {
+    const urls = await page.evaluate((): string[] => {
+      const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+      return entries
+        .map((entry) => entry.name)
+        .filter((url) => {
+          const lower = url.toLowerCase();
+          return (lower.includes('.m3u8') || lower.includes('.mp4') || lower.includes('xhscdn.com/video') || lower.includes('sns-video'))
+            && !url.includes('/avatar/')
+            && !url.includes('/comment/');
+        });
+    });
+    return urls.map((url) => ({ kind: 'video' as const, url, posterUrl: null, altText: null }));
+  } catch {
+    return [];
+  }
+}
+
 async function collectXhsMediaSources(page: Page): Promise<XhsMediaSource[]> {
   try {
     const mediaSources = await page.evaluate(() => {
@@ -653,9 +672,11 @@ export async function collectXhsNoteDetail(page: Page, searchResultUrl: string, 
   }
   const parsed = parseXhsInitialStateNoteDetail(initialState, identity.feedId) ?? parseXhsNoteDetailFromText(text);
   const visibleDetailText = await collectVisibleDetailText(page);
-  const mediaSources = uniqueMediaSources([...parsed.mediaSources, ...await collectXhsMediaSources(page)]);
+  const mediaSources = uniqueMediaSources([...parsed.mediaSources, ...await collectXhsMediaSources(page), ...await collectVideoUrlsFromPerformance(page)]);
   const rawDetailText = parsed.rawDetailText ?? text;
-  const noteType = parsed.noteType === 'unknown' ? context?.noteType ?? 'unknown' : parsed.noteType;
+  const noteType = mediaSources.some((media) => media.kind === 'video')
+    ? 'video'
+    : parsed.noteType === 'unknown' ? context?.noteType ?? 'unknown' : parsed.noteType;
   const sourceTopicTexts = uniqueTexts([...(context?.sourceTopicTexts ?? []), ...parsed.sourceTopicTexts, ...parsed.tags]);
   const detailText = visibleDetailText ?? parsed.detailText;
   const analysisParsed = { ...parsed, detailText, noteType, rawDetailText, sourceTopicTexts, mediaSources };

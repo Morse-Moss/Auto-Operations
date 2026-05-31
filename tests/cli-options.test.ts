@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
-import { parseExportOptions, parseOptions, parseReportOptions, parseXhsSearchOptions } from '../src/cli.js';
+import { parseExportOptions, parseOptions, parseReportOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsSearchOptions } from '../src/cli.js';
 
 describe('parseOptions', () => {
   it('parses global target note collection options', () => {
@@ -73,6 +73,27 @@ describe('parseOptions', () => {
     expect(() => parseReportOptions(['node', 'src/cli.ts', 'report', '--run-id', '0'])).toThrow(
       '--run-id 必须是正整数，收到：0',
     );
+  });
+
+  it('parses xhs-media-archive defaults for browser-service', () => {
+    expect(parseXhsMediaArchiveOptions(['node', 'src/cli.ts', 'xhs-media-archive', '--run-id', '32'])).toEqual({
+      runId: 32,
+      dbPath: 'data/xhs-ops.sqlite',
+      cdpUrl: 'http://127.0.0.1:17330',
+      outputDir: undefined,
+      force: false,
+      delayMinMs: 8000,
+      delayMaxMs: 15000,
+    });
+  });
+
+  it('parses xhs-sync-feishu dry run options', () => {
+    expect(parseXhsFeishuSyncOptions(['node', 'src/cli.ts', 'xhs-sync-feishu', '--run-id', '32', '--dry-run', '--manifest', 'data/manifest.json'])).toEqual({
+      runId: 32,
+      dbPath: 'data/xhs-ops.sqlite',
+      manifestPath: 'data/manifest.json',
+      dryRun: true,
+    });
   });
 
   it('parses xhs-search manual keyword defaults', () => {

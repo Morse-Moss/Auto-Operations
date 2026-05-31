@@ -71,6 +71,23 @@ interface XhsSearchCliOptions {
   cdpUrl: string;
 }
 
+interface XhsMediaArchiveCliOptions {
+  runId?: number;
+  dbPath: string;
+  cdpUrl: string;
+  outputDir?: string;
+  force: boolean;
+  delayMinMs: number;
+  delayMaxMs: number;
+}
+
+interface XhsFeishuSyncCliOptions {
+  runId?: number;
+  dbPath: string;
+  manifest?: string;
+  dryRun: boolean;
+}
+
 export interface XhsSearchCommandOptions {
   keyword?: string;
   fromHuitunRunId?: number;
@@ -85,6 +102,23 @@ export interface XhsSearchCommandOptions {
   resumeMissingDetails: boolean;
   dbPath: string;
   cdpUrl: string;
+}
+
+export interface XhsMediaArchiveCommandOptions {
+  runId: number;
+  dbPath: string;
+  cdpUrl: string;
+  outputDir?: string;
+  force: boolean;
+  delayMinMs: number;
+  delayMaxMs: number;
+}
+
+export interface XhsFeishuSyncCommandOptions {
+  runId: number;
+  dbPath: string;
+  manifestPath?: string;
+  dryRun: boolean;
 }
 
 function parsePositiveInteger(value: string, name: string): number {
@@ -132,7 +166,9 @@ function createProgram(): Command {
   return createCollectionProgram()
     .addCommand(new Command('report').description('Show a readable summary for a Huitun collection run'))
     .addCommand(new Command('export').description('Export de-duplicated Huitun hot note rows to CSV'))
-    .addCommand(createXhsSearchSubcommand());
+    .addCommand(createXhsSearchSubcommand())
+    .addCommand(createXhsMediaArchiveSubcommand())
+    .addCommand(createXhsFeishuSyncSubcommand());
 }
 
 function argvWithoutSubcommand(argv: string[]): string[] {
@@ -180,6 +216,41 @@ function createXhsSearchProgram(): Command {
 
 function createXhsSearchSubcommand(): Command {
   return addXhsSearchOptions(new Command('xhs-search'));
+}
+
+function createXhsMediaArchiveProgram(): Command {
+  return new Command()
+    .name('xhs-huitun-collector xhs-media-archive')
+    .description('Archive local image/video media for an XHS search run')
+    .requiredOption('--run-id <id>', '小红书搜索 run id', (value) => parsePositiveInteger(value, '--run-id'))
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
+    .option('--cdp-url <url>', 'browser-service xhs-main CDP 地址', 'http://127.0.0.1:17330')
+    .option('--output-dir <path>', '媒体归档输出目录；默认 data/xhs-media/run-<id>')
+    .option('--force', '删除并重建该 run 的本地媒体归档目录', false)
+    .option('--delay-min-ms <ms>', '详情页归档之间的最小等待毫秒数', (value) => parseNonNegativeInteger(value, '--delay-min-ms'), 8_000)
+    .option('--delay-max-ms <ms>', '详情页归档之间的最大等待毫秒数', (value) => parseNonNegativeInteger(value, '--delay-max-ms'), 15_000);
+}
+
+function createXhsMediaArchiveSubcommand(): Command {
+  const program = createXhsMediaArchiveProgram();
+  program.name('xhs-media-archive');
+  return program;
+}
+
+function createXhsFeishuSyncProgram(): Command {
+  return new Command()
+    .name('xhs-huitun-collector xhs-sync-feishu')
+    .description('Sync an archived XHS search run to Feishu Bitable')
+    .requiredOption('--run-id <id>', '小红书搜索 run id', (value) => parsePositiveInteger(value, '--run-id'))
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
+    .option('--manifest <path>', '媒体归档 manifest 路径；默认 data/xhs-media/run-<id>/manifest.json')
+    .option('--dry-run', '只验证同步 payload，不写入飞书', false);
+}
+
+function createXhsFeishuSyncSubcommand(): Command {
+  const program = createXhsFeishuSyncProgram();
+  program.name('xhs-sync-feishu');
+  return program;
 }
 
 function parseOptions(argv = process.argv): CollectorOptions {
@@ -255,6 +326,48 @@ function parseXhsSearchOptions(argv = process.argv): XhsSearchCommandOptions {
     resumeMissingDetails: options.resumeMissingDetails,
     dbPath: options.dbPath,
     cdpUrl: options.cdpUrl,
+  };
+}
+
+function parseXhsMediaArchiveOptions(argv = process.argv): XhsMediaArchiveCommandOptions {
+  const program = createXhsMediaArchiveProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<XhsMediaArchiveCliOptions>();
+
+  if (options.runId === undefined) {
+    throw new Error('xhs-media-archive requires --run-id');
+  }
+  if (options.delayMaxMs < options.delayMinMs) {
+    throw new Error('--delay-max-ms 必须大于等于 --delay-min-ms');
+  }
+
+  return {
+    runId: options.runId,
+    dbPath: options.dbPath,
+    cdpUrl: options.cdpUrl,
+    outputDir: options.outputDir,
+    force: options.force,
+    delayMinMs: options.delayMinMs,
+    delayMaxMs: options.delayMaxMs,
+  };
+}
+
+function parseXhsFeishuSyncOptions(argv = process.argv): XhsFeishuSyncCommandOptions {
+  const program = createXhsFeishuSyncProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<XhsFeishuSyncCliOptions>();
+
+  if (options.runId === undefined) {
+    throw new Error('xhs-sync-feishu requires --run-id');
+  }
+
+  return {
+    runId: options.runId,
+    dbPath: options.dbPath,
+    manifestPath: options.manifest,
+    dryRun: options.dryRun,
   };
 }
 
@@ -521,6 +634,20 @@ async function main(argv = process.argv): Promise<void> {
     return;
   }
 
+  if (command === 'xhs-media-archive') {
+    const { archiveXhsRunMedia } = await import('./xhs-media-archive.js');
+    const result = await archiveXhsRunMedia(parseXhsMediaArchiveOptions(argv));
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  if (command === 'xhs-sync-feishu') {
+    const { syncXhsRunToFeishu } = await import('./feishu/xhs-sync.js');
+    const result = await syncXhsRunToFeishu(parseXhsFeishuSyncOptions(argv));
+    console.log(JSON.stringify(result));
+    return;
+  }
+
   if (argv.includes('--help') || argv.includes('-h')) {
     const program = createProgram();
     program.exitOverride();
@@ -546,4 +673,4 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? '')).href) {
   }
 }
 
-export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions, parseXhsSearchOptions };
+export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsSearchOptions };

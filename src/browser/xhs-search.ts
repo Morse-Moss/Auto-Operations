@@ -782,7 +782,7 @@ async function readXhsDomSearchCards(page: Page): Promise<XhsSearchCardPayload[]
         authorProfileUrl,
         coverUrl: coverUrl === null || coverUrl.trim() === '' ? null : coverUrl,
         coverAltText: coverAltText === null || coverAltText.trim() === '' ? null : coverAltText,
-        noteType: videoMarker === null && !sectionText.includes('视频') ? 'unknown' : 'video',
+        noteType: videoMarker !== null || sectionText.includes('视频') ? 'video' : 'image',
         sourceTopicTexts: topicTexts,
       };
     });

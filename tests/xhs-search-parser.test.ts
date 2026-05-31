@@ -450,6 +450,7 @@ describe('XHS search helpers', () => {
         feedId: 'visible-feed',
         title: '新排序可见结果',
         authorName: '新作者',
+        noteType: 'image',
       });
     } finally {
       Object.defineProperty(globals, 'document', { configurable: true, value: originalDocument });

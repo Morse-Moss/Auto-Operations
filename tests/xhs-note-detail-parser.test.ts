@@ -491,4 +491,37 @@ describe('XHS note detail helpers', () => {
 
     await expect(collectXhsNoteDetail(page, '/explore/feed1')).rejects.toThrow('XHS detail navigation requires a search_result URL or explore URL with xsec_token.');
   });
+
+  it('collectXhsNoteDetail includes video URLs captured via Performance API', async () => {
+    const page = {
+      goto: async () => undefined,
+      waitForLoadState: async () => undefined,
+      url: () => 'https://www.xiaohongshu.com/explore/feed-video?xsec_token=token',
+      evaluate: async (callback: unknown) => {
+        const source = String(callback);
+        if (source.includes('__INITIAL_STATE__')) {
+          return { note: { noteDetailMap: {} } };
+        }
+        if (source.includes('querySelectorAll') && source.includes('video')) {
+          return [];
+        }
+        if (source.includes('getEntriesByType')) {
+          return [
+            'https://sns-video-bd.xhscdn.com/video/abc123.m3u8',
+            'https://sns-video-hw.xhscdn.com/video/def456.mp4',
+          ];
+        }
+        return undefined;
+      },
+      locator: () => ({ innerText: async () => '作者\n关注\n视频正文\n#视频标签\n共 5 条评论\n说点什么...\n100\n50\n发送' }),
+    } as unknown as Page;
+
+    const detail = await collectXhsNoteDetail(page, '/search_result/feed-video?xsec_token=token');
+
+    const videoUrls = detail.mediaSources.filter((s) => s.kind === 'video').map((s) => s.url);
+    expect(detail.noteType).toBe('video');
+    expect(videoUrls).toContain('https://sns-video-bd.xhscdn.com/video/abc123.m3u8');
+    expect(videoUrls).toContain('https://sns-video-hw.xhscdn.com/video/def456.mp4');
+    expect(videoUrls).toHaveLength(2);
+  });
 });
