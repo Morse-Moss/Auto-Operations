@@ -77,6 +77,7 @@ interface XhsMediaArchiveCliOptions {
   cdpUrl: string;
   outputDir?: string;
   force: boolean;
+  resumeMissingMedia: boolean;
   delayMinMs: number;
   delayMaxMs: number;
 }
@@ -127,6 +128,7 @@ export interface XhsMediaArchiveCommandOptions {
   cdpUrl: string;
   outputDir?: string;
   force: boolean;
+  resumeMissingMedia: boolean;
   delayMinMs: number;
   delayMaxMs: number;
 }
@@ -263,6 +265,7 @@ function createXhsMediaArchiveProgram(): Command {
     .option('--cdp-url <url>', 'browser-service xhs-main CDP 地址', 'http://127.0.0.1:17330')
     .option('--output-dir <path>', '媒体归档输出目录；默认 data/xhs-media/run-<id>')
     .option('--force', '删除并重建该 run 的本地媒体归档目录', false)
+    .option('--no-resume-missing-media', '不读取既有 manifest，只按本次参数重新处理未 --force 保留的目录')
     .option('--delay-min-ms <ms>', '详情页归档之间的最小等待毫秒数', (value) => parseNonNegativeInteger(value, '--delay-min-ms'), 8_000)
     .option('--delay-max-ms <ms>', '详情页归档之间的最大等待毫秒数', (value) => parseNonNegativeInteger(value, '--delay-max-ms'), 15_000);
 }
@@ -419,6 +422,7 @@ function parseXhsMediaArchiveOptions(argv = process.argv): XhsMediaArchiveComman
     cdpUrl: options.cdpUrl,
     outputDir: options.outputDir,
     force: options.force,
+    resumeMissingMedia: options.resumeMissingMedia,
     delayMinMs: options.delayMinMs,
     delayMaxMs: options.delayMaxMs,
   };

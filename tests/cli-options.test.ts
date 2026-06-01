@@ -82,8 +82,15 @@ describe('parseOptions', () => {
       cdpUrl: 'http://127.0.0.1:17330',
       outputDir: undefined,
       force: false,
+      resumeMissingMedia: true,
       delayMinMs: 8000,
       delayMaxMs: 15000,
+    });
+  });
+
+  it('parses xhs-media-archive no-resume option', () => {
+    expect(parseXhsMediaArchiveOptions(['node', 'src/cli.ts', 'xhs-media-archive', '--run-id', '32', '--no-resume-missing-media'])).toMatchObject({
+      resumeMissingMedia: false,
     });
   });
 
@@ -350,6 +357,18 @@ describe('parseOptions', () => {
     expect(result.stdout).toContain('--manifest');
     expect(result.stdout).toContain('--sync-report');
     expect(result.stdout).toContain('--output-dir');
+    expect(result.stderr).not.toContain('CommanderError');
+  });
+
+  it('prints xhs-media-archive help with resume control option', () => {
+    const result = spawnSync('node', ['--no-warnings', './node_modules/tsx/dist/cli.mjs', 'src/cli.ts', 'xhs-media-archive', '--help'], {
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage: xhs-huitun-collector xhs-media-archive [options]');
+    expect(result.stdout).toContain('--force');
+    expect(result.stdout).toContain('--no-resume-missing-media');
     expect(result.stderr).not.toContain('CommanderError');
   });
 

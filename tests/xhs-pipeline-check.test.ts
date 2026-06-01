@@ -143,9 +143,82 @@ describe('XHS pipeline check', () => {
     expect(result.counts.mediaSources).toBe(1);
     expect(result.counts.manifestEntries).toBe(1);
     expect(result.counts.manifestMatchedFeeds).toBe(1);
+    expect(result.counts.manifestSuccessfulCompleteEntries).toBe(1);
+    expect(result.counts.manifestIncompleteEntries).toBe(0);
+    expect(result.counts.incompleteVideos).toBe(0);
+    expect(result.counts.manifestMissingFeeds).toBe(0);
     expect(result.counts.feishuSyncedRecords).toBe(1);
     expect(result.agent.ready).toBe(true);
     expect(result.agent.inputContractVersion).toBe('xhs-analysis-source/v1');
+  });
+
+  it.each(['complete', 'complete_short_mp4_structure_verified'] as const)(
+    'counts legacy no_media_saved video entries with %s evidence as complete when file is valid',
+    (completeVideoStatus) => {
+      const root = createTempDir();
+      const dbPath = join(root, 'xhs.sqlite');
+      const { manifestPath, syncReportPath } = seedCompleteRun(dbPath, root);
+      const completeVideoFile = join(root, 'media', `legacy-${completeVideoStatus}.mp4`);
+      writeFileSync(completeVideoFile, 'video-bytes');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Array<Record<string, unknown>>;
+      manifest[0] = {
+        ...manifest[0],
+        status: 'no_media_saved',
+        imageCount: 0,
+        videoCount: 0,
+        imageFiles: [],
+        videoFiles: [],
+        saved: [],
+        completeVideoStatus,
+        completeVideoFile,
+        completeVideoBytes: 11,
+        completeVideoCoveredBytes: 11,
+        completeVideoChunkCount: 1,
+        completeVideoGaps: [],
+      };
+      writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
+
+      const result = checkXhsPipeline({ runId: 1, dbPath, manifestPath, syncReportPath, outputDir: join(root, 'check') });
+
+      expect(result.status).toBe('complete');
+      expect(result.counts.manifestSuccessfulCompleteEntries).toBe(1);
+      expect(result.counts.manifestIncompleteEntries).toBe(0);
+      expect(result.counts.incompleteVideos).toBe(0);
+      expect(result.warnings).not.toContainEqual(expect.objectContaining({ code: 'media_incomplete' }));
+      expect(result.warnings).not.toContainEqual(expect.objectContaining({ code: 'media_success_less_than_notes' }));
+    },
+  );
+
+  it('requires legacy complete-video evidence to reference an existing non-empty file', () => {
+    const root = createTempDir();
+    const dbPath = join(root, 'xhs.sqlite');
+    const { manifestPath, syncReportPath } = seedCompleteRun(dbPath, root);
+    const missingVideoFile = join(root, 'media', 'legacy-missing.mp4');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Array<Record<string, unknown>>;
+    manifest[0] = {
+      ...manifest[0],
+      status: 'no_media_saved',
+      imageCount: 0,
+      videoCount: 0,
+      imageFiles: [],
+      videoFiles: [],
+      saved: [],
+      completeVideoStatus: 'complete_short_mp4_structure_verified',
+      completeVideoFile: missingVideoFile,
+      completeVideoBytes: 11,
+      completeVideoCoveredBytes: 11,
+      completeVideoChunkCount: 1,
+      completeVideoGaps: [],
+    };
+    writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
+
+    const result = checkXhsPipeline({ runId: 1, dbPath, manifestPath, syncReportPath, outputDir: join(root, 'check') });
+
+    expect(result.status).toBe('partial');
+    expect(result.counts.manifestSuccessfulCompleteEntries).toBe(0);
+    expect(result.counts.manifestIncompleteEntries).toBe(1);
+    expect(result.counts.incompleteVideos).toBe(1);
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'manifest_media_file_invalid' }));
   });
 
   it('returns partial when the media manifest is missing but database notes exist', () => {
@@ -158,6 +231,174 @@ describe('XHS pipeline check', () => {
     expect(result.status).toBe('partial');
     expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'manifest_missing' }));
     expect(result.agent.ready).toBe(true);
+  });
+
+  it('warns when manifest media paths are missing or empty and does not count them complete', () => {
+    const root = createTempDir();
+    const dbPath = join(root, 'xhs.sqlite');
+    const { manifestPath, syncReportPath } = seedCompleteRun(dbPath, root);
+    const emptyImage = join(root, 'media', 'empty.webp');
+    writeFileSync(emptyImage, '');
+    writeFileSync(manifestPath, JSON.stringify([{
+      rankIndex: 1,
+      feedId: 'feed1',
+      title: '浴缸标题',
+      noteType: 'video',
+      keyword: '浴缸',
+      sortLabel: '最多点赞',
+      searchResultUrl: 'https://www.xiaohongshu.com/search_result/feed1?xsec_token=token',
+      exploreUrl: null,
+      tags: ['浴缸'],
+      topics: ['浴缸'],
+      sourceMediaUrls: [],
+      status: 'success',
+      imageCount: 1,
+      videoCount: 1,
+      imageFiles: [emptyImage],
+      videoFiles: [join(root, 'media', 'missing.mp4')],
+      saved: [],
+      errors: [],
+      completeVideoStatus: 'complete',
+      completeVideoFile: join(root, 'media', 'missing.mp4'),
+      completeVideoBytes: 11,
+      completeVideoCoveredBytes: 11,
+      completeVideoChunkCount: 1,
+      completeVideoGaps: [],
+    }]), 'utf8');
+
+    const result = checkXhsPipeline({ runId: 1, dbPath, manifestPath, syncReportPath, outputDir: join(root, 'check') });
+
+    expect(result.status).toBe('partial');
+    expect(result.counts.manifestSuccessfulCompleteEntries).toBe(0);
+    expect(result.counts.manifestIncompleteEntries).toBe(1);
+    expect(result.counts.incompleteVideos).toBe(1);
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'manifest_media_file_invalid' }));
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'media_incomplete' }));
+  });
+
+  it('does not count a successful image manifest entry with no local files as complete', () => {
+    const root = createTempDir();
+    const dbPath = join(root, 'xhs.sqlite');
+    const { manifestPath, syncReportPath } = seedCompleteRun(dbPath, root);
+    writeFileSync(manifestPath, JSON.stringify([{
+      rankIndex: 1,
+      feedId: 'feed1',
+      title: '浴缸标题',
+      noteType: 'image',
+      keyword: '浴缸',
+      sortLabel: '最多点赞',
+      searchResultUrl: 'https://www.xiaohongshu.com/search_result/feed1?xsec_token=token',
+      exploreUrl: null,
+      tags: ['浴缸'],
+      topics: ['浴缸'],
+      sourceMediaUrls: [],
+      status: 'success',
+      imageCount: 0,
+      videoCount: 0,
+      imageFiles: [],
+      videoFiles: [],
+      saved: [],
+      errors: [],
+    }]), 'utf8');
+
+    const result = checkXhsPipeline({ runId: 1, dbPath, manifestPath, syncReportPath, outputDir: join(root, 'check') });
+
+    expect(result.status).toBe('partial');
+    expect(result.counts.manifestSuccessfulCompleteEntries).toBe(0);
+    expect(result.counts.manifestIncompleteEntries).toBe(1);
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'media_incomplete' }));
+  });
+
+  it('returns partial when media manifest entries are incomplete or do not cover every database note', () => {
+    const root = createTempDir();
+    const dbPath = join(root, 'xhs.sqlite');
+    const { manifestPath, syncReportPath } = seedCompleteRun(dbPath, root);
+    const db = openDatabase(dbPath);
+    try {
+      db.prepare(`
+        insert into xhs_search_notes (
+          run_id, keyword, sort_key, sort_label, rank_index, feed_id, xsec_token, search_result_url,
+          title, author_name, detail_text, detail_tags_json, detail_like_text, detail_collect_text,
+          detail_comment_count_text, detail_share_text, note_type, source_topic_texts_json,
+          source_comments_json, media_sources_json, raw_card_text
+        ) values (
+          1, '浴缸', 'most_liked', '最多点赞', 2, 'feed2', 'token', 'https://www.xiaohongshu.com/search_result/feed2?xsec_token=token',
+          '浴缸标题2', '作者B', '正文2', '[]', '10', '2', '1', '0', 'image', '[]', '[]', '[]', '浴缸标题2'
+        )
+      `).run();
+    } finally {
+      db.close();
+    }
+    writeFileSync(manifestPath, JSON.stringify([
+      {
+        rankIndex: 1,
+        feedId: 'feed1',
+        title: '浴缸标题',
+        noteType: 'video',
+        keyword: '浴缸',
+        sortLabel: '最多点赞',
+        searchResultUrl: 'https://www.xiaohongshu.com/search_result/feed1?xsec_token=token',
+        exploreUrl: null,
+        tags: ['浴缸'],
+        topics: ['浴缸'],
+        sourceMediaUrls: [],
+        status: 'partial_failed',
+        imageCount: 1,
+        videoCount: 1,
+        imageFiles: ['image.webp'],
+        videoFiles: ['video.mp4'],
+        saved: [],
+        errors: ['one media request failed'],
+        completeVideoStatus: 'incomplete',
+        completeVideoFile: null,
+        completeVideoBytes: 100,
+        completeVideoCoveredBytes: 50,
+        completeVideoChunkCount: 1,
+        completeVideoGaps: [[50, 99]],
+      },
+    ]), 'utf8');
+
+    const result = checkXhsPipeline({ runId: 1, dbPath, manifestPath, syncReportPath, outputDir: join(root, 'check') });
+
+    expect(result.status).toBe('partial');
+    expect(result.counts.manifestIncompleteEntries).toBe(1);
+    expect(result.counts.incompleteVideos).toBe(1);
+    expect(result.counts.manifestMissingFeeds).toBe(1);
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'media_incomplete' }));
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'media_missing_for_notes' }));
+  });
+
+  it('returns partial when successful media entries are fewer than matching database notes', () => {
+    const root = createTempDir();
+    const dbPath = join(root, 'xhs.sqlite');
+    const { manifestPath, syncReportPath } = seedCompleteRun(dbPath, root);
+    writeFileSync(manifestPath, JSON.stringify([{
+      rankIndex: 1,
+      feedId: 'feed1',
+      title: '浴缸标题',
+      noteType: 'image',
+      keyword: '浴缸',
+      sortLabel: '最多点赞',
+      searchResultUrl: 'https://www.xiaohongshu.com/search_result/feed1?xsec_token=token',
+      exploreUrl: null,
+      tags: ['浴缸'],
+      topics: ['浴缸'],
+      sourceMediaUrls: [],
+      status: 'no_media_saved',
+      imageCount: 0,
+      videoCount: 0,
+      imageFiles: [],
+      videoFiles: [],
+      saved: [],
+      errors: [],
+    }]), 'utf8');
+
+    const result = checkXhsPipeline({ runId: 1, dbPath, manifestPath, syncReportPath, outputDir: join(root, 'check') });
+
+    expect(result.status).toBe('partial');
+    expect(result.counts.manifestSuccessfulCompleteEntries).toBe(0);
+    expect(result.counts.manifestIncompleteEntries).toBe(1);
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'media_success_less_than_notes' }));
   });
 
   it('returns partial when the Feishu sync report is missing but database notes exist', () => {

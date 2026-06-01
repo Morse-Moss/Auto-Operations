@@ -36,6 +36,10 @@ export interface XhsPipelineCheckResult {
     mediaSources: number;
     manifestEntries: number;
     manifestMatchedFeeds: number;
+    manifestSuccessfulCompleteEntries: number;
+    manifestIncompleteEntries: number;
+    incompleteVideos: number;
+    manifestMissingFeeds: number;
     feishuSyncedRecords: number;
   };
   agent: XhsPipelineCheckAgentReadiness;

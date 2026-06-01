@@ -40,6 +40,22 @@ export interface XhsMediaArchiveManifestEntry {
   completeVideoGaps?: Array<[number, number]>;
 }
 
+export type XhsMediaArchiveSafetyStopReason = 'rate_limit' | 'safety_verification';
+
+export interface XhsMediaArchiveSafetyStop {
+  runId: number;
+  reason: XhsMediaArchiveSafetyStopReason;
+  message: string;
+  phase: string;
+  rankIndex: number;
+  feedId: string;
+  title: string;
+  searchResultUrl: string;
+  finalUrl: string;
+  pageText: string;
+  stoppedAt: string;
+}
+
 export interface XhsMediaArchiveSummary {
   runId: number;
   rows: number;
@@ -51,4 +67,6 @@ export interface XhsMediaArchiveSummary {
   incompleteVideos: number;
   root: string;
   csv: string;
+  safetyStopped: boolean;
+  safetyStop?: XhsMediaArchiveSafetyStop;
 }
