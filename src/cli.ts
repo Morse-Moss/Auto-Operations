@@ -29,6 +29,7 @@ import {
 import { selectDistinctNotesForTarget } from './collection-target.js';
 import type { CollectorRepository } from './db/repositories.js';
 import type { CollectorOptions, RunStatus } from './types.js';
+import type { XhsPreanalysisRunOptions } from './xhs-preanalysis-run-types.js';
 import type { XhsSearchSortKey } from './xhs-types.js';
 
 const SUPPORTED_DAYS = [7, 30, 90, 180] as const;
@@ -106,6 +107,30 @@ interface XhsAnalysisSourceCliOptions {
   outputDir?: string;
 }
 
+interface XhsPreanalysisRunCliOptions {
+  keyword?: string;
+  dbPath: string;
+  huitunCdpUrl: string;
+  xhsCdpUrl: string;
+  mediaCdpUrl: string;
+  limitHotwords: number;
+  limitNotes: number;
+  days: SupportedDays;
+  xhsLimitKeywords: number;
+  xhsSorts?: string;
+  xhsLimitPerSort: number;
+  withDetails: boolean;
+  detailBudget: number;
+  detailDelayMinMs: number;
+  detailDelayMaxMs: number;
+  stopOnRateLimit: boolean;
+  resumeMissingDetails: boolean;
+  mediaDelayMinMs: number;
+  mediaDelayMaxMs: number;
+  feishuDryRun: boolean;
+  outputDir?: string;
+}
+
 export interface XhsSearchCommandOptions {
   keyword?: string;
   fromHuitunRunId?: number;
@@ -157,6 +182,8 @@ export interface XhsAnalysisSourceCommandOptions {
   outputDir?: string;
 }
 
+export type XhsPreanalysisRunCommandOptions = XhsPreanalysisRunOptions;
+
 function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -194,7 +221,7 @@ function createCollectionProgram(): Command {
     .option('--target-notes <count>', '全局去重后的目标笔记数量，达到后停止继续采集热词', (value) => parsePositiveInteger(value, '--target-notes'))
     .option('--days <days>', '热词详情时间范围，只支持 7、30、90、180', parseDays, 7)
     .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
-    .option('--cdp-url <url>', '已登录浏览器的 CDP 地址', 'http://127.0.0.1:9222')
+    .option('--cdp-url <url>', '灰豚 browser-service huitun-main CDP 地址', 'http://127.0.0.1:17331')
     .option('--headless', '保留参数：本 CLI 连接既有浏览器，不启动 headless 浏览器', false);
 }
 
@@ -205,6 +232,7 @@ function createProgram(): Command {
     .addCommand(createXhsSearchSubcommand())
     .addCommand(createXhsMediaArchiveSubcommand())
     .addCommand(createXhsFeishuSyncSubcommand())
+    .addCommand(createXhsPreanalysisRunSubcommand())
     .addCommand(createXhsPipelineCheckSubcommand())
     .addCommand(createXhsAnalysisSourceSubcommand());
 }
@@ -245,7 +273,7 @@ function addXhsSearchOptions(program: Command): Command {
     .option('--no-stop-on-rate-limit', '遇到小红书访问频繁时不熔断')
     .option('--no-resume-missing-details', '不跳过已有详情的笔记')
     .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
-    .option('--cdp-url <url>', '已登录浏览器的 CDP 地址', 'http://127.0.0.1:9222');
+    .option('--cdp-url <url>', '小红书 browser-service xhs-main CDP 地址', 'http://127.0.0.1:17330');
 }
 
 function createXhsSearchProgram(): Command {
@@ -325,6 +353,40 @@ function createXhsAnalysisSourceSubcommand(): Command {
   const program = createXhsAnalysisSourceProgram();
   program.name('xhs-analysis-source');
   return program;
+}
+
+function addXhsPreanalysisRunOptions(program: Command): Command {
+  return program
+    .description('Parse options for the XHS pre-analysis collection pipeline')
+    .requiredOption('--keyword <keyword>', '灰豚热词搜索关键词')
+    .option('--db-path <path>', 'SQLite 数据库路径', 'data/xhs-ops.sqlite')
+    .option('--huitun-cdp-url <url>', '灰豚 browser-service huitun-main CDP 地址', 'http://127.0.0.1:17331')
+    .option('--xhs-cdp-url <url>', '小红书 browser-service xhs-main CDP 地址', 'http://127.0.0.1:17330')
+    .option('--media-cdp-url <url>', '媒体归档 browser-service xhs-main CDP 地址', 'http://127.0.0.1:17330')
+    .option('--limit-hotwords <count>', '最多采集灰豚热词数量', (value) => parsePositiveInteger(value, '--limit-hotwords'), 5)
+    .option('--limit-notes <count>', '每个灰豚热词最多采集笔记数量', (value) => parsePositiveInteger(value, '--limit-notes'), 20)
+    .option('--days <days>', '灰豚热词详情时间范围，只支持 7、30、90、180', parseDays, 7)
+    .option('--xhs-limit-keywords <count>', '最多用于小红书搜索的关键词数量', (value) => parsePositiveInteger(value, '--xhs-limit-keywords'), 5)
+    .option('--xhs-sorts <list>', '逗号分隔的小红书搜索排序键')
+    .option('--xhs-limit-per-sort <count>', '小红书每个排序最多采集笔记数量', (value) => parsePositiveInteger(value, '--xhs-limit-per-sort'), 20)
+    .option('--with-details', '采集小红书笔记详情', false)
+    .option('--detail-budget <count>', '单次最多打开的小红书详情页数量', (value) => parsePositiveInteger(value, '--detail-budget'), 30)
+    .option('--detail-delay-min-ms <ms>', '详情页之间的最小等待毫秒数', (value) => parseNonNegativeInteger(value, '--detail-delay-min-ms'), 20_000)
+    .option('--detail-delay-max-ms <ms>', '详情页之间的最大等待毫秒数', (value) => parseNonNegativeInteger(value, '--detail-delay-max-ms'), 60_000)
+    .option('--no-stop-on-rate-limit', '遇到小红书访问频繁时不熔断')
+    .option('--no-resume-missing-details', '不跳过已有详情的笔记')
+    .option('--media-delay-min-ms <ms>', '媒体归档之间的最小等待毫秒数', (value) => parseNonNegativeInteger(value, '--media-delay-min-ms'), 8_000)
+    .option('--media-delay-max-ms <ms>', '媒体归档之间的最大等待毫秒数', (value) => parseNonNegativeInteger(value, '--media-delay-max-ms'), 15_000)
+    .option('--feishu-dry-run', '只验证飞书同步 payload，不写入飞书', false)
+    .option('--output-dir <path>', '预分析状态报告输出目录');
+}
+
+function createXhsPreanalysisRunProgram(): Command {
+  return addXhsPreanalysisRunOptions(new Command().name('xhs-huitun-collector xhs-preanalysis-run'));
+}
+
+function createXhsPreanalysisRunSubcommand(): Command {
+  return addXhsPreanalysisRunOptions(new Command('xhs-preanalysis-run'));
 }
 
 function parseOptions(argv = process.argv): CollectorOptions {
@@ -481,6 +543,44 @@ function parseXhsAnalysisSourceOptions(argv = process.argv): XhsAnalysisSourceCo
     manifestPath: options.manifest,
     syncReportPath: options.syncReport,
     pipelineCheckPath: options.pipelineCheck,
+    outputDir: options.outputDir,
+  };
+}
+
+function parseXhsPreanalysisRunOptions(argv = process.argv): XhsPreanalysisRunCommandOptions {
+  const program = createXhsPreanalysisRunProgram();
+  program.exitOverride();
+  program.parse(argvWithoutSubcommand(argv));
+  const options = program.opts<XhsPreanalysisRunCliOptions>();
+
+  if (options.detailDelayMaxMs < options.detailDelayMinMs) {
+    throw new Error('--detail-delay-max-ms 必须大于等于 --detail-delay-min-ms');
+  }
+  if (options.mediaDelayMaxMs < options.mediaDelayMinMs) {
+    throw new Error('--media-delay-max-ms 必须大于等于 --media-delay-min-ms');
+  }
+
+  return {
+    keyword: options.keyword ?? '',
+    dbPath: options.dbPath,
+    huitunCdpUrl: options.huitunCdpUrl,
+    xhsCdpUrl: options.xhsCdpUrl,
+    mediaCdpUrl: options.mediaCdpUrl,
+    limitHotwords: options.limitHotwords,
+    limitNotes: options.limitNotes,
+    days: options.days,
+    xhsLimitKeywords: options.xhsLimitKeywords,
+    xhsSorts: parseXhsSortKeys(options.xhsSorts),
+    xhsLimitPerSort: options.xhsLimitPerSort,
+    withDetails: options.withDetails,
+    detailBudget: options.detailBudget,
+    detailDelayMinMs: options.detailDelayMinMs,
+    detailDelayMaxMs: options.detailDelayMaxMs,
+    stopOnRateLimit: options.stopOnRateLimit,
+    resumeMissingDetails: options.resumeMissingDetails,
+    mediaDelayMinMs: options.mediaDelayMinMs,
+    mediaDelayMaxMs: options.mediaDelayMaxMs,
+    feishuDryRun: options.feishuDryRun,
     outputDir: options.outputDir,
   };
 }
@@ -762,6 +862,75 @@ async function main(argv = process.argv): Promise<void> {
     return;
   }
 
+  if (command === 'xhs-preanalysis-run') {
+    const options = parseXhsPreanalysisRunOptions(argv);
+    const [
+      { runXhsPreanalysisRun },
+      { collectXhsSearch },
+      { archiveXhsRunMedia },
+      { syncXhsRunToFeishu },
+      { checkXhsPipeline },
+      { buildXhsAnalysisSource },
+      { openDatabase },
+      { initializeSchema },
+    ] = await Promise.all([
+      import('./xhs-preanalysis-run.js'),
+      import('./xhs-search-collector.js'),
+      import('./xhs-media-archive.js'),
+      import('./feishu/xhs-sync.js'),
+      import('./xhs-pipeline-check.js'),
+      import('./xhs-analysis-source.js'),
+      import('./db/client.js'),
+      import('./db/schema.js'),
+    ]);
+    const listCreatedXhsRunsForHuitunRun = ({ sourceRunId, dbPath }: { sourceRunId: number; dbPath: string }) => {
+      let db: DatabaseSync | undefined;
+
+      try {
+        db = openDatabase(dbPath);
+        initializeSchema(db);
+        const rows = db
+          .prepare(
+            `
+              select id as runId, keyword, status
+              from xhs_search_runs
+              where source = 'huitun_run' and source_run_id = ?
+              order by id
+            `,
+          )
+          .all(sourceRunId) as Array<{ runId: number; keyword: string; status: RunStatus }>;
+        const countNotes = db.prepare('select count(*) as noteCount from xhs_search_notes where run_id = ?');
+
+        return rows.map((row) => ({
+          ...row,
+          noteCount: Number((countNotes.get(row.runId) as { noteCount: number | bigint }).noteCount),
+        }));
+      } finally {
+        db?.close();
+      }
+    };
+    const result = await runXhsPreanalysisRun(options, {
+      now: () => new Date().toISOString(),
+      collectHuitun: collect,
+      collectXhsSearch,
+      listCreatedXhsRunsForHuitunRun,
+      archiveXhsRunMedia,
+      syncXhsRunToFeishu,
+      checkXhsPipeline,
+      buildXhsAnalysisSource,
+    });
+    console.log(JSON.stringify(result));
+    if (result.status === 'failed') {
+      console.error(
+        result.huitunCollection.errorMessage ??
+          result.xhsSearchCollections.find((stage) => stage.errorMessage !== undefined)?.errorMessage ??
+          'xhs-preanalysis-run failed',
+      );
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (command === 'xhs-pipeline-check') {
     const { checkXhsPipeline } = await import('./xhs-pipeline-check.js');
     const result = checkXhsPipeline(parseXhsPipelineCheckOptions(argv));
@@ -801,4 +970,4 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? '')).href) {
   }
 }
 
-export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions, parseXhsAnalysisSourceOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsPipelineCheckOptions, parseXhsSearchOptions };
+export { collect, createProgram, formatRawSnapshotTextContent, parseExportOptions, parseOptions, parseReportOptions, parseXhsAnalysisSourceOptions, parseXhsFeishuSyncOptions, parseXhsMediaArchiveOptions, parseXhsPipelineCheckOptions, parseXhsPreanalysisRunOptions, parseXhsSearchOptions };
