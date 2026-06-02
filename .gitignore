@@ -1,12 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.pytest_cache/
+.cache/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+MANIFEST
+*.manifest
+*.spec
+__pypackages__/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node
 node_modules/
-data/
-.tmp/
-.tmp_docx_media/
-.claude/
-*.docx
-*.log
-.env
-.env.*
+frontend/node_modules/
+legacy/xhs-ops-collector/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+frontend/dist/
 dist/
 coverage/
+
+# Local data and generated storage
+data/
+backend/app/storage/
+legacy/xhs-ops-collector/data/
+legacy/xhs-ops-collector/.tmp/
+.tmp/
+.tmp_docx_media/
+
+# Secrets and local environment
+.env
+.env.*
+local_settings.py
+*.db
+*.db-journal
+db.sqlite3
+
+# Claude / agent local state
+.claude/
+.superpowers/
+.agent/
+
+# IDE / OS
+.idea/
 .DS_Store
+
+# Logs and local documents
+*.log
+*.docx
