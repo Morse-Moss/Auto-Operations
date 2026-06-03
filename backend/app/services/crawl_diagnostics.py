@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from sqlalchemy.orm import Session
+
+from backend.app.models import CrawlDiagnostic
 from backend.app.services.xhs_detail_recovery import classify_source_url, mask_xsec_token, summarize_payload
 
 SENSITIVE_KEYS = {
@@ -156,3 +159,74 @@ def diagnostic_payload_summary(raw_payload: object, source_url: str = "") -> dic
         "has_interaction": summary.get("has_interaction", False),
     }
     return {key: value for key, value in safe_summary.items() if key in ALLOWED_SUMMARY_KEYS}
+
+
+def create_crawl_diagnostic(
+    db: Session,
+    *,
+    user_id: int,
+    task_id: int | None,
+    platform_account_id: int | None,
+    platform: str,
+    source: str,
+    note_id: str | None,
+    note_url: str | None,
+    stage: str,
+    kind: str,
+    severity: str,
+    recoverable: bool,
+    message: str,
+    user_message: str,
+    raw_payload: object | None = None,
+) -> CrawlDiagnostic:
+    diagnostic = CrawlDiagnostic(
+        user_id=user_id,
+        task_id=task_id,
+        platform_account_id=platform_account_id,
+        platform=platform,
+        source=source,
+        note_id=note_id,
+        note_url=note_url,
+        stage=stage,
+        kind=kind,
+        severity=severity,
+        recoverable=recoverable,
+        message=message,
+        user_message=user_message,
+        raw_json=diagnostic_payload_summary(raw_payload or {}, note_url or source),
+    )
+    db.add(diagnostic)
+    return diagnostic
+
+
+def serialize_crawl_diagnostic(diagnostic: CrawlDiagnostic) -> dict[str, Any]:
+    return {
+        "id": diagnostic.id,
+        "user_id": diagnostic.user_id,
+        "task_id": diagnostic.task_id,
+        "platform_account_id": diagnostic.platform_account_id,
+        "platform": diagnostic.platform,
+        "source": diagnostic.source,
+        "note_id": diagnostic.note_id,
+        "note_url": diagnostic.note_url,
+        "stage": diagnostic.stage,
+        "kind": diagnostic.kind,
+        "severity": diagnostic.severity,
+        "recoverable": diagnostic.recoverable,
+        "message": diagnostic.message,
+        "user_message": diagnostic.user_message,
+        "raw_json": diagnostic.raw_json or {},
+        "created_at": diagnostic.created_at.isoformat(),
+    }
+
+
+def quality_summary_from_items(items: list[dict]) -> dict[str, int]:
+    success_count = len([item for item in items if item.get("status") == "success"])
+    failed_count = len(items) - success_count
+    skipped_low_quality_count = len([item for item in items if item.get("save_diagnostic_kind") == "save_skipped_low_quality"])
+    return {
+        "total": len(items),
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "skipped_low_quality_count": skipped_low_quality_count,
+    }

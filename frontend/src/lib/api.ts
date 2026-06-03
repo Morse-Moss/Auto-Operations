@@ -33,6 +33,11 @@ import type {
   GenerateTagsPayload,
   GenerateTitlePayload,
   ImageUtilityFile,
+  CrawlDiagnostic,
+  HuitunDiscoveryRunPayload,
+  KeywordCandidateImportPayload,
+  KeywordCandidateImportResponse,
+  KeywordDiscoveryRun,
   KeywordGroup,
   KeywordGroupDetail,
   KeywordGroupPayload,
@@ -709,6 +714,47 @@ export async function updateKeywordGroup(
 
 export async function deleteKeywordGroup(groupId: number): Promise<{ id: number; status: string }> {
   const response = await http.delete<{ id: number; status: string }>(`/keyword-groups/${groupId}`);
+  return response.data;
+}
+
+export async function createHuitunKeywordDiscoveryRun(
+  payload: HuitunDiscoveryRunPayload
+): Promise<KeywordDiscoveryRun> {
+  const response = await http.post<KeywordDiscoveryRun>("/keyword-groups/huitun/discovery-runs", payload);
+  return response.data;
+}
+
+export async function fetchHuitunKeywordDiscoveryRun(runId: number): Promise<KeywordDiscoveryRun> {
+  const response = await http.get<KeywordDiscoveryRun>(`/keyword-groups/huitun/discovery-runs/${runId}`);
+  return response.data;
+}
+
+export async function importKeywordCandidatesToGroup(
+  groupId: number,
+  payload: KeywordCandidateImportPayload
+): Promise<KeywordCandidateImportResponse> {
+  const response = await http.post<KeywordCandidateImportResponse>(
+    `/keyword-groups/${groupId}/import-keyword-candidates`,
+    payload
+  );
+  return response.data;
+}
+
+export async function importKeywordCandidates(
+  payload: KeywordCandidateImportPayload
+): Promise<KeywordCandidateImportResponse> {
+  const response = await http.post<KeywordCandidateImportResponse>("/keyword-groups/import-keyword-candidates", payload);
+  return response.data;
+}
+
+export async function fetchXhsCrawlDiagnostics(params?: {
+  task_id?: number;
+  stage?: string;
+  kind?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<Paginated<CrawlDiagnostic>> {
+  const response = await http.get<Paginated<CrawlDiagnostic>>("/xhs/crawl/diagnostics", { params });
   return response.data;
 }
 

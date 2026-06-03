@@ -15,6 +15,12 @@ from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
 from backend.app.models import AccountCookieVersion, PlatformAccount, User
 from backend.app.services.mock_data import sample_notes
+from backend.app.services.xhs_detail_recovery import (
+    build_user_message,
+    evaluate_detail_quality,
+    is_xhs_rate_limit_signal,
+    should_reject_short_explore_url,
+)
 
 router = APIRouter(prefix="/xhs/pc", tags=["xhs-pc"])
 
@@ -352,13 +358,28 @@ def note_detail(
     adapter_factory=Depends(get_xhs_pc_api_adapter_factory),
 ):
     cookies = _get_owned_pc_account_cookies(db, current_user, payload.account_id)
+    if should_reject_short_explore_url(payload.url):
+        quality = evaluate_detail_quality({"note_url": payload.url})
+        raise HTTPException(status_code=422, detail=quality)
+
     success, message, raw_payload = adapter_factory(cookies).get_note_info(payload.url)
     if not success:
+        if is_xhs_rate_limit_signal(url=payload.url, message=message):
+            quality = {
+                "quality_status": "rate_limited",
+                "diagnostic_kind": "xhs_rate_limited",
+                "recoverable": True,
+                "user_message": build_user_message("xhs_rate_limited", "rate_limited"),
+                "can_save": False,
+            }
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=quality)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=message or "XHS note detail failed",
         )
-    return _normalize_detail_payload(raw_payload or {}, source_url=payload.url)
+    normalized = _normalize_detail_payload(raw_payload or {}, source_url=payload.url)
+    quality = evaluate_detail_quality(normalized, raw_payload)
+    return {**normalized, **quality}
 
 
 @router.post("/notes/comments")

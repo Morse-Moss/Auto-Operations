@@ -4,7 +4,7 @@ import json
 import time
 from typing import Any, Generator, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
@@ -20,7 +20,15 @@ from backend.app.api.platforms.xhs.pc import (
 from backend.app.api.tasks import serialize_task
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.models import Note, NoteAsset, PlatformAccount, Task, User
+from backend.app.models import CrawlDiagnostic, Note, NoteAsset, PlatformAccount, Task, User
+from backend.app.schemas.common import paginated
+from backend.app.services.crawl_diagnostics import create_crawl_diagnostic, serialize_crawl_diagnostic
+from backend.app.services.xhs_detail_recovery import (
+    build_user_message,
+    evaluate_detail_quality,
+    is_xhs_rate_limit_signal,
+    should_reject_short_explore_url,
+)
 
 router = APIRouter(prefix="/xhs/crawl", tags=["xhs-crawl"])
 
@@ -147,6 +155,133 @@ def _video_url(normalized: dict[str, Any]) -> str:
     return str(normalized.get("video_url") or normalized.get("video_addr") or "")
 
 
+def _filter_saveable_notes(normalized_items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    saveable: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for normalized in normalized_items:
+        raw_payload = normalized.get("raw") if isinstance(normalized.get("raw"), dict) else None
+        quality = evaluate_detail_quality(normalized, raw_payload)
+        normalized.update(quality)
+        if quality["can_save"]:
+            saveable.append(normalized)
+        else:
+            normalized["save_diagnostic_kind"] = "save_skipped_low_quality"
+            skipped.append(normalized)
+    return saveable, skipped
+
+
+def _quality_item_fields(quality: dict[str, Any], *, saved: bool = False, save_diagnostic_kind: str | None = None) -> dict[str, Any]:
+    return {
+        "quality_status": quality.get("quality_status", "unknown"),
+        "recoverable": bool(quality.get("recoverable", False)),
+        "diagnostic_kind": quality.get("diagnostic_kind"),
+        "save_diagnostic_kind": save_diagnostic_kind,
+        "user_message": str(quality.get("user_message") or ""),
+        "saved": saved,
+    }
+
+
+def _diagnostic_severity(kind: str | None) -> str:
+    if kind == "xhs_rate_limited":
+        return "blocked"
+    if kind in {"missing_xsec_token_short_explore", "detail_api_failed", "invalid_note_identity"}:
+        return "error"
+    return "warning"
+
+
+def _record_crawl_diagnostic(
+    db: Session,
+    *,
+    current_user: User,
+    task: Task,
+    account: PlatformAccount,
+    source: str,
+    note: dict[str, Any] | None,
+    stage: str,
+    kind: str,
+    message: str,
+    user_message: str,
+    recoverable: bool,
+    raw_payload: object | None = None,
+    note_url: str | None = None,
+) -> None:
+    create_crawl_diagnostic(
+        db,
+        user_id=current_user.id,
+        task_id=task.id,
+        platform_account_id=account.id,
+        platform="xhs",
+        source=source,
+        note_id=str((note or {}).get("note_id") or "") or None,
+        note_url=note_url or str((note or {}).get("note_url") or "") or None,
+        stage=stage,
+        kind=kind,
+        severity=_diagnostic_severity(kind),
+        recoverable=recoverable,
+        message=message,
+        user_message=user_message,
+        raw_payload=raw_payload or (note or {}).get("raw") or {},
+    )
+
+
+def _quality_from_short_url(url: str) -> dict[str, Any]:
+    return {
+        "quality_status": "invalid_source_url",
+        "diagnostic_kind": "missing_xsec_token_short_explore",
+        "recoverable": False,
+        "user_message": build_user_message("missing_xsec_token_short_explore", "invalid_source_url"),
+        "can_save": False,
+    }
+
+
+def _record_save_skipped_diagnostics(
+    db: Session,
+    *,
+    current_user: User,
+    task: Task,
+    account: PlatformAccount,
+    skipped_items: list[dict[str, Any]],
+) -> None:
+    for skipped in skipped_items:
+        _record_crawl_diagnostic(
+            db,
+            current_user=current_user,
+            task=task,
+            account=account,
+            source=str(skipped.get("note_url") or skipped.get("note_id") or ""),
+            note=skipped,
+            stage="save",
+            kind=str(skipped.get("save_diagnostic_kind") or "save_skipped_low_quality"),
+            message=str(skipped.get("diagnostic_kind") or "low quality detail"),
+            user_message=str(skipped.get("user_message") or build_user_message(None, str(skipped.get("quality_status") or "unknown"))),
+            recoverable=bool(skipped.get("recoverable", False)),
+            raw_payload=skipped.get("raw") if isinstance(skipped.get("raw"), dict) else {},
+        )
+
+
+def _save_with_quality_gate(
+    db: Session,
+    *,
+    current_user: User,
+    task: Task,
+    account: PlatformAccount,
+    normalized_items: list[dict[str, Any]],
+) -> tuple[list[Note], list[dict[str, Any]]]:
+    saveable_items, skipped_items = _filter_saveable_notes(normalized_items)
+    if skipped_items:
+        _record_save_skipped_diagnostics(
+            db,
+            current_user=current_user,
+            task=task,
+            account=account,
+            skipped_items=skipped_items,
+        )
+    saved_notes = _save_normalized_notes(db, account, saveable_items) if saveable_items else []
+    if skipped_items and not saveable_items:
+        db.commit()
+    return saved_notes, skipped_items
+
+
 def _save_normalized_notes(
     db: Session,
     account: PlatformAccount,
@@ -214,6 +349,12 @@ def _crawl_data_item(
     note: dict[str, Any] | None = None,
     comments: list[dict[str, Any]] | None = None,
     error: str = "",
+    quality_status: str = "unknown",
+    recoverable: bool = False,
+    diagnostic_kind: str | None = None,
+    save_diagnostic_kind: str | None = None,
+    user_message: str = "",
+    saved: bool = False,
     comment_status: str = "not_requested",
     comment_error: str = "",
 ) -> dict[str, Any]:
@@ -221,6 +362,12 @@ def _crawl_data_item(
         "source": source,
         "status": status,
         "error": error,
+        "quality_status": quality_status,
+        "recoverable": recoverable,
+        "diagnostic_kind": diagnostic_kind,
+        "save_diagnostic_kind": save_diagnostic_kind,
+        "user_message": user_message,
+        "saved": saved,
         "note": note,
         "comments": comments or [],
         "comment_count": len(comments or []),
@@ -239,6 +386,27 @@ def _owned_pc_account(db: Session, current_user: User, account_id: int) -> Platf
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     return account
+
+
+@router.get("/diagnostics")
+def list_crawl_diagnostics(
+    task_id: int | None = None,
+    stage: str | None = None,
+    kind: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    statement = select(CrawlDiagnostic).where(CrawlDiagnostic.user_id == current_user.id)
+    if task_id is not None:
+        statement = statement.where(CrawlDiagnostic.task_id == task_id)
+    if stage:
+        statement = statement.where(CrawlDiagnostic.stage == stage)
+    if kind:
+        statement = statement.where(CrawlDiagnostic.kind == kind)
+    diagnostics = db.scalars(statement.order_by(CrawlDiagnostic.created_at.desc(), CrawlDiagnostic.id.desc())).all()
+    return paginated([serialize_crawl_diagnostic(diagnostic) for diagnostic in diagnostics], page, page_size)
 
 
 @router.post("/search-notes")
@@ -262,16 +430,31 @@ def crawl_search_notes(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message or "XHS search crawl failed")
 
     normalized_items = [_normalize_search_item(item) for item in _data_items(raw_payload)]
-    saved_notes = _save_normalized_notes(db, account, normalized_items) if payload.save_to_library else []
+    saved_notes: list[Note] = []
+    skipped_items: list[dict[str, Any]] = []
+    if payload.save_to_library:
+        saved_notes, skipped_items = _save_with_quality_gate(
+            db,
+            current_user=current_user,
+            task=task,
+            account=account,
+            normalized_items=normalized_items,
+        )
     task = _complete_task(
         db,
         task,
-        {"result_count": len(normalized_items), "saved_count": len(saved_notes)},
+        {
+            "result_count": len(normalized_items),
+            "saved_count": len(saved_notes),
+            "skipped_low_quality_count": len(skipped_items),
+        },
     )
     return {
         "task": serialize_task(task),
         "result_count": len(normalized_items),
         "saved_count": len(saved_notes),
+        "skipped_low_quality_count": len(skipped_items),
+        "skipped_items": skipped_items,
         "items": [_serialize_note(note) for note in saved_notes],
         "raw": raw_payload,
     }
@@ -294,24 +477,78 @@ def crawl_note_urls(
     )
     adapter = adapter_factory(cookies)
     normalized_items: list[dict[str, Any]] = []
+    skipped_items: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for url in payload.urls:
+        if should_reject_short_explore_url(url):
+            quality = _quality_from_short_url(url)
+            errors.append({"url": url, "error": quality["user_message"], "diagnostic_kind": quality["diagnostic_kind"]})
+            _record_crawl_diagnostic(
+                db,
+                current_user=current_user,
+                task=task,
+                account=account,
+                source=url,
+                note={"note_url": url},
+                stage="detail",
+                kind="missing_xsec_token_short_explore",
+                message="Short explore URL missing xsec_token",
+                user_message=quality["user_message"],
+                recoverable=False,
+                raw_payload={},
+                note_url=url,
+            )
+            continue
         success, message, raw_payload = adapter.get_note_info(url)
         if success:
-            normalized_items.append(_normalize_detail_payload(raw_payload or {}))
+            normalized_items.append(_normalize_detail_payload(raw_payload or {}, source_url=url))
         else:
-            errors.append({"url": url, "error": message or "XHS note detail crawl failed"})
+            kind = "xhs_rate_limited" if is_xhs_rate_limit_signal(url=url, message=message) else "detail_api_failed"
+            user_message = build_user_message(kind, "rate_limited" if kind == "xhs_rate_limited" else "detail_api_failed")
+            errors.append({"url": url, "error": message or "XHS note detail crawl failed", "diagnostic_kind": kind})
+            _record_crawl_diagnostic(
+                db,
+                current_user=current_user,
+                task=task,
+                account=account,
+                source=url,
+                note={"note_url": url},
+                stage="detail",
+                kind=kind,
+                message=message or "XHS note detail crawl failed",
+                user_message=user_message,
+                recoverable=True,
+                raw_payload=raw_payload or {},
+                note_url=url,
+            )
+            if kind == "xhs_rate_limited":
+                break
 
-    saved_notes = _save_normalized_notes(db, account, normalized_items) if payload.save_to_library else []
+    saved_notes: list[Note] = []
+    if payload.save_to_library:
+        saved_notes, skipped_items = _save_with_quality_gate(
+            db,
+            current_user=current_user,
+            task=task,
+            account=account,
+            normalized_items=normalized_items,
+        )
     task = _complete_task(
         db,
         task,
-        {"result_count": len(normalized_items), "saved_count": len(saved_notes), "errors": errors},
+        {
+            "result_count": len(normalized_items),
+            "saved_count": len(saved_notes),
+            "skipped_low_quality_count": len(skipped_items),
+            "errors": errors,
+        },
     )
     return {
         "task": serialize_task(task),
         "result_count": len(normalized_items),
         "saved_count": len(saved_notes),
+        "skipped_low_quality_count": len(skipped_items),
+        "skipped_items": skipped_items,
         "errors": errors,
         "items": [_serialize_note(note) for note in saved_notes],
     }
@@ -338,16 +575,31 @@ def crawl_user_notes(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message or "XHS user notes crawl failed")
 
     normalized_items = [_normalize_search_item(item) for item in _data_items(raw_payload)]
-    saved_notes = _save_normalized_notes(db, account, normalized_items) if payload.save_to_library else []
+    saved_notes: list[Note] = []
+    skipped_items: list[dict[str, Any]] = []
+    if payload.save_to_library:
+        saved_notes, skipped_items = _save_with_quality_gate(
+            db,
+            current_user=current_user,
+            task=task,
+            account=account,
+            normalized_items=normalized_items,
+        )
     task = _complete_task(
         db,
         task,
-        {"result_count": len(normalized_items), "saved_count": len(saved_notes)},
+        {
+            "result_count": len(normalized_items),
+            "saved_count": len(saved_notes),
+            "skipped_low_quality_count": len(skipped_items),
+        },
     )
     return {
         "task": serialize_task(task),
         "result_count": len(normalized_items),
         "saved_count": len(saved_notes),
+        "skipped_low_quality_count": len(skipped_items),
+        "skipped_items": skipped_items,
         "items": [_serialize_note(note) for note in saved_notes],
         "raw": raw_payload,
     }
@@ -392,15 +644,40 @@ def crawl_data(
         try:
             if payload.mode == "note_urls":
                 for index, url in enumerate(payload.urls):
+                    if should_reject_short_explore_url(url):
+                        quality = _quality_from_short_url(url)
+                        _record_crawl_diagnostic(
+                            db,
+                            current_user=current_user,
+                            task=task,
+                            account=account,
+                            source=url,
+                            note={"note_url": url},
+                            stage="detail",
+                            kind="missing_xsec_token_short_explore",
+                            message="Short explore URL missing xsec_token",
+                            user_message=quality["user_message"],
+                            recoverable=False,
+                            raw_payload={},
+                            note_url=url,
+                        )
+                        item = _crawl_data_item(source=url, status="failed", error=quality["user_message"], **_quality_item_fields(quality))
+                        items.append(item)
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        if index < len(payload.urls) - 1:
+                            _sleep_between_requests(payload.time_sleep)
+                        continue
+
                     success, message, raw_payload = adapter.get_note_info(url)
                     if success:
-                        note = _normalize_detail_payload(raw_payload or {})
-                        note["note_url"] = note.get("note_url") or url
+                        note = _normalize_detail_payload(raw_payload or {}, source_url=url)
+                        quality = evaluate_detail_quality(note, raw_payload)
+                        note.update(quality)
                         normalized_for_save.append(note)
                         comments_list: list[dict[str, Any]] = []
                         comment_status = "not_requested"
                         comment_error = ""
-                        if payload.fetch_comments:
+                        if payload.fetch_comments and quality["can_save"]:
                             if comments_rate_limited:
                                 comment_status = "skipped_rate_limited"
                                 comment_error = _comment_skip_error()
@@ -416,9 +693,60 @@ def crawl_data(
                                         comments_rate_limited = True
                                         yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
                                 _sleep_between_requests(payload.comment_sleep)
-                        item = _crawl_data_item(source=url, status="success", note=note, comments=comments_list, comment_status=comment_status, comment_error=comment_error)
+                        if not quality["can_save"]:
+                            _record_crawl_diagnostic(
+                                db,
+                                current_user=current_user,
+                                task=task,
+                                account=account,
+                                source=url,
+                                note=note,
+                                stage="detail",
+                                kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
+                                message=str(quality["diagnostic_kind"] or "low quality detail"),
+                                user_message=quality["user_message"],
+                                recoverable=bool(quality["recoverable"]),
+                                raw_payload=raw_payload or {},
+                                note_url=url,
+                            )
+                        item = _crawl_data_item(
+                            source=url,
+                            status="success" if quality["can_save"] else "partial",
+                            note=note,
+                            comments=comments_list,
+                            comment_status=comment_status,
+                            comment_error=comment_error,
+                            **_quality_item_fields(quality),
+                        )
                     else:
-                        item = _crawl_data_item(source=url, status="failed", error=message or "detail crawl failed")
+                        kind = "xhs_rate_limited" if is_xhs_rate_limit_signal(url=url, message=message) else "detail_api_failed"
+                        quality = {
+                            "quality_status": "rate_limited" if kind == "xhs_rate_limited" else "detail_api_failed",
+                            "diagnostic_kind": kind,
+                            "recoverable": True,
+                            "user_message": build_user_message(kind, "rate_limited" if kind == "xhs_rate_limited" else "detail_api_failed"),
+                            "can_save": False,
+                        }
+                        _record_crawl_diagnostic(
+                            db,
+                            current_user=current_user,
+                            task=task,
+                            account=account,
+                            source=url,
+                            note={"note_url": url},
+                            stage="detail",
+                            kind=kind,
+                            message=message or "detail crawl failed",
+                            user_message=quality["user_message"],
+                            recoverable=True,
+                            raw_payload=raw_payload or {},
+                            note_url=url,
+                        )
+                        item = _crawl_data_item(source=url, status="failed", error=message or "detail crawl failed", **_quality_item_fields(quality))
+                        if kind == "xhs_rate_limited":
+                            items.append(item)
+                            yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                            break
                     items.append(item)
                     yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
                     if index < len(payload.urls) - 1:
@@ -483,15 +811,42 @@ def crawl_data(
                                 detail_note = _normalize_detail_payload(dp or {}, source_url=note_url)
                                 detail_note["note_url"] = detail_note.get("note_url") or note_url
                             else:
-                                item = _crawl_data_item(source=source, status="failed", note=search_note, error=dm or "detail failed")
+                                kind = "xhs_rate_limited" if is_xhs_rate_limit_signal(url=note_url, message=dm) else "detail_api_failed"
+                                quality = {
+                                    "quality_status": "rate_limited" if kind == "xhs_rate_limited" else "detail_api_failed",
+                                    "diagnostic_kind": kind,
+                                    "recoverable": True,
+                                    "user_message": build_user_message(kind, "rate_limited" if kind == "xhs_rate_limited" else "detail_api_failed"),
+                                    "can_save": False,
+                                }
+                                _record_crawl_diagnostic(
+                                    db,
+                                    current_user=current_user,
+                                    task=task,
+                                    account=account,
+                                    source=source,
+                                    note=search_note,
+                                    stage="detail",
+                                    kind=kind,
+                                    message=dm or "detail failed",
+                                    user_message=quality["user_message"],
+                                    recoverable=True,
+                                    raw_payload=dp or {},
+                                    note_url=note_url,
+                                )
+                                item = _crawl_data_item(source=source, status="failed", note=search_note, error=dm or "detail failed", **_quality_item_fields(quality))
                                 items.append(item)
                                 yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
                                 _sleep_between_requests(payload.time_sleep)
+                                if kind == "xhs_rate_limited":
+                                    break
                                 continue
+                        quality = evaluate_detail_quality(detail_note, detail_note.get("raw") if isinstance(detail_note.get("raw"), dict) else None)
+                        detail_note.update(quality)
                         comments_list = []
                         comment_status = "not_requested"
                         comment_error = ""
-                        if payload.fetch_comments and note_url:
+                        if payload.fetch_comments and note_url and quality["can_save"]:
                             if comments_rate_limited:
                                 comment_status = "skipped_rate_limited"
                                 comment_error = _comment_skip_error()
@@ -507,8 +862,32 @@ def crawl_data(
                                         comments_rate_limited = True
                                         yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
                                 _sleep_between_requests(payload.comment_sleep)
+                        if not quality["can_save"]:
+                            _record_crawl_diagnostic(
+                                db,
+                                current_user=current_user,
+                                task=task,
+                                account=account,
+                                source=source,
+                                note=detail_note,
+                                stage="detail",
+                                kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
+                                message=str(quality["diagnostic_kind"] or "low quality detail"),
+                                user_message=quality["user_message"],
+                                recoverable=bool(quality["recoverable"]),
+                                raw_payload=detail_note.get("raw") if isinstance(detail_note.get("raw"), dict) else {},
+                                note_url=note_url,
+                            )
                         normalized_for_save.append(detail_note)
-                        item = _crawl_data_item(source=source, status="success", note=detail_note, comments=comments_list, comment_status=comment_status, comment_error=comment_error)
+                        item = _crawl_data_item(
+                            source=source,
+                            status="success" if quality["can_save"] else "partial",
+                            note=detail_note,
+                            comments=comments_list,
+                            comment_status=comment_status,
+                            comment_error=comment_error,
+                            **_quality_item_fields(quality),
+                        )
                         items.append(item)
                         yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
                         _sleep_between_requests(payload.time_sleep)

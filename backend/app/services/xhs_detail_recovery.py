@@ -170,7 +170,7 @@ def _has_tags(normalized: dict[str, Any]) -> bool:
 
 
 def _has_weak_search_card_signal(normalized: dict[str, Any]) -> bool:
-    weak_keys = ("note_id", "note_url", "title", "cover_url", "likes", "collects", "comments", "shares")
+    weak_keys = ("title", "cover_url", "likes", "collects", "comments", "shares")
     return any(normalized.get(key) not in (None, "", [], {}) for key in weak_keys)
 
 

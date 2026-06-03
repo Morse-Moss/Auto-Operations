@@ -160,9 +160,88 @@ function commentStatusTag(item: XhsDataCrawlItem) {
   return <Text type="secondary">{label}</Text>;
 }
 
+function crawlStatusTag(status: string) {
+  if (status === "success") return <Tag icon={<CheckCircleOutlined />} color="success">成功</Tag>;
+  if (status === "partial") return <Tag color="warning">部分</Tag>;
+  if (status === "skipped") return <Tag color="default">跳过</Tag>;
+  if (status === "failed") return <Tag icon={<CloseCircleOutlined />} color="error">失败</Tag>;
+  return <Tag>{status || "未知"}</Tag>;
+}
+
+function qualityStatusLabel(status?: string): string {
+  if (status === "valid_detail") return "详情有效";
+  if (status === "search_card_only") return "仅搜索卡片";
+  if (status === "invalid_source_url") return "链接缺参数";
+  if (status === "empty_detail_payload") return "详情为空";
+  if (status === "rate_limited") return "访问频繁";
+  return status || "待确认";
+}
+
+function qualityStatusTag(item: XhsDataCrawlItem) {
+  const label = qualityStatusLabel(item.quality_status);
+  if (item.quality_status === "valid_detail") return <Tag color="success">{label}</Tag>;
+  if (item.quality_status === "search_card_only") return <Tag color="warning">{label}</Tag>;
+  if (item.quality_status === "rate_limited") return <Tag color="error">{label}</Tag>;
+  if (item.quality_status === "invalid_source_url" || item.quality_status === "empty_detail_payload") return <Tag color="warning">{label}</Tag>;
+  return <Text type="secondary">{label}</Text>;
+}
+
+function diagnosticKindLabel(kind?: string | null): string {
+  if (kind === "missing_xsec_token_short_explore") return "缺 xsec_token";
+  if (kind === "xhs_rate_limited") return "访问频繁";
+  if (kind === "empty_detail_payload") return "详情为空";
+  if (kind === "detail_api_failed") return "详情接口失败";
+  if (kind === "invalid_note_identity") return "笔记 ID 异常";
+  return kind || "-";
+}
+
+function diagnosticKindTag(item: XhsDataCrawlItem) {
+  const kind = item.diagnostic_kind || item.save_diagnostic_kind;
+  if (!kind) return <Text type="secondary">-</Text>;
+  if (kind === "missing_xsec_token_short_explore") return <Tag color="error">{diagnosticKindLabel(kind)}</Tag>;
+  if (kind === "xhs_rate_limited") return <Tag color="warning">{diagnosticKindLabel(kind)}</Tag>;
+  return <Tag color="default">{diagnosticKindLabel(kind)}</Tag>;
+}
+
+function savedStatusTag(item: XhsDataCrawlItem) {
+  if (item.saved) return <Tag color="success">已入库</Tag>;
+  if (item.quality_status && item.quality_status !== "valid_detail") return <Tag color="warning">未入库</Tag>;
+  return <Text type="secondary">-</Text>;
+}
+
 function exportRowsToExcel(items: XhsDataCrawlItem[]) {
-  const rows = items.map((item) => [item.status, item.source, item.error, item.comment_status || "", item.comment_error || "", ...spiderStyleNoteRow(item), item.comment_count, (item.comments ?? []).map((c) => c.content).join("\n")]);
-  const headers = ["抓取状态", "来源", "错误", "评论状态", "评论错误", ...noteExcelHeaders, "抓取评论数", "评论内容"];
+  const rows = items.map((item) => [
+    item.status,
+    item.source,
+    item.error,
+    item.comment_status || "",
+    item.comment_error || "",
+    item.quality_status || "",
+    item.diagnostic_kind || "",
+    item.save_diagnostic_kind || "",
+    item.user_message || "",
+    item.recoverable ? "是" : "否",
+    item.saved ? "是" : "否",
+    ...spiderStyleNoteRow(item),
+    item.comment_count,
+    (item.comments ?? []).map((c) => c.content).join("\n"),
+  ]);
+  const headers = [
+    "抓取状态",
+    "来源",
+    "错误",
+    "评论状态",
+    "评论错误",
+    "质量状态",
+    "诊断类型",
+    "保存诊断",
+    "用户提示",
+    "是否可恢复",
+    "是否已入库",
+    ...noteExcelHeaders,
+    "抓取评论数",
+    "评论内容",
+  ];
   const table = [headers, ...rows].map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
   const html = `<html><head><meta charset="UTF-8"></head><body><table>${table}</table></body></html>`;
   const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" });
@@ -199,6 +278,8 @@ export function XhsCrawlerPage() {
   const pcAccounts = useMemo(() => accounts.filter((a) => a.platform === "xhs" && a.sub_type === "pc"), [accounts]);
   const commentRateLimitedCount = useMemo(() => items.filter((item) => item.comment_status === "rate_limited").length, [items]);
   const commentSkippedCount = useMemo(() => items.filter((item) => item.comment_status === "skipped_rate_limited").length, [items]);
+  const lowQualityCount = useMemo(() => items.filter((item) => item.quality_status && item.quality_status !== "valid_detail").length, [items]);
+  const savedCount = useMemo(() => items.filter((item) => item.saved).length, [items]);
 
   async function loadAccounts() {
     setIsLoadingAccounts(true);
@@ -246,12 +327,11 @@ export function XhsCrawlerPage() {
   const noPcAccount = !isLoadingAccounts && pcAccounts.length === 0;
 
   const columns: ColumnsType<XhsDataCrawlItem> = [
-    {
-      title: "状态", dataIndex: "status", width: 80,
-      render: (status: string) => status === "failed"
-        ? <Tag icon={<CloseCircleOutlined />} color="error">失败</Tag>
-        : <Tag icon={<CheckCircleOutlined />} color="success">成功</Tag>,
-    },
+    { title: "状态", dataIndex: "status", width: 80, render: (status: string) => crawlStatusTag(status) },
+    { title: "质量", key: "quality_status", width: 120, render: (_, item) => qualityStatusTag(item) },
+    { title: "诊断", key: "diagnostic_kind", width: 130, render: (_, item) => diagnosticKindTag(item) },
+    { title: "提示", key: "user_message", width: 220, ellipsis: true, render: (_, item) => item.user_message ? <Text type="secondary" style={{ fontSize: 12 }}>{item.user_message}</Text> : "-" },
+    { title: "入库", key: "saved", width: 90, render: (_, item) => savedStatusTag(item) },
     { title: "来源", dataIndex: "source", width: 200, ellipsis: true },
     { title: "标题", key: "title", width: 200, ellipsis: true, render: (_, item) => item.note?.title || "-" },
     { title: "作者", key: "author", width: 100, render: (_, item) => item.note?.author_name || "-" },

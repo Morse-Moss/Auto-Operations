@@ -11,8 +11,15 @@ from sqlalchemy.orm import Session
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.time import shanghai_now
-from backend.app.models import KeywordGroup, Note, PlatformAccount, User
+from backend.app.models import KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, Note, User
 from backend.app.schemas.common import paginated
+from backend.app.services.huitun_keyword_source import (
+    dedupe_keyword_candidates,
+    parse_hotword_rows_from_cells,
+    parse_huitun_categories,
+    parse_huitun_number,
+    prioritize_exact_hotword_rows,
+)
 
 router = APIRouter(prefix="/keyword-groups", tags=["keyword-groups"])
 
@@ -26,6 +33,30 @@ class KeywordGroupCreateRequest(BaseModel):
 class KeywordGroupUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
     keywords: Optional[list[str]] = Field(default=None, min_length=1, max_length=50)
+
+
+class HuitunDiscoveryInput(BaseModel):
+    source_keyword: str = Field(min_length=1, max_length=128)
+    table_rows: list[list[str]] = Field(default_factory=list)
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class HuitunDiscoveryRunRequest(BaseModel):
+    source_mode: Literal["manual_table", "manual_json", "local_connector_output"] = "manual_table"
+    limit_per_seed: int = Field(default=20, ge=1, le=100)
+    inputs: list[HuitunDiscoveryInput] = Field(min_length=1, max_length=50)
+
+
+class KeywordCandidateImportTarget(BaseModel):
+    mode: Literal["create"] = "create"
+    name: str = Field(min_length=1, max_length=128)
+    platform: Literal["xhs", "douyin", "kuaishou", "weibo", "xianyu", "taobao"] = "xhs"
+
+
+class KeywordCandidateImportRequest(BaseModel):
+    candidate_ids: list[int] = Field(min_length=1, max_length=100)
+    merge_mode: Literal["append_dedupe"] = "append_dedupe"
+    target: Optional[KeywordCandidateImportTarget] = None
 
 
 def _normalize_keywords(keywords: list[str]) -> list[str]:
@@ -53,11 +84,69 @@ def _serialize_group(group: KeywordGroup) -> dict[str, Any]:
     }
 
 
+def _serialize_discovery_item(item: KeywordDiscoveryItem) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "run_id": item.run_id,
+        "platform": item.platform,
+        "source": item.source,
+        "source_keyword": item.source_keyword,
+        "keyword": item.keyword,
+        "hot_value_text": item.hot_value_text,
+        "hot_value_number": item.hot_value_number,
+        "note_count": item.note_count,
+        "interaction_text": item.interaction_text,
+        "interaction_number": item.interaction_number,
+        "categories": item.categories or [],
+        "rank_index": item.rank_index,
+        "selected": item.selected,
+        "imported_group_id": item.imported_group_id,
+        "created_at": item.created_at.isoformat(),
+    }
+
+
+def _serialize_discovery_run(run: KeywordDiscoveryRun, items: list[KeywordDiscoveryItem]) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "platform": run.platform,
+        "source": run.source,
+        "seed_keywords": run.seed_keywords or [],
+        "limit_per_seed": run.limit_per_seed,
+        "source_mode": run.source_mode,
+        "status": run.status,
+        "error_message": run.error_message,
+        "created_at": run.created_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "items": [_serialize_discovery_item(item) for item in items],
+    }
+
+
 def _get_owned_group(db: Session, current_user: User, group_id: int) -> KeywordGroup:
     group = db.get(KeywordGroup, group_id)
     if group is None or group.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Keyword group not found")
     return group
+
+
+def _get_owned_candidates(db: Session, current_user: User, candidate_ids: list[int]) -> list[KeywordDiscoveryItem]:
+    unique_ids = list(dict.fromkeys(candidate_ids))
+    items = db.scalars(
+        select(KeywordDiscoveryItem)
+        .where(KeywordDiscoveryItem.id.in_(unique_ids), KeywordDiscoveryItem.user_id == current_user.id)
+        .order_by(KeywordDiscoveryItem.rank_index.asc(), KeywordDiscoveryItem.id.asc())
+    ).all()
+    if len(items) != len(unique_ids):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Keyword candidate not found")
+    by_id = {item.id: item for item in items}
+    return [by_id[candidate_id] for candidate_id in unique_ids]
+
+
+def _candidate_keywords(candidates: list[KeywordDiscoveryItem]) -> list[str]:
+    return _normalize_keywords([candidate.keyword for candidate in candidates])
+
+
+def _append_dedupe_keywords(existing: list[str], additions: list[str]) -> list[str]:
+    return _normalize_keywords([*(existing or []), *additions])
 
 
 def _as_int(value: Any) -> int:
@@ -136,6 +225,63 @@ def _trend_summary(db: Session, current_user: User, group: KeywordGroup) -> dict
     }
 
 
+def _safe_candidate_raw(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_keyword": row.get("source_keyword"),
+        "keyword": row.get("keyword"),
+        "hot_value_text": row.get("hot_value_text"),
+        "hot_value_number": row.get("hot_value_number"),
+        "note_count": row.get("note_count"),
+        "interaction_text": row.get("interaction_text"),
+        "interaction_number": row.get("interaction_number"),
+        "categories": row.get("categories") or [],
+        "rank_index": row.get("rank_index"),
+    }
+
+
+def _normalize_manual_item(source_keyword: str, index: int, item: dict[str, Any]) -> dict[str, Any] | None:
+    keyword = str(item.get("keyword") or item.get("word") or "").strip()
+    if not keyword:
+        return None
+    hot_value_text = item.get("hot_value_text")
+    interaction_text = item.get("interaction_text")
+    categories = item.get("categories") or []
+    if isinstance(categories, str):
+        categories = parse_huitun_categories(categories)
+    return {
+        "source_keyword": source_keyword.strip(),
+        "keyword": keyword,
+        "hot_value_text": str(hot_value_text).strip() if hot_value_text is not None else None,
+        "hot_value_number": item.get("hot_value_number") or parse_huitun_number(str(hot_value_text) if hot_value_text is not None else None),
+        "note_count": item.get("note_count") if isinstance(item.get("note_count"), int) else parse_huitun_number(str(item.get("note_count")) if item.get("note_count") is not None else None),
+        "interaction_text": str(interaction_text).strip() if interaction_text is not None else None,
+        "interaction_number": item.get("interaction_number") or parse_huitun_number(str(interaction_text) if interaction_text is not None else None),
+        "categories": categories,
+        "rank_index": int(item.get("rank_index") or index + 1),
+    }
+
+
+def _rows_from_huitun_input(input_item: HuitunDiscoveryInput, source_mode: str) -> list[dict[str, Any]]:
+    source_keyword = input_item.source_keyword.strip()
+    rows: list[dict[str, Any]] = []
+    if source_mode == "manual_table":
+        rows.extend(parse_hotword_rows_from_cells(source_keyword, input_item.table_rows))
+    else:
+        for index, item in enumerate(input_item.items):
+            normalized = _normalize_manual_item(source_keyword, index, item)
+            if normalized:
+                rows.append(normalized)
+        if source_mode == "local_connector_output" and input_item.table_rows:
+            rows.extend(parse_hotword_rows_from_cells(source_keyword, input_item.table_rows))
+    return dedupe_keyword_candidates(prioritize_exact_hotword_rows(source_keyword, rows))
+
+
+def _mark_candidates_imported(candidates: list[KeywordDiscoveryItem], group_id: int) -> None:
+    for candidate in candidates:
+        candidate.selected = True
+        candidate.imported_group_id = group_id
+
+
 @router.get("")
 def list_keyword_groups(
     platform: Optional[str] = None,
@@ -167,6 +313,133 @@ def create_keyword_group(
     db.commit()
     db.refresh(group)
     return _serialize_group(group)
+
+
+@router.post("/huitun/discovery-runs")
+def create_huitun_discovery_run(
+    payload: HuitunDiscoveryRunRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    seed_keywords = _normalize_keywords([input_item.source_keyword for input_item in payload.inputs])
+    run = KeywordDiscoveryRun(
+        user_id=current_user.id,
+        platform="xhs",
+        source="huitun",
+        seed_keywords=seed_keywords,
+        limit_per_seed=payload.limit_per_seed,
+        source_mode=payload.source_mode,
+        status="running",
+    )
+    db.add(run)
+    db.flush()
+
+    rows: list[dict[str, Any]] = []
+    for input_item in payload.inputs:
+        rows.extend(_rows_from_huitun_input(input_item, payload.source_mode)[: payload.limit_per_seed])
+    rows = dedupe_keyword_candidates(rows)
+
+    items: list[KeywordDiscoveryItem] = []
+    for index, row in enumerate(rows):
+        item = KeywordDiscoveryItem(
+            run_id=run.id,
+            user_id=current_user.id,
+            platform="xhs",
+            source="huitun",
+            source_keyword=str(row.get("source_keyword") or "").strip(),
+            keyword=str(row.get("keyword") or "").strip(),
+            hot_value_text=row.get("hot_value_text"),
+            hot_value_number=row.get("hot_value_number"),
+            note_count=row.get("note_count"),
+            interaction_text=row.get("interaction_text"),
+            interaction_number=row.get("interaction_number"),
+            categories=row.get("categories") or [],
+            rank_index=int(row.get("rank_index") or index + 1),
+            selected=False,
+            raw_json=_safe_candidate_raw(row),
+        )
+        db.add(item)
+        items.append(item)
+
+    run.status = "completed"
+    run.finished_at = shanghai_now()
+    db.commit()
+    db.refresh(run)
+    for item in items:
+        db.refresh(item)
+    return _serialize_discovery_run(run, items)
+
+
+@router.get("/huitun/discovery-runs/{run_id}")
+def get_huitun_discovery_run(
+    run_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    run = db.get(KeywordDiscoveryRun, run_id)
+    if run is None or run.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Keyword discovery run not found")
+    items = db.scalars(
+        select(KeywordDiscoveryItem)
+        .where(KeywordDiscoveryItem.run_id == run.id, KeywordDiscoveryItem.user_id == current_user.id)
+        .order_by(KeywordDiscoveryItem.rank_index.asc(), KeywordDiscoveryItem.id.asc())
+    ).all()
+    return _serialize_discovery_run(run, items)
+
+
+@router.post("/import-keyword-candidates")
+def import_keyword_candidates(
+    payload: KeywordCandidateImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if payload.target is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Import target is required")
+    candidates = _get_owned_candidates(db, current_user, payload.candidate_ids)
+    imported_keywords = _candidate_keywords(candidates)
+    group = KeywordGroup(
+        user_id=current_user.id,
+        platform=payload.target.platform,
+        name=payload.target.name.strip(),
+        keywords=imported_keywords,
+    )
+    db.add(group)
+    db.flush()
+    _mark_candidates_imported(candidates, group.id)
+    group.updated_at = shanghai_now()
+    db.commit()
+    db.refresh(group)
+    for candidate in candidates:
+        db.refresh(candidate)
+    return {
+        "group": _serialize_group(group),
+        "imported_keywords": imported_keywords,
+        "items": [_serialize_discovery_item(candidate) for candidate in candidates],
+    }
+
+
+@router.post("/{group_id}/import-keyword-candidates")
+def import_keyword_candidates_to_group(
+    group_id: int,
+    payload: KeywordCandidateImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = _get_owned_group(db, current_user, group_id)
+    candidates = _get_owned_candidates(db, current_user, payload.candidate_ids)
+    imported_keywords = _candidate_keywords(candidates)
+    group.keywords = _append_dedupe_keywords(group.keywords or [], imported_keywords)
+    group.updated_at = shanghai_now()
+    _mark_candidates_imported(candidates, group.id)
+    db.commit()
+    db.refresh(group)
+    for candidate in candidates:
+        db.refresh(candidate)
+    return {
+        "group": _serialize_group(group),
+        "imported_keywords": imported_keywords,
+        "items": [_serialize_discovery_item(candidate) for candidate in candidates],
+    }
 
 
 @router.get("/{group_id}")

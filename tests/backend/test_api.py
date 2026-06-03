@@ -108,6 +108,33 @@ def test_crawler_page_uses_antd_table():
     assert "Table" in source
 
 
+def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    keywords_page_source = open("frontend/src/pages/platforms/xhs/keywords-page.tsx", encoding="utf-8").read()
+    crawler_page_source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
+
+    assert "createHuitunKeywordDiscoveryRun" in api_source
+    assert "fetchHuitunKeywordDiscoveryRun" in api_source
+    assert "importKeywordCandidatesToGroup" in api_source
+    assert "importKeywordCandidates" in api_source
+    assert "fetchXhsCrawlDiagnostics" in api_source
+    assert '"/keyword-groups/huitun/discovery-runs"' in api_source
+    assert '"/xhs/crawl/diagnostics"' in api_source
+    assert "export type KeywordDiscoveryItem" in types_source
+    assert "export type KeywordDiscoveryRun" in types_source
+    assert "export type HuitunDiscoveryRunPayload" in types_source
+    assert "export type CrawlDiagnostic" in types_source
+    assert "quality_status" in types_source
+    assert "diagnostic_kind" in types_source
+    assert "灰豚热词" in keywords_page_source
+    assert "parseHuitunHotwords" in keywords_page_source
+    assert "importSelectedCandidates" in keywords_page_source
+    assert "quality_status" in crawler_page_source
+    assert "diagnostic_kind" in crawler_page_source
+    assert "是否已入库" in crawler_page_source
+
+
 def test_discovery_uses_antd_components_and_preserves_core_logic():
     source = open("frontend/src/pages/platforms/xhs/discovery-page.tsx", encoding="utf-8").read()
 
@@ -1578,6 +1605,65 @@ def test_xhs_pc_note_detail_uses_owned_account_cookie_and_normalizes_result(tmp_
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
 
 
+def test_xhs_pc_note_detail_rejects_short_explore_url_before_adapter_call(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+
+    class ShouldNotCallAdapter:
+        def __init__(self, cookies):
+            raise AssertionError("short explore URL must be rejected before adapter call")
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(tmp_path, "detail-short-url-owner")
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: ShouldNotCallAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/notes/detail",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "url": "https://www.xiaohongshu.com/explore/detail-note-001"},
+        )
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail["quality_status"] == "invalid_source_url"
+        assert detail["diagnostic_kind"] == "missing_xsec_token_short_explore"
+        assert detail["can_save"] is False
+        assert "xsec_token" in detail["user_message"]
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
+def test_xhs_pc_note_detail_returns_inline_quality_for_empty_payload(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+
+    class EmptyDetailAdapter:
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def get_note_info(self, url):
+            return True, "ok", {"success": True, "data": {"items": []}}
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(tmp_path, "detail-empty-owner")
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: EmptyDetailAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/notes/detail",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "account_id": account_id,
+                "url": "https://www.xiaohongshu.com/explore/detail-note-002?xsec_token=detail-token&xsec_source=pc_feed",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["quality_status"] in {"empty_detail_payload", "search_card_only"}
+        assert payload["can_save"] is False
+        assert payload["diagnostic_kind"] == "empty_detail_payload"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
 def test_xhs_pc_note_detail_rejects_missing_auth_and_cross_user_account(tmp_path):
     from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
 
@@ -3013,13 +3099,15 @@ def test_xhs_crawl_routes_are_authenticated_task_backed_and_persist_notes(tmp_pa
         search_payload = search_response.json()
         assert search_payload["task"]["task_type"] == "crawl"
         assert search_payload["task"]["status"] == "completed"
-        assert search_payload["saved_count"] == 1
-        assert search_payload["items"][0]["note_id"] == "crawl-search-001"
+        assert search_payload["saved_count"] == 0
+        assert search_payload["skipped_low_quality_count"] == 1
+        assert search_payload["skipped_items"][0]["note_id"] == "crawl-search-001"
+        assert search_payload["skipped_items"][0]["save_diagnostic_kind"] == "save_skipped_low_quality"
 
         url_response = client.post(
             "/api/xhs/crawl/note-urls",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"account_id": owner_account_id, "urls": ["https://www.xiaohongshu.com/explore/crawl-url-001"]},
+            json={"account_id": owner_account_id, "urls": ["https://www.xiaohongshu.com/explore/crawl-url-001?xsec_token=crawl-token"]},
         )
         assert url_response.status_code == 200
         assert url_response.json()["saved_count"] == 1
@@ -3031,8 +3119,9 @@ def test_xhs_crawl_routes_are_authenticated_task_backed_and_persist_notes(tmp_pa
             json={"account_id": owner_account_id, "user_url": "https://www.xiaohongshu.com/user/profile/demo"},
         )
         assert user_response.status_code == 200
-        assert user_response.json()["saved_count"] == 1
-        assert user_response.json()["items"][0]["note_id"] == "crawl-user-001"
+        assert user_response.json()["saved_count"] == 0
+        assert user_response.json()["skipped_low_quality_count"] == 1
+        assert user_response.json()["skipped_items"][0]["note_id"] == "crawl-user-001"
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -3041,8 +3130,8 @@ def test_xhs_crawl_routes_are_authenticated_task_backed_and_persist_notes(tmp_pa
             assets = db.query(NoteAsset).all()
             assert len(tasks) == 3
             assert all(task.user_id == 1 and task.status == "completed" for task in tasks)
-            assert [note.note_id for note in notes] == ["crawl-search-001", "crawl-url-001", "crawl-user-001"]
-            assert len(assets) == 3
+            assert [note.note_id for note in notes] == ["crawl-url-001"]
+            assert len(assets) == 1
         finally:
             db.close()
     finally:
@@ -3106,8 +3195,8 @@ def test_xhs_data_crawl_marks_partial_failures_and_fetches_comments(tmp_path):
                 "account_id": owner_account_id,
                 "mode": "note_urls",
                 "urls": [
-                    "https://www.xiaohongshu.com/explore/data-url-001",
-                    "https://www.xiaohongshu.com/explore/bad-url",
+                    "https://www.xiaohongshu.com/explore/data-url-001?xsec_token=data-token",
+                    "https://www.xiaohongshu.com/explore/bad-url?xsec_token=bad-token",
                 ],
                 "fetch_comments": True,
             },
@@ -3124,7 +3213,7 @@ def test_xhs_data_crawl_marks_partial_failures_and_fetches_comments(tmp_path):
         assert payload["items"][0]["comments"][0]["content"] == "想看更多"
         assert payload["items"][1]["status"] == "failed"
         assert payload["items"][1]["error"] == "detail failed"
-        assert ("comments", "https://www.xiaohongshu.com/explore/data-url-001") in FakeDataCrawlAdapter.calls
+        assert ("comments", "https://www.xiaohongshu.com/explore/data-url-001?xsec_token=data-token") in FakeDataCrawlAdapter.calls
     finally:
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
         app.dependency_overrides.pop(db_dependency, None)
@@ -3832,6 +3921,372 @@ def test_keyword_groups_crud_are_user_scoped(tmp_path):
         )
         assert delete_response.status_code == 200
         assert delete_response.json()["status"] == "deleted"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_huitun_discovery_run_creates_persisted_candidates(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.models import KeywordDiscoveryItem, KeywordDiscoveryRun
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        owner_token = _register_and_get_access_token("huitun-discovery-owner")
+        response = client.post(
+            "/api/keyword-groups/huitun/discovery-runs",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "source_mode": "manual_table",
+                "limit_per_seed": 5,
+                "inputs": [
+                    {
+                        "source_keyword": "露营",
+                        "table_rows": [
+                            ["露营", "12.3万", "3,400", "8.6w", "户外 42.5%\n穿搭 18%"],
+                            ["", "1", "2", "3", "bad"],
+                            ["露营装备", "9万", "200", "1.2万", "户外 30%"],
+                        ],
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "completed"
+        assert payload["source"] == "huitun"
+        assert payload["seed_keywords"] == ["露营"]
+        assert [item["keyword"] for item in payload["items"]] == ["露营", "露营装备"]
+        first = payload["items"][0]
+        assert first["hot_value_number"] == 123000
+        assert first["note_count"] == 3400
+        assert first["interaction_number"] == 86000
+        assert first["categories"] == [{"label": "户外", "rate": "42.5"}, {"label": "穿搭", "rate": "18"}]
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            run = db.get(KeywordDiscoveryRun, payload["id"])
+            assert run is not None
+            assert run.status == "completed"
+            persisted_items = db.scalars(
+                select(KeywordDiscoveryItem)
+                .where(KeywordDiscoveryItem.run_id == payload["id"])
+                .order_by(KeywordDiscoveryItem.rank_index.asc(), KeywordDiscoveryItem.id.asc())
+            ).all()
+            assert [item.keyword for item in persisted_items] == ["露营", "露营装备"]
+            assert persisted_items[0].raw_json["keyword"] == "露营"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_keyword_candidate_import_appends_to_existing_group_and_marks_items(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.models import KeywordDiscoveryItem
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        owner_token = _register_and_get_access_token("keyword-import-owner")
+        create_group_response = client.post(
+            "/api/keyword-groups",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"platform": "xhs", "name": "露营机会", "keywords": ["露营"]},
+        )
+        assert create_group_response.status_code == 200
+        group_id = create_group_response.json()["id"]
+
+        run_response = client.post(
+            "/api/keyword-groups/huitun/discovery-runs",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "source_mode": "manual_table",
+                "limit_per_seed": 10,
+                "inputs": [
+                    {
+                        "source_keyword": "露营",
+                        "table_rows": [
+                            ["露营", "12.3万", "3400", "8.6万", "户外 42.5%"],
+                            ["露营装备", "9万", "200", "1.2万", "户外 30%"],
+                            ["户外帐篷", "7万", "180", "9000", "户外 20%"],
+                        ],
+                    }
+                ],
+            },
+        )
+        assert run_response.status_code == 200
+        candidate_ids = [item["id"] for item in run_response.json()["items"]]
+
+        import_response = client.post(
+            f"/api/keyword-groups/{group_id}/import-keyword-candidates",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"candidate_ids": candidate_ids, "merge_mode": "append_dedupe"},
+        )
+
+        assert import_response.status_code == 200
+        payload = import_response.json()
+        assert payload["group"]["keywords"] == ["露营", "露营装备", "户外帐篷"]
+        assert payload["imported_keywords"] == ["露营", "露营装备", "户外帐篷"]
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            persisted_items = db.scalars(
+                select(KeywordDiscoveryItem).where(KeywordDiscoveryItem.id.in_(candidate_ids))
+            ).all()
+            assert all(item.selected for item in persisted_items)
+            assert {item.imported_group_id for item in persisted_items} == {group_id}
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_keyword_candidate_import_can_create_group_and_enforces_candidate_ownership(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        owner_token = _register_and_get_access_token("keyword-create-owner")
+        intruder_token = _register_and_get_access_token("keyword-create-intruder")
+        run_response = client.post(
+            "/api/keyword-groups/huitun/discovery-runs",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "source_mode": "manual_json",
+                "limit_per_seed": 5,
+                "inputs": [
+                    {
+                        "source_keyword": "露营",
+                        "items": [
+                            {"keyword": "露营装备", "hot_value_text": "9万", "note_count": 200},
+                            {"keyword": "户外帐篷", "hot_value_text": "7万", "note_count": 180},
+                        ],
+                    }
+                ],
+            },
+        )
+        assert run_response.status_code == 200
+        candidate_ids = [item["id"] for item in run_response.json()["items"]]
+
+        intruder_response = client.post(
+            "/api/keyword-groups/import-keyword-candidates",
+            headers={"Authorization": f"Bearer {intruder_token}"},
+            json={
+                "candidate_ids": candidate_ids,
+                "merge_mode": "append_dedupe",
+                "target": {"mode": "create", "name": "偷看热词", "platform": "xhs"},
+            },
+        )
+        assert intruder_response.status_code == 404
+
+        owner_response = client.post(
+            "/api/keyword-groups/import-keyword-candidates",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "candidate_ids": candidate_ids,
+                "merge_mode": "append_dedupe",
+                "target": {"mode": "create", "name": "露营热词", "platform": "xhs"},
+            },
+        )
+
+        assert owner_response.status_code == 200
+        group = owner_response.json()["group"]
+        assert group["name"] == "露营热词"
+        assert group["keywords"] == ["露营装备", "户外帐篷"]
+
+        intruder_get_response = client.get(
+            f"/api/keyword-groups/{group['id']}",
+            headers={"Authorization": f"Bearer {intruder_token}"},
+        )
+        assert intruder_get_response.status_code == 404
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_crawl_data_item_contains_quality_fields_by_default():
+    from backend.app.api.platforms.xhs.crawl import _crawl_data_item
+
+    item = _crawl_data_item(source="page:1", status="partial", diagnostic_kind="empty_detail_payload")
+
+    assert item["quality_status"] == "unknown"
+    assert item["recoverable"] is False
+    assert item["diagnostic_kind"] == "empty_detail_payload"
+    assert item["save_diagnostic_kind"] is None
+    assert item["user_message"] == ""
+    assert item["saved"] is False
+
+
+def test_crawl_save_filter_only_allows_valid_details():
+    from backend.app.api.platforms.xhs.crawl import _filter_saveable_notes
+
+    valid = {
+        "note_id": "valid-detail",
+        "note_url": "https://www.xiaohongshu.com/explore/valid-detail?xsec_token=token",
+        "content": "正文",
+        "image_urls": [],
+    }
+    search_card_only = {
+        "note_id": "card-only",
+        "note_url": "https://www.xiaohongshu.com/explore/card-only?xsec_token=token",
+        "title": "只有标题",
+        "likes": 12,
+    }
+    empty = {"note_id": "empty", "note_url": "https://www.xiaohongshu.com/explore/empty?xsec_token=token"}
+
+    saveable, skipped = _filter_saveable_notes([valid, search_card_only, empty])
+
+    assert [item["note_id"] for item in saveable] == ["valid-detail"]
+    assert [item["note_id"] for item in skipped] == ["card-only", "empty"]
+    assert all(item["save_diagnostic_kind"] == "save_skipped_low_quality" for item in skipped)
+    assert skipped[0]["quality_status"] == "search_card_only"
+    assert skipped[1]["quality_status"] == "empty_detail_payload"
+
+
+def test_crawl_diagnostic_persistence_redacts_sensitive_payload_and_query_is_user_scoped(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.models import CrawlDiagnostic, Task
+    from backend.app.services.crawl_diagnostics import create_crawl_diagnostic
+
+    db_dependency, owner_token, account_id = _create_pc_account_with_cookie(tmp_path, "diagnostic-owner")
+    intruder_token = _register_and_get_access_token("diagnostic-intruder")
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            task = Task(
+                user_id=1,
+                platform="xhs",
+                task_type="crawl",
+                status="completed",
+                progress=100,
+                payload={"crawl_type": "note_urls"},
+            )
+            db.add(task)
+            db.flush()
+            diagnostic = create_crawl_diagnostic(
+                db,
+                user_id=1,
+                task_id=task.id,
+                platform_account_id=account_id,
+                platform="xhs",
+                source="https://www.xiaohongshu.com/explore/feed1?xsec_token=abcdefghijk",
+                note_id="feed1",
+                note_url="https://www.xiaohongshu.com/explore/feed1?xsec_token=abcdefghijk",
+                stage="detail",
+                kind="xhs_rate_limited",
+                severity="blocked",
+                recoverable=True,
+                message="访问频繁，请稍后再试",
+                user_message="小红书提示访问频繁，已停止本轮详情抓取。请稍后低频重试。",
+                raw_payload={
+                    "headers": {"Authorization": "Bearer secret", "Cookie": "web_session=secret"},
+                    "xsec_token": "abcdefghijk",
+                    "web_session": "secret-session",
+                    "html": "<html>secret</html>",
+                    "error_code": 300013,
+                    "message": "访问频繁，请稍后再试",
+                    "data": {"items": [{"note_card": {"note_id": "feed1", "desc": "正文"}}]},
+                },
+            )
+            db.commit()
+            diagnostic_id = diagnostic.id
+            task_id = task.id
+        finally:
+            db.close()
+
+        owner_response = client.get(
+            f"/api/xhs/crawl/diagnostics?task_id={task_id}",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert owner_response.status_code == 200
+        payload = owner_response.json()
+        assert payload["total"] == 1
+        item = payload["items"][0]
+        assert item["id"] == diagnostic_id
+        assert item["kind"] == "xhs_rate_limited"
+        assert item["raw_json"]["error_code"] == 300013
+        assert item["raw_json"]["has_xsec_token"] is True
+        assert item["raw_json"]["masked_xsec_token"] == "abcd***hijk"
+        assert "abcdefghijk" not in str(item["raw_json"])
+        assert "secret" not in str(item["raw_json"])
+        assert "<html>" not in str(item["raw_json"])
+
+        intruder_response = client.get(
+            f"/api/xhs/crawl/diagnostics?task_id={task_id}",
+            headers={"Authorization": f"Bearer {intruder_token}"},
+        )
+        assert intruder_response.status_code == 200
+        assert intruder_response.json()["total"] == 0
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored = db.get(CrawlDiagnostic, diagnostic_id)
+            assert stored.raw_json["source_url_kind"] == "explore_with_xsec_token"
+            assert "abcdefghijk" not in str(stored.raw_json)
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_crawl_diagnostics_list_filters_by_kind_and_stage(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.models import Task
+    from backend.app.services.crawl_diagnostics import create_crawl_diagnostic
+
+    db_dependency, owner_token, account_id = _create_pc_account_with_cookie(tmp_path, "diagnostic-filter-owner")
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            task = Task(user_id=1, platform="xhs", task_type="crawl", status="completed", progress=100, payload={})
+            db.add(task)
+            db.flush()
+            create_crawl_diagnostic(
+                db,
+                user_id=1,
+                task_id=task.id,
+                platform_account_id=account_id,
+                platform="xhs",
+                source="page:1",
+                note_id="feed1",
+                note_url=None,
+                stage="detail",
+                kind="empty_detail_payload",
+                severity="warning",
+                recoverable=True,
+                message="empty",
+                user_message="详情为空，本条不会自动入库。请稍后重试或换来源链接。",
+                raw_payload={"data": {"items": []}},
+            )
+            create_crawl_diagnostic(
+                db,
+                user_id=1,
+                task_id=task.id,
+                platform_account_id=account_id,
+                platform="xhs",
+                source="comment-url",
+                note_id="feed1",
+                note_url=None,
+                stage="comments",
+                kind="comment_api_failed",
+                severity="warning",
+                recoverable=True,
+                message="comment failed",
+                user_message="评论获取失败，笔记可继续处理。",
+                raw_payload={"message": "comment failed"},
+            )
+            db.commit()
+            task_id = task.id
+        finally:
+            db.close()
+
+        response = client.get(
+            f"/api/xhs/crawl/diagnostics?task_id={task_id}&stage=detail&kind=empty_detail_payload",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["stage"] == "detail"
+        assert payload["items"][0]["kind"] == "empty_detail_payload"
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 

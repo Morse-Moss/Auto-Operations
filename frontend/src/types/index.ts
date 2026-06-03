@@ -88,6 +88,11 @@ export type XhsSearchNote = {
   video_url?: string;
   video_addr?: string;
   tags?: string[];
+  quality_status?: string;
+  diagnostic_kind?: string | null;
+  recoverable?: boolean;
+  user_message?: string;
+  can_save?: boolean;
   raw: Record<string, unknown>;
 };
 
@@ -134,8 +139,14 @@ export type XhsDataCrawlPayload = {
 
 export type XhsDataCrawlItem = {
   source: string;
-  status: "success" | "failed" | string;
+  status: "success" | "partial" | "failed" | "skipped" | string;
   error: string;
+  quality_status?: string;
+  recoverable?: boolean;
+  diagnostic_kind?: string | null;
+  save_diagnostic_kind?: string | null;
+  user_message?: string;
+  saved?: boolean;
   note?: XhsSearchNote | null;
   comments: NoteComment[];
   comment_count: number;
@@ -577,6 +588,86 @@ export type KeywordGroupDetail = KeywordGroup & {
       created_at: string;
     }>;
   };
+};
+
+export type HuitunDiscoverySourceMode = "manual_table" | "manual_json" | "local_connector_output";
+
+export type KeywordDiscoveryItem = {
+  id: number;
+  run_id: number;
+  platform: PlatformId;
+  source: "huitun" | string;
+  source_keyword: string;
+  keyword: string;
+  hot_value_text?: string | null;
+  hot_value_number?: number | null;
+  note_count?: number | null;
+  interaction_text?: string | null;
+  interaction_number?: number | null;
+  categories: Array<{ label: string; rate?: string | null }>;
+  rank_index: number;
+  selected: boolean;
+  imported_group_id?: number | null;
+  created_at: string;
+};
+
+export type KeywordDiscoveryRun = {
+  id: number;
+  platform: PlatformId;
+  source: "huitun" | string;
+  seed_keywords: string[];
+  limit_per_seed: number;
+  source_mode: HuitunDiscoverySourceMode;
+  status: "running" | "completed" | "partial_failed" | "failed" | string;
+  error_message?: string | null;
+  created_at: string;
+  finished_at?: string | null;
+  items: KeywordDiscoveryItem[];
+};
+
+export type HuitunDiscoveryRunPayload = {
+  source_mode: HuitunDiscoverySourceMode;
+  limit_per_seed?: number;
+  inputs: Array<{
+    source_keyword: string;
+    table_rows?: string[][];
+    items?: Array<Record<string, unknown>>;
+  }>;
+};
+
+export type KeywordCandidateImportPayload = {
+  candidate_ids: number[];
+  merge_mode?: "append_dedupe";
+  target?: {
+    mode: "create";
+    name: string;
+    platform?: PlatformId;
+  };
+};
+
+export type KeywordCandidateImportResponse = {
+  group: KeywordGroup;
+  imported_keywords: string[];
+  items: KeywordDiscoveryItem[];
+};
+
+export type CrawlDiagnostic = {
+  id: number;
+  user_id: number;
+  task_id?: number | null;
+  platform_account_id?: number | null;
+  platform: PlatformId;
+  source: string;
+  note_id?: string | null;
+  note_url?: string | null;
+  stage: string;
+  kind: string;
+  severity: "info" | "warning" | "error" | "blocked" | string;
+  recoverable: boolean;
+  message: string;
+  user_message: string;
+  raw_json: Record<string, unknown>;
+  created_at: string;
 };
 
 export type PublishJob = {
