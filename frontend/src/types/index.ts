@@ -122,6 +122,7 @@ export type XhsDataCrawlPayload = {
   pages?: number;
   max_notes?: number;
   time_sleep?: number;
+  comment_sleep?: number;
   fetch_comments?: boolean;
   sort_type_choice?: number;
   note_type?: number;
@@ -138,6 +139,8 @@ export type XhsDataCrawlItem = {
   note?: XhsSearchNote | null;
   comments: NoteComment[];
   comment_count: number;
+  comment_status?: "not_requested" | "success" | "failed" | "rate_limited" | "skipped_rate_limited" | string;
+  comment_error?: string;
 };
 
 export type XhsDataCrawlResponse = {

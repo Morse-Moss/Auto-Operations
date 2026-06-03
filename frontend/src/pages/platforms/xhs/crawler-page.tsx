@@ -144,9 +144,25 @@ function spiderStyleNoteRow(item: XhsDataCrawlItem): string[] {
   ];
 }
 
+function commentStatusLabel(status?: string): string {
+  if (status === "success") return "成功";
+  if (status === "failed") return "失败";
+  if (status === "rate_limited") return "限流";
+  if (status === "skipped_rate_limited") return "限流跳过";
+  return "未抓取";
+}
+
+function commentStatusTag(item: XhsDataCrawlItem) {
+  const label = commentStatusLabel(item.comment_status);
+  if (item.comment_status === "success") return <Tag color="success">{label}</Tag>;
+  if (item.comment_status === "rate_limited" || item.comment_status === "skipped_rate_limited") return <Tag color="warning">{label}</Tag>;
+  if (item.comment_status === "failed") return <Tag color="error">{label}</Tag>;
+  return <Text type="secondary">{label}</Text>;
+}
+
 function exportRowsToExcel(items: XhsDataCrawlItem[]) {
-  const rows = items.map((item) => [item.status, item.source, item.error, ...spiderStyleNoteRow(item), item.comment_count, (item.comments ?? []).map((c) => c.content).join("\n")]);
-  const headers = ["抓取状态", "来源", "错误", ...noteExcelHeaders, "抓取评论数", "评论内容"];
+  const rows = items.map((item) => [item.status, item.source, item.error, item.comment_status || "", item.comment_error || "", ...spiderStyleNoteRow(item), item.comment_count, (item.comments ?? []).map((c) => c.content).join("\n")]);
+  const headers = ["抓取状态", "来源", "错误", "评论状态", "评论错误", ...noteExcelHeaders, "抓取评论数", "评论内容"];
   const table = [headers, ...rows].map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
   const html = `<html><head><meta charset="UTF-8"></head><body><table>${table}</table></body></html>`;
   const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" });
@@ -169,6 +185,7 @@ export function XhsCrawlerPage() {
   const [pages, setPages] = useState(1);
   const [maxNotes, setMaxNotes] = useState(20);
   const [timeSleep, setTimeSleep] = useState(1);
+  const [commentSleep, setCommentSleep] = useState(5);
   const [fetchCommentsChecked, setFetchCommentsChecked] = useState(false);
   const [filters, setFilters] = useState({ sort_type_choice: 0, note_type: 0, note_time: 0, note_range: 0, pos_distance: 0, geo: "" });
   const [items, setItems] = useState<XhsDataCrawlItem[]>([]);
@@ -180,6 +197,8 @@ export function XhsCrawlerPage() {
   const [error, setError] = useState<string | null>(null);
 
   const pcAccounts = useMemo(() => accounts.filter((a) => a.platform === "xhs" && a.sub_type === "pc"), [accounts]);
+  const commentRateLimitedCount = useMemo(() => items.filter((item) => item.comment_status === "rate_limited").length, [items]);
+  const commentSkippedCount = useMemo(() => items.filter((item) => item.comment_status === "skipped_rate_limited").length, [items]);
 
   async function loadAccounts() {
     setIsLoadingAccounts(true);
@@ -207,7 +226,7 @@ export function XhsCrawlerPage() {
     setProgressMsg(null);
     try {
       const summary = await crawlXhsDataStream(
-        { account_id: selectedAccountId, mode, urls: parsedUrls, keyword: keyword.trim(), pages, max_notes: maxNotes, time_sleep: timeSleep, fetch_comments: mode === "comments" ? false : fetchCommentsChecked, ...filters, geo: filters.geo.trim() },
+        { account_id: selectedAccountId, mode, urls: parsedUrls, keyword: keyword.trim(), pages, max_notes: maxNotes, time_sleep: timeSleep, comment_sleep: commentSleep, fetch_comments: mode === "comments" ? false : fetchCommentsChecked, ...filters, geo: filters.geo.trim() },
         (index, item) => { setItems((prev) => [...prev, item]); },
         (msg) => { setProgressMsg(msg); },
         (msg) => { setError(msg); },
@@ -238,7 +257,11 @@ export function XhsCrawlerPage() {
     { title: "作者", key: "author", width: 100, render: (_, item) => item.note?.author_name || "-" },
     { title: "互动", key: "engagement", width: 180, render: (_, item) => item.note ? <Text type="secondary" style={{ fontSize: 12 }}>赞{item.note.likes} 藏{item.note.collects} 评{item.note.comments}</Text> : "-" },
     { title: "评论", key: "comments", width: 80, render: (_, item) => <Space size={4}><CommentOutlined />{item.comment_count}</Space> },
-    { title: "错误", dataIndex: "error", ellipsis: true, render: (err: string) => err ? <Text type="danger" style={{ fontSize: 12 }}>{err}</Text> : "-" },
+    { title: "评论状态", key: "comment_status", width: 110, render: (_, item) => commentStatusTag(item) },
+    { title: "错误", key: "error", ellipsis: true, render: (_, item) => {
+      const message = item.error || item.comment_error || "";
+      return message ? <Text type="danger" style={{ fontSize: 12 }}>{message}</Text> : "-";
+    } },
   ];
 
   return (
@@ -271,7 +294,14 @@ export function XhsCrawlerPage() {
                 <InputNumber min={0} max={60} step={0.5} value={timeSleep} onChange={(v) => setTimeSleep(v ?? 1)} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
-            <Col span={4} style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
+            <Col span={4}>
+              <Form.Item label="Comment Sleep">
+                <InputNumber min={0} max={120} step={0.5} value={commentSleep} onChange={(v) => setCommentSleep(v ?? 5)} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={8} style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
               <Checkbox checked={fetchCommentsChecked} onChange={(e) => setFetchCommentsChecked(e.target.checked)} disabled={mode === "comments"}>同时抓取评论</Checkbox>
             </Col>
           </Row>
@@ -306,7 +336,7 @@ export function XhsCrawlerPage() {
         )}
       </Card>
 
-      <Card title={<Space><Title level={5} style={{ margin: 0 }}>抓取结果</Title><Text type="secondary">成功 {successCount} · 失败 {failedCount}{isRunning && progressMsg ? ` · ${progressMsg}` : ""}{isRunning ? " · 抓取中..." : ""}</Text></Space>}>
+      <Card title={<Space><Title level={5} style={{ margin: 0 }}>抓取结果</Title><Text type="secondary">成功 {successCount} · 失败 {failedCount}{commentRateLimitedCount ? ` · 评论限流 ${commentRateLimitedCount}` : ""}{commentSkippedCount ? ` · 评论跳过 ${commentSkippedCount}` : ""}{isRunning && progressMsg ? ` · ${progressMsg}` : ""}{isRunning ? " · 抓取中..." : ""}</Text></Space>}>
         {items.length === 0 && !isRunning ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="执行抓取后，结果会显示在这里" />
         ) : (

@@ -396,7 +396,7 @@ export async function crawlXhsDataStream(
   onItem: (index: number, item: XhsDataCrawlItem) => void,
   onProgress?: (message: string) => void,
   onError?: (message: string) => void,
-): Promise<{ total: number; success_count: number; failed_count: number }> {
+): Promise<{ total: number; success_count: number; failed_count: number; comment_rate_limited_count?: number; comment_skipped_count?: number }> {
   const token = getAccessToken();
   const response = await fetch("/api/xhs/crawl/data", {
     method: "POST",
@@ -411,7 +411,7 @@ export async function crawlXhsDataStream(
   if (!reader) throw new Error("No response stream");
   const decoder = new TextDecoder();
   let buffer = "";
-  let result = { total: 0, success_count: 0, failed_count: 0 };
+  let result = { total: 0, success_count: 0, failed_count: 0, comment_rate_limited_count: 0, comment_skipped_count: 0 };
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -425,7 +425,7 @@ export async function crawlXhsDataStream(
         if (event.type === "item") onItem(event.index, event.item);
         else if (event.type === "progress") onProgress?.(event.message);
         else if (event.type === "error") onError?.(event.message);
-        else if (event.type === "done") result = { total: event.total, success_count: event.success_count, failed_count: event.failed_count };
+        else if (event.type === "done") result = { total: event.total, success_count: event.success_count, failed_count: event.failed_count, comment_rate_limited_count: event.comment_rate_limited_count ?? 0, comment_skipped_count: event.comment_skipped_count ?? 0 };
       } catch { /* skip malformed events */ }
     }
   }

@@ -3096,6 +3096,114 @@ def test_xhs_data_crawl_marks_partial_failures_and_fetches_comments(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_xhs_data_crawl_search_comment_rate_limit_keeps_notes_successful(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+
+    class FakeCommentRateLimitedSearchAdapter:
+        search_calls = []
+        detail_calls = []
+        comment_calls = []
+
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def search_note(self, keyword, page=1, **kwargs):
+            self.__class__.search_calls.append({"keyword": keyword, "page": page, **kwargs})
+            return True, "ok", {
+                "data": {
+                    "has_more": False,
+                    "items": [
+                        {
+                            "xsec_token": "xsec-rate-001",
+                            "note_card": {
+                                "note_id": "rate-note-001",
+                                "display_title": "rate source 1",
+                                "desc": "rate source body 1",
+                                "user": {"nickname": "rate author"},
+                            },
+                        },
+                        {
+                            "xsec_token": "xsec-rate-002",
+                            "note_card": {
+                                "note_id": "rate-note-002",
+                                "display_title": "rate source 2",
+                                "desc": "rate source body 2",
+                                "user": {"nickname": "rate author"},
+                            },
+                        },
+                    ],
+                }
+            }
+
+        def get_note_info(self, url):
+            self.__class__.detail_calls.append(url)
+            note_id = url.split("/explore/")[1].split("?")[0]
+            return True, "ok", {
+                "data": {
+                    "items": [
+                        {
+                            "note_card": {
+                                "note_id": note_id,
+                                "display_title": f"detail {note_id}",
+                                "desc": f"detail body {note_id}",
+                                "user": {"nickname": "detail author"},
+                            }
+                        }
+                    ]
+                }
+            }
+
+        def get_note_comments(self, url):
+            self.__class__.comment_calls.append(url)
+            return False, "300013 访问频繁，请稍后再试", {}
+
+    db_dependency, owner_token, owner_account_id = _create_pc_account_with_cookie(tmp_path, "data-crawl-comment-rate-owner")
+    FakeCommentRateLimitedSearchAdapter.search_calls = []
+    FakeCommentRateLimitedSearchAdapter.detail_calls = []
+    FakeCommentRateLimitedSearchAdapter.comment_calls = []
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeCommentRateLimitedSearchAdapter
+    try:
+        response = client.post(
+            "/api/xhs/crawl/data",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "account_id": owner_account_id,
+                "mode": "search",
+                "keyword": "浴室",
+                "pages": 1,
+                "max_notes": 2,
+                "fetch_comments": True,
+                "comment_sleep": 0,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = _parse_sse_response(response)
+        assert payload["total"] == 2
+        assert payload["success_count"] == 2
+        assert payload["failed_count"] == 0
+        assert payload["comment_rate_limited_count"] == 1
+        assert payload["comment_skipped_count"] == 1
+        assert [item["status"] for item in payload["items"]] == ["success", "success"]
+        assert payload["items"][0]["comment_status"] == "rate_limited"
+        assert "访问频繁" in payload["items"][0]["comment_error"]
+        assert payload["items"][1]["comment_status"] == "skipped_rate_limited"
+        assert "已跳过" in payload["items"][1]["comment_error"]
+        assert len(FakeCommentRateLimitedSearchAdapter.detail_calls) == 2
+        assert len(FakeCommentRateLimitedSearchAdapter.comment_calls) == 1
+    finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_crawler_page_has_independent_comment_sleep_control():
+    source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
+
+    assert "commentSleep" in source
+    assert "Comment Sleep" in source
+    assert "comment_sleep" in source
+
+
 def test_xhs_data_crawl_search_expands_filters_and_fetches_details(tmp_path):
     from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
 

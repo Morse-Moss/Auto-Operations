@@ -54,6 +54,7 @@ class DataCrawlRequest(BaseModel):
     pages: int = Field(default=1, ge=1, le=20)
     max_notes: int = Field(default=20, ge=1, le=200)
     time_sleep: float = Field(default=0, ge=0, le=60)
+    comment_sleep: float = Field(default=5, ge=0, le=120)
     fetch_comments: bool = False
     sort_type_choice: int = Field(default=0, ge=0, le=4)
     note_type: int = Field(default=0, ge=0, le=2)
@@ -190,7 +191,20 @@ def _download_asset(url: str, user_id: int, asset_type: str) -> str | None:
 
 def _sleep_between_requests(seconds: float) -> None:
     if seconds > 0:
-        time.sleep(min(seconds, 60))
+        time.sleep(min(seconds, 120))
+
+
+def _is_comment_rate_limited(message: str) -> bool:
+    normalized = str(message or "")
+    return any(marker in normalized for marker in ("300013", "访问频繁", "请稍后再试", "'comments'"))
+
+
+def _comment_failure_status(message: str) -> str:
+    return "rate_limited" if _is_comment_rate_limited(message) else "failed"
+
+
+def _comment_skip_error() -> str:
+    return "评论接口访问频繁，本轮后续评论已跳过。"
 
 
 def _crawl_data_item(
@@ -200,6 +214,8 @@ def _crawl_data_item(
     note: dict[str, Any] | None = None,
     comments: list[dict[str, Any]] | None = None,
     error: str = "",
+    comment_status: str = "not_requested",
+    comment_error: str = "",
 ) -> dict[str, Any]:
     return {
         "source": source,
@@ -208,6 +224,8 @@ def _crawl_data_item(
         "note": note,
         "comments": comments or [],
         "comment_count": len(comments or []),
+        "comment_status": comment_status,
+        "comment_error": comment_error,
     }
 
 
@@ -359,6 +377,7 @@ def crawl_data(
             "url_count": len(payload.urls),
             "pages": payload.pages,
             "time_sleep": payload.time_sleep,
+            "comment_sleep": payload.comment_sleep,
         },
     )
     task_id = task.id
@@ -368,6 +387,7 @@ def crawl_data(
         items: list[dict[str, Any]] = []
         normalized_for_save: list[dict[str, Any]] = []
         error_occurred = False
+        comments_rate_limited = False
 
         try:
             if payload.mode == "note_urls":
@@ -378,17 +398,25 @@ def crawl_data(
                         note["note_url"] = note.get("note_url") or url
                         normalized_for_save.append(note)
                         comments_list: list[dict[str, Any]] = []
+                        comment_status = "not_requested"
+                        comment_error = ""
                         if payload.fetch_comments:
-                            cs, cm, cp = adapter.get_note_comments(url)
-                            if cs:
-                                comments_list = normalize_comment_payload(cp)
+                            if comments_rate_limited:
+                                comment_status = "skipped_rate_limited"
+                                comment_error = _comment_skip_error()
                             else:
-                                item = _crawl_data_item(source=url, status="failed", note=note, error=cm or "comment crawl failed")
-                                items.append(item)
-                                yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
-                                _sleep_between_requests(payload.time_sleep)
-                                continue
-                        item = _crawl_data_item(source=url, status="success", note=note, comments=comments_list)
+                                cs, cm, cp = adapter.get_note_comments(url)
+                                if cs:
+                                    comments_list = normalize_comment_payload(cp)
+                                    comment_status = "success"
+                                else:
+                                    comment_error = cm or "comment crawl failed"
+                                    comment_status = _comment_failure_status(comment_error)
+                                    if comment_status == "rate_limited":
+                                        comments_rate_limited = True
+                                        yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
+                                _sleep_between_requests(payload.comment_sleep)
+                        item = _crawl_data_item(source=url, status="success", note=note, comments=comments_list, comment_status=comment_status, comment_error=comment_error)
                     else:
                         item = _crawl_data_item(source=url, status="failed", error=message or "detail crawl failed")
                     items.append(item)
@@ -398,11 +426,21 @@ def crawl_data(
 
             elif payload.mode == "comments":
                 for index, url in enumerate(payload.urls):
-                    success, message, raw_payload = adapter.get_note_comments(url)
-                    if success:
-                        item = _crawl_data_item(source=url, status="success", comments=normalize_comment_payload(raw_payload))
+                    if comments_rate_limited:
+                        skip_error = _comment_skip_error()
+                        item = _crawl_data_item(source=url, status="failed", error=skip_error, comment_status="skipped_rate_limited", comment_error=skip_error)
                     else:
-                        item = _crawl_data_item(source=url, status="failed", error=message or "comment crawl failed")
+                        success, message, raw_payload = adapter.get_note_comments(url)
+                        if success:
+                            item = _crawl_data_item(source=url, status="success", comments=normalize_comment_payload(raw_payload), comment_status="success")
+                        else:
+                            comment_error = message or "comment crawl failed"
+                            comment_status = _comment_failure_status(comment_error)
+                            item = _crawl_data_item(source=url, status="failed", error=comment_error, comment_status=comment_status, comment_error=comment_error)
+                            if comment_status == "rate_limited":
+                                comments_rate_limited = True
+                                yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取。"})
+                        _sleep_between_requests(payload.comment_sleep)
                     items.append(item)
                     yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
                     if index < len(payload.urls) - 1:
@@ -451,18 +489,26 @@ def crawl_data(
                                 _sleep_between_requests(payload.time_sleep)
                                 continue
                         comments_list = []
+                        comment_status = "not_requested"
+                        comment_error = ""
                         if payload.fetch_comments and note_url:
-                            cs, cm, cp = adapter.get_note_comments(note_url)
-                            if cs:
-                                comments_list = normalize_comment_payload(cp)
+                            if comments_rate_limited:
+                                comment_status = "skipped_rate_limited"
+                                comment_error = _comment_skip_error()
                             else:
-                                item = _crawl_data_item(source=source, status="failed", note=detail_note, error=cm or "comment failed")
-                                items.append(item)
-                                yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
-                                _sleep_between_requests(payload.time_sleep)
-                                continue
+                                cs, cm, cp = adapter.get_note_comments(note_url)
+                                if cs:
+                                    comments_list = normalize_comment_payload(cp)
+                                    comment_status = "success"
+                                else:
+                                    comment_error = cm or "comment failed"
+                                    comment_status = _comment_failure_status(comment_error)
+                                    if comment_status == "rate_limited":
+                                        comments_rate_limited = True
+                                        yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
+                                _sleep_between_requests(payload.comment_sleep)
                         normalized_for_save.append(detail_note)
-                        item = _crawl_data_item(source=source, status="success", note=detail_note, comments=comments_list)
+                        item = _crawl_data_item(source=source, status="success", note=detail_note, comments=comments_list, comment_status=comment_status, comment_error=comment_error)
                         items.append(item)
                         yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
                         _sleep_between_requests(payload.time_sleep)
@@ -478,11 +524,22 @@ def crawl_data(
 
         success_count = len([i for i in items if i["status"] == "success"])
         failed_count = len(items) - success_count
+        comment_rate_limited_count = len([i for i in items if i.get("comment_status") == "rate_limited"])
+        comment_skipped_count = len([i for i in items if i.get("comment_status") == "skipped_rate_limited"])
         try:
             if error_occurred:
                 _fail_task(db, task, "partial failure")
             else:
-                _complete_task(db, task, {"result_count": success_count, "failed_count": failed_count})
+                _complete_task(
+                    db,
+                    task,
+                    {
+                        "result_count": success_count,
+                        "failed_count": failed_count,
+                        "comment_rate_limited_count": comment_rate_limited_count,
+                        "comment_skipped_count": comment_skipped_count,
+                    },
+                )
         except Exception:
             pass
 
@@ -492,6 +549,8 @@ def crawl_data(
             "total": len(items),
             "success_count": success_count,
             "failed_count": failed_count,
+            "comment_rate_limited_count": comment_rate_limited_count,
+            "comment_skipped_count": comment_skipped_count,
         })
 
     return StreamingResponse(generate(), media_type="text/event-stream")
