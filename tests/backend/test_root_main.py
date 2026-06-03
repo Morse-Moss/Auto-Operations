@@ -14,6 +14,11 @@ def test_parse_args_accepts_frontend_flag():
     assert args.port == 8010
 
 
+def test_parse_args_defaults_to_fixed_frontend_port():
+    args = main.parse_args([])
+    assert args.frontend_port == 18080
+
+
 def test_build_frontend_command_uses_resolved_npm_executable():
-    command = main.build_frontend_command(5174, npm_executable="C:/node/npm.cmd")
-    assert command == ["C:/node/npm.cmd", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5174"]
+    command = main.build_frontend_command(18080, npm_executable="C:/node/npm.cmd")
+    assert command == ["C:/node/npm.cmd", "run", "dev", "--", "--host", "127.0.0.1", "--port", "18080"]

@@ -321,7 +321,7 @@ python main.py --with-frontend
 Then check:
 
 ```text
-http://localhost:5173
+http://localhost:18080
 ```
 
 Migration is successful when:
