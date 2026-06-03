@@ -236,8 +236,42 @@ def test_alembic_initial_migration_creates_all_product_tables(tmp_path):
         "publish_jobs", "publish_assets", "tasks",
         "monitoring_targets", "monitoring_snapshots",
         "keyword_groups", "api_logs",
+        "keyword_discovery_runs", "keyword_discovery_items", "crawl_diagnostics",
     }
     assert expected.issubset(table_names)
+
+
+def test_alembic_adds_keyword_discovery_and_crawl_diagnostic_columns(tmp_path):
+    from alembic import command
+    from alembic.config import Config
+
+    db_url = f"sqlite:///{tmp_path / 'legacy-integration-tables-test.db'}"
+    cfg = Config(os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "alembic.ini")))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(cfg, "head")
+
+    test_engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    inspector = inspect(test_engine)
+    run_columns = {column["name"] for column in inspector.get_columns("keyword_discovery_runs")}
+    item_columns = {column["name"] for column in inspector.get_columns("keyword_discovery_items")}
+    diagnostic_columns = {column["name"] for column in inspector.get_columns("crawl_diagnostics")}
+
+    assert {
+        "user_id", "platform", "source", "seed_keywords", "limit_per_seed",
+        "source_mode", "status", "error_message", "created_at", "finished_at",
+    }.issubset(run_columns)
+    assert {
+        "run_id", "user_id", "source_keyword", "keyword", "hot_value_number",
+        "note_count", "interaction_number", "categories", "selected", "imported_group_id", "raw_json",
+    }.issubset(item_columns)
+    assert {
+        "user_id", "task_id", "platform_account_id", "platform", "source", "note_id",
+        "note_url", "stage", "kind", "severity", "recoverable", "message", "user_message", "raw_json",
+    }.issubset(diagnostic_columns)
+
+    diagnostic_indexes = {index["name"] for index in inspector.get_indexes("crawl_diagnostics")}
+    assert "ix_crawl_diagnostics_task_id" in diagnostic_indexes
+    assert "ix_crawl_diagnostics_user_id" in diagnostic_indexes
 
 
 def test_database_initialization_normalizes_legacy_gpt_54_model_name(tmp_path):
