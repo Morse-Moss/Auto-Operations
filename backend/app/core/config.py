@@ -99,7 +99,7 @@ class Settings(BaseSettings):
 
     # Server
     server_host: str = "0.0.0.0"
-    server_port: int = 8000
+    server_port: int = 18081
 
     # CORS
     backend_cors_origins: str = "http://127.0.0.1:18080,http://localhost:18080"

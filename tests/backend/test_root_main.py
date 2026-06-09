@@ -4,7 +4,7 @@ import main
 def test_parse_args_defaults_to_backend_only():
     args = main.parse_args([])
     assert args.host == "127.0.0.1"
-    assert args.port == 8000
+    assert args.port == 18081
     assert args.with_frontend is False
 
 

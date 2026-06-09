@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from backend.app.core.database import get_db
+from backend.app.core.deps import get_current_user
+from backend.app.core.security import decrypt_text, encrypt_text
+from backend.app.models import LoginSession, User
+from backend.app.services import huitun_account_service
+from backend.app.services.account_service import serialize_account, upsert_platform_account_from_login
+
+router = APIRouter(prefix="/huitun/login-sessions", tags=["huitun-login-sessions"])
+
+
+def _dump_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _load_json(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    parsed = json.loads(value)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def get_huitun_account_client():
+    return huitun_account_service
+
+
+@router.post("/qrcode")
+def huitun_qrcode(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    client=Depends(get_huitun_account_client),
+):
+    try:
+        qr_payload = client.create_huitun_qrcode()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=huitun_account_service.HUITUN_QR_FAILED_MESSAGE,
+        ) from exc
+
+    session = LoginSession(
+        user_id=current_user.id,
+        platform="huitun",
+        sub_type="main",
+        status="pending",
+        login_method="qr",
+        qr_id=qr_payload["ticket"],
+        qr_url=qr_payload["qr_url"],
+        encrypted_temp_cookies=encrypt_text(_dump_json(qr_payload.get("state") or {})),
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return {
+        "session_id": session.id,
+        "status": session.status,
+        "qr_url": session.qr_url,
+        "qr_image_data_url": qr_payload["qr_image_data_url"],
+    }
+
+
+@router.get("/{session_id}")
+def huitun_login_session(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    client=Depends(get_huitun_account_client),
+):
+    session = db.get(LoginSession, session_id)
+    if session is None or session.user_id != current_user.id or session.platform != "huitun":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Login session not found")
+    if session.sub_type != "main" or session.login_method != "qr":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported login session")
+    if session.status in {"confirmed", "expired"}:
+        return {"session_id": session.id, "status": session.status, "qr_url": session.qr_url}
+
+    try:
+        state = _load_json(decrypt_text(session.encrypted_temp_cookies))
+        result = client.check_huitun_qrcode_status(state)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="灰豚登录状态检查失败，请稍后重试。") from exc
+
+    session.status = result.get("status") or "pending"
+    if result.get("cookies_text"):
+        try:
+            state["cookies"] = _load_json(result["cookies_text"])
+        except Exception:
+            state["cookies"] = {}
+    session.encrypted_temp_cookies = encrypt_text(_dump_json(state))
+
+    account_payload = None
+    if session.status == "confirmed":
+        cookies_text = result.get("cookies_text") or _dump_json(state.get("cookies") or {})
+        user_info = result.get("user_info")
+        if not isinstance(user_info, dict):
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="灰豚账号信息获取失败，请刷新二维码重试。")
+        account, action = upsert_platform_account_from_login(
+            db=db,
+            user_id=current_user.id,
+            platform="huitun",
+            sub_type="main",
+            user_info=user_info,
+            cookies_text=cookies_text,
+        )
+        account_payload = serialize_account(account, action)
+
+    db.commit()
+    return {
+        "session_id": session.id,
+        "status": session.status,
+        "qr_url": session.qr_url,
+        "account": account_payload,
+    }

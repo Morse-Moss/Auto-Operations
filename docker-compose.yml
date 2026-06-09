@@ -8,7 +8,7 @@ services:
     build: .
     container_name: spider-xhs
     ports:
-      - "8000:8000"
+      - "18081:18081"
     volumes:
       - ./data:/app/data
       - ./config:/app/config
@@ -24,7 +24,7 @@ services:
       # - DATABASE_MYSQL_PASSWORD=your-mysql-password
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:18081/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

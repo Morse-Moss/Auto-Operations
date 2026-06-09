@@ -77,6 +77,8 @@ import type {
   XhsDataCrawlItem,
   XhsDataCrawlPayload,
   XhsDataCrawlResponse,
+  XhsKeywordGroupCrawlPayload,
+  XhsKeywordGroupCrawlSummary,
   XhsSearchOptions,
   XhsSearchNote,
   XhsQrLoginSession
@@ -253,8 +255,8 @@ export async function createXhsAnalyticsReport(
   return response.data;
 }
 
-export async function fetchAccounts(platform = "xhs"): Promise<PlatformAccount[]> {
-  const response = await http.get<Paginated<PlatformAccount>>("/accounts", { params: { platform } });
+export async function fetchAccounts(platform?: string): Promise<PlatformAccount[]> {
+  const response = await http.get<Paginated<PlatformAccount>>("/accounts", { params: platform ? { platform } : undefined });
   return response.data.items;
 }
 
@@ -396,14 +398,17 @@ export async function searchXhsNotes(payload: XhsSearchOptions): Promise<XhsNote
   return response.data;
 }
 
-export async function crawlXhsDataStream(
-  payload: XhsDataCrawlPayload,
+async function streamXhsCrawl<TSummary>(
+  endpoint: string,
+  payload: Record<string, unknown>,
+  initialResult: TSummary,
   onItem: (index: number, item: XhsDataCrawlItem) => void,
   onProgress?: (message: string) => void,
   onError?: (message: string) => void,
-): Promise<{ total: number; success_count: number; failed_count: number; comment_rate_limited_count?: number; comment_skipped_count?: number }> {
+  mapDone?: (event: Record<string, unknown>) => TSummary,
+): Promise<TSummary> {
   const token = getAccessToken();
-  const response = await fetch("/api/xhs/crawl/data", {
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(payload),
@@ -416,7 +421,7 @@ export async function crawlXhsDataStream(
   if (!reader) throw new Error("No response stream");
   const decoder = new TextDecoder();
   let buffer = "";
-  let result = { total: 0, success_count: 0, failed_count: 0, comment_rate_limited_count: 0, comment_skipped_count: 0 };
+  let result = initialResult;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -430,11 +435,60 @@ export async function crawlXhsDataStream(
         if (event.type === "item") onItem(event.index, event.item);
         else if (event.type === "progress") onProgress?.(event.message);
         else if (event.type === "error") onError?.(event.message);
-        else if (event.type === "done") result = { total: event.total, success_count: event.success_count, failed_count: event.failed_count, comment_rate_limited_count: event.comment_rate_limited_count ?? 0, comment_skipped_count: event.comment_skipped_count ?? 0 };
+        else if (event.type === "done" && mapDone) result = mapDone(event);
       } catch { /* skip malformed events */ }
     }
   }
   return result;
+}
+
+export async function crawlXhsDataStream(
+  payload: XhsDataCrawlPayload,
+  onItem: (index: number, item: XhsDataCrawlItem) => void,
+  onProgress?: (message: string) => void,
+  onError?: (message: string) => void,
+): Promise<{ total: number; success_count: number; failed_count: number; comment_rate_limited_count?: number; comment_skipped_count?: number }> {
+  return streamXhsCrawl(
+    "/api/xhs/crawl/data",
+    payload as Record<string, unknown>,
+    { total: 0, success_count: 0, failed_count: 0, comment_rate_limited_count: 0, comment_skipped_count: 0 },
+    onItem,
+    onProgress,
+    onError,
+    (event) => ({
+      total: Number(event.total || 0),
+      success_count: Number(event.success_count || 0),
+      failed_count: Number(event.failed_count || 0),
+      comment_rate_limited_count: Number(event.comment_rate_limited_count || 0),
+      comment_skipped_count: Number(event.comment_skipped_count || 0),
+    }),
+  );
+}
+
+export async function crawlXhsKeywordGroupStream(
+  payload: XhsKeywordGroupCrawlPayload,
+  onItem: (index: number, item: XhsDataCrawlItem) => void,
+  onProgress?: (message: string) => void,
+  onError?: (message: string) => void,
+): Promise<XhsKeywordGroupCrawlSummary> {
+  return streamXhsCrawl<XhsKeywordGroupCrawlSummary>(
+    "/api/xhs/crawl/keyword-group",
+    payload as Record<string, unknown>,
+    { total: 0, success_count: 0, failed_count: 0, saved_count: 0, skipped_count: 0, rate_limited_count: 0, missing_detail_count: 0, summary_message: "" },
+    onItem,
+    onProgress,
+    onError,
+    (event) => ({
+      total: Number(event.total || 0),
+      success_count: Number(event.success_count || 0),
+      failed_count: Number(event.failed_count || 0),
+      saved_count: Number(event.saved_count || 0),
+      skipped_count: Number(event.skipped_count || 0),
+      rate_limited_count: Number(event.rate_limited_count || 0),
+      missing_detail_count: Number(event.missing_detail_count || 0),
+      summary_message: String(event.summary_message || ""),
+    }),
+  );
 }
 
 export async function fetchXhsNoteDetail(payload: { account_id: number; url: string }): Promise<XhsSearchNote> {
@@ -824,6 +878,17 @@ export async function importXhsCookieAccount(payload: {
   return response.data;
 }
 
+export async function importHuitunCookieAccount(payload: {
+  cookie_string: string;
+}): Promise<PlatformAccount> {
+  const response = await http.post<PlatformAccount>("/accounts/import-cookie", {
+    platform: "huitun",
+    sub_type: "main",
+    cookie_string: payload.cookie_string,
+  });
+  return response.data;
+}
+
 export async function checkAccount(accountId: number): Promise<PlatformAccount> {
   const response = await http.post<PlatformAccount>(`/accounts/${accountId}/check`);
   return response.data;
@@ -843,6 +908,16 @@ export async function createXhsPcQrLoginSession(payload?: {
 
 export async function createXhsCreatorQrLoginSession(): Promise<XhsQrLoginSession> {
   const response = await http.post<XhsQrLoginSession>("/xhs/login-sessions/creator/qrcode");
+  return response.data;
+}
+
+export async function createHuitunQrLoginSession(): Promise<XhsQrLoginSession> {
+  const response = await http.post<XhsQrLoginSession>("/huitun/login-sessions/qrcode");
+  return response.data;
+}
+
+export async function pollHuitunLoginSession(sessionId: number): Promise<XhsQrLoginSession> {
+  const response = await http.get<XhsQrLoginSession>(`/huitun/login-sessions/${sessionId}`);
   return response.data;
 }
 

@@ -20,7 +20,7 @@ from backend.app.api.platforms.xhs.pc import (
 from backend.app.api.tasks import serialize_task
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.models import CrawlDiagnostic, Note, NoteAsset, PlatformAccount, Task, User
+from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, NoteAsset, PlatformAccount, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.crawl_diagnostics import create_crawl_diagnostic, serialize_crawl_diagnostic
 from backend.app.services.xhs_detail_recovery import (
@@ -70,6 +70,19 @@ class DataCrawlRequest(BaseModel):
     note_range: int = Field(default=0, ge=0, le=3)
     pos_distance: int = Field(default=0, ge=0, le=2)
     geo: str = ""
+
+
+class KeywordGroupCrawlRequest(BaseModel):
+    account_id: int
+    keyword_group_id: int
+    keyword_limit: int = Field(default=5, ge=1, le=20)
+    max_notes_per_keyword: int = Field(default=5, ge=1, le=50)
+    time_sleep: float = Field(default=1, ge=0, le=60)
+    comment_sleep: float = Field(default=5, ge=0, le=120)
+    fetch_comments: bool = False
+    sort_type_choice: int = Field(default=0, ge=0, le=4)
+    note_type: int = Field(default=0, ge=0, le=2)
+    note_time: int = Field(default=0, ge=0, le=3)
 
 
 def _serialize_note(note: Note) -> dict[str, Any]:
@@ -349,6 +362,7 @@ def _crawl_data_item(
     note: dict[str, Any] | None = None,
     comments: list[dict[str, Any]] | None = None,
     error: str = "",
+    keyword: str = "",
     quality_status: str = "unknown",
     recoverable: bool = False,
     diagnostic_kind: str | None = None,
@@ -362,6 +376,7 @@ def _crawl_data_item(
         "source": source,
         "status": status,
         "error": error,
+        "keyword": keyword,
         "quality_status": quality_status,
         "recoverable": recoverable,
         "diagnostic_kind": diagnostic_kind,
@@ -386,6 +401,17 @@ def _owned_pc_account(db: Session, current_user: User, account_id: int) -> Platf
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     return account
+
+
+def _owned_keyword_group(db: Session, current_user: User, group_id: int) -> KeywordGroup:
+    group = db.get(KeywordGroup, group_id)
+    if group is None or group.user_id != current_user.id or group.platform != "xhs":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Keyword group not found")
+    return group
+
+
+def _summary_message(*, saved_count: int, skipped_count: int, rate_limited_count: int, missing_detail_count: int) -> str:
+    return f"采集完成：保存 {saved_count} 条，跳过 {skipped_count} 条，访问频繁 {rate_limited_count} 条，详情缺失 {missing_detail_count} 条。"
 
 
 @router.get("/diagnostics")
@@ -607,6 +633,262 @@ def crawl_user_notes(
 
 def _sse_event(data: dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/keyword-group")
+def crawl_keyword_group(
+    payload: KeywordGroupCrawlRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    adapter_factory=Depends(get_xhs_pc_api_adapter_factory),
+):
+    account = _owned_pc_account(db, current_user, payload.account_id)
+    group = _owned_keyword_group(db, current_user, payload.keyword_group_id)
+    cookies = _get_owned_pc_account_cookies(db, current_user, payload.account_id)
+    keywords = [str(keyword).strip() for keyword in (group.keywords or []) if str(keyword).strip()][: payload.keyword_limit]
+    if not keywords:
+        raise HTTPException(status_code=422, detail="Keyword group has no keywords")
+
+    task = _create_crawl_task(
+        db,
+        current_user,
+        "keyword_group",
+        {
+            "account_id": account.id,
+            "keyword_group_id": group.id,
+            "keyword_group_name": group.name,
+            "keywords": keywords,
+            "max_notes_per_keyword": payload.max_notes_per_keyword,
+            "time_sleep": payload.time_sleep,
+            "fetch_comments": payload.fetch_comments,
+        },
+    )
+    task_id = task.id
+    adapter = adapter_factory(cookies)
+
+    def generate() -> Generator[str, None, None]:
+        items: list[dict[str, Any]] = []
+        seen_sources: set[str] = set()
+        error_occurred = False
+        should_stop = False
+        saved_count = 0
+        skipped_count = 0
+        rate_limited_count = 0
+        missing_detail_count = 0
+        comments_rate_limited = False
+
+        try:
+            for keyword in keywords:
+                if should_stop:
+                    break
+                yield _sse_event({"type": "progress", "message": f"正在采集「{keyword}」..."})
+                success, message, raw_payload = adapter.search_note(
+                    keyword,
+                    page=1,
+                    sort_type_choice=payload.sort_type_choice,
+                    note_type=payload.note_type,
+                    note_time=payload.note_time,
+                    note_range=0,
+                    pos_distance=0,
+                    geo="",
+                )
+                if not success:
+                    kind = "xhs_rate_limited" if is_xhs_rate_limit_signal(message=message) else "search_api_failed"
+                    skipped_count += 1
+                    if kind == "xhs_rate_limited":
+                        rate_limited_count += 1
+                        should_stop = True
+                    item = _crawl_data_item(
+                        source=keyword,
+                        status="failed",
+                        error=message or "search failed",
+                        keyword=keyword,
+                        quality_status="rate_limited" if kind == "xhs_rate_limited" else "unknown",
+                        diagnostic_kind=kind,
+                        recoverable=True,
+                        user_message=build_user_message("xhs_rate_limited", "rate_limited") if kind == "xhs_rate_limited" else "搜索接口返回失败，请稍后重试。",
+                    )
+                    items.append(item)
+                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                    continue
+
+                per_keyword_count = 0
+                for raw_item in _data_items(raw_payload):
+                    if per_keyword_count >= payload.max_notes_per_keyword or should_stop:
+                        break
+                    search_note = _normalize_search_item(raw_item)
+                    note_url = str(search_note.get("note_url") or "")
+                    source = note_url or str(search_note.get("note_id") or keyword)
+                    if source in seen_sources:
+                        continue
+                    seen_sources.add(source)
+                    per_keyword_count += 1
+
+                    if not note_url or should_reject_short_explore_url(note_url):
+                        quality = _quality_from_short_url(note_url or source)
+                        skipped_count += 1
+                        missing_detail_count += 1
+                        _record_crawl_diagnostic(
+                            db,
+                            current_user=current_user,
+                            task=task,
+                            account=account,
+                            source=source,
+                            note=search_note,
+                            stage="detail",
+                            kind="missing_xsec_token_short_explore",
+                            message="Search result missing stable detail URL or xsec_token",
+                            user_message=quality["user_message"],
+                            recoverable=False,
+                            raw_payload=search_note.get("raw") if isinstance(search_note.get("raw"), dict) else {},
+                            note_url=note_url or None,
+                        )
+                        item = _crawl_data_item(source=source, status="failed", note=search_note, error=quality["user_message"], keyword=keyword, **_quality_item_fields(quality))
+                        items.append(item)
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        _sleep_between_requests(payload.time_sleep)
+                        continue
+
+                    detail_success, detail_message, detail_payload = adapter.get_note_info(note_url)
+                    if not detail_success:
+                        kind = "xhs_rate_limited" if is_xhs_rate_limit_signal(url=note_url, message=detail_message) else "detail_api_failed"
+                        quality = {
+                            "quality_status": "rate_limited" if kind == "xhs_rate_limited" else "detail_api_failed",
+                            "diagnostic_kind": kind,
+                            "recoverable": True,
+                            "user_message": build_user_message(kind, "rate_limited" if kind == "xhs_rate_limited" else "detail_api_failed"),
+                            "can_save": False,
+                        }
+                        skipped_count += 1
+                        if kind == "xhs_rate_limited":
+                            rate_limited_count += 1
+                            should_stop = True
+                        else:
+                            missing_detail_count += 1
+                        _record_crawl_diagnostic(
+                            db,
+                            current_user=current_user,
+                            task=task,
+                            account=account,
+                            source=source,
+                            note=search_note,
+                            stage="detail",
+                            kind=kind,
+                            message=detail_message or "detail failed",
+                            user_message=quality["user_message"],
+                            recoverable=True,
+                            raw_payload=detail_payload or {},
+                            note_url=note_url,
+                        )
+                        item = _crawl_data_item(source=source, status="failed", note=search_note, error=detail_message or "detail failed", keyword=keyword, **_quality_item_fields(quality))
+                        items.append(item)
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        _sleep_between_requests(payload.time_sleep)
+                        continue
+
+                    detail_note = _normalize_detail_payload(detail_payload or {}, source_url=note_url)
+                    detail_note["note_url"] = detail_note.get("note_url") or note_url
+                    quality = evaluate_detail_quality(detail_note, detail_payload)
+                    detail_note.update(quality)
+                    comments_list: list[dict[str, Any]] = []
+                    comment_status = "not_requested"
+                    comment_error = ""
+                    if payload.fetch_comments and quality["can_save"]:
+                        if comments_rate_limited:
+                            comment_status = "skipped_rate_limited"
+                            comment_error = _comment_skip_error()
+                        else:
+                            comment_success, comment_message, comment_payload = adapter.get_note_comments(note_url)
+                            if comment_success:
+                                comments_list = normalize_comment_payload(comment_payload)
+                                comment_status = "success"
+                            else:
+                                comment_error = comment_message or "comment failed"
+                                comment_status = _comment_failure_status(comment_error)
+                                if comment_status == "rate_limited":
+                                    comments_rate_limited = True
+                                    yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
+                            _sleep_between_requests(payload.comment_sleep)
+
+                    saved = False
+                    if quality["can_save"]:
+                        saved = bool(_save_normalized_notes(db, account, [detail_note]))
+                        saved_count += 1 if saved else 0
+                    else:
+                        skipped_count += 1
+                        missing_detail_count += 1
+                        _record_crawl_diagnostic(
+                            db,
+                            current_user=current_user,
+                            task=task,
+                            account=account,
+                            source=source,
+                            note=detail_note,
+                            stage="detail",
+                            kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
+                            message=str(quality["diagnostic_kind"] or "low quality detail"),
+                            user_message=quality["user_message"],
+                            recoverable=bool(quality["recoverable"]),
+                            raw_payload=detail_payload or {},
+                            note_url=note_url,
+                        )
+                    item = _crawl_data_item(
+                        source=source,
+                        status="success" if saved else "partial",
+                        note=detail_note,
+                        comments=comments_list,
+                        keyword=keyword,
+                        comment_status=comment_status,
+                        comment_error=comment_error,
+                        **_quality_item_fields(quality, saved=saved),
+                    )
+                    items.append(item)
+                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                    _sleep_between_requests(payload.time_sleep)
+        except Exception as exc:
+            error_occurred = True
+            yield _sse_event({"type": "error", "message": str(exc)})
+
+        success_count = len([item for item in items if item["status"] == "success"])
+        failed_count = len(items) - success_count
+        summary_message = _summary_message(
+            saved_count=saved_count,
+            skipped_count=skipped_count,
+            rate_limited_count=rate_limited_count,
+            missing_detail_count=missing_detail_count,
+        )
+        try:
+            if error_occurred:
+                _fail_task(db, task, "partial failure")
+            else:
+                _complete_task(
+                    db,
+                    task,
+                    {
+                        "result_count": len(items),
+                        "saved_count": saved_count,
+                        "skipped_count": skipped_count,
+                        "rate_limited_count": rate_limited_count,
+                        "missing_detail_count": missing_detail_count,
+                        "summary_message": summary_message,
+                    },
+                )
+        except Exception:
+            pass
+        yield _sse_event({
+            "type": "done",
+            "task_id": task_id,
+            "total": len(items),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "saved_count": saved_count,
+            "skipped_count": skipped_count,
+            "rate_limited_count": rate_limited_count,
+            "missing_detail_count": missing_detail_count,
+            "summary_message": summary_message,
+        })
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/data")

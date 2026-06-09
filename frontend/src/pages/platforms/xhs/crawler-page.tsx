@@ -8,14 +8,15 @@ import {
   LoadingOutlined,
   ReloadOutlined,
   SearchOutlined,
+  SettingOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Checkbox, Col, Empty, Form, Input, InputNumber, Row, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Form, Input, InputNumber, Row, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
-import { crawlXhsDataStream, fetchAccounts } from "../../../lib/api";
-import type { PlatformAccount, XhsDataCrawlItem, XhsDataCrawlMode } from "../../../types";
+import { crawlXhsDataStream, crawlXhsKeywordGroupStream, fetchAccounts, fetchKeywordGroups } from "../../../lib/api";
+import type { KeywordGroup, PlatformAccount, XhsDataCrawlItem, XhsDataCrawlMode, XhsKeywordGroupCrawlSummary } from "../../../types";
 
 const { Title, Text } = Typography;
 
@@ -256,9 +257,18 @@ function exportRowsToExcel(items: XhsDataCrawlItem[]) {
 }
 
 export function XhsCrawlerPage() {
+  const [searchParams] = useSearchParams();
+  const initialKeywordGroupId = Number(searchParams.get("keyword_group_id") || 0) || null;
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
+  const [keywordGroups, setKeywordGroups] = useState<KeywordGroup[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
-  const [mode, setMode] = useState<XhsDataCrawlMode>("note_urls");
+  const [selectedKeywordGroupId, setSelectedKeywordGroupId] = useState<number | null>(initialKeywordGroupId);
+  const [keywordLimit, setKeywordLimit] = useState(5);
+  const [maxNotesPerKeyword, setMaxNotesPerKeyword] = useState(5);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [summaryMessage, setSummaryMessage] = useState<string | null>(null);
+  const [keywordGroupSummary, setKeywordGroupSummary] = useState<XhsKeywordGroupCrawlSummary | null>(null);
+  const [mode, setMode] = useState<XhsDataCrawlMode>(initialKeywordGroupId ? "search" : "note_urls");
   const [urls, setUrls] = useState("");
   const [keyword, setKeyword] = useState("");
   const [pages, setPages] = useState(1);
@@ -276,6 +286,8 @@ export function XhsCrawlerPage() {
   const [error, setError] = useState<string | null>(null);
 
   const pcAccounts = useMemo(() => accounts.filter((a) => a.platform === "xhs" && a.sub_type === "pc"), [accounts]);
+  const selectedKeywordGroup = useMemo(() => keywordGroups.find((group) => group.id === selectedKeywordGroupId) || null, [keywordGroups, selectedKeywordGroupId]);
+  const isKeywordGroupMode = Boolean(selectedKeywordGroupId);
   const commentRateLimitedCount = useMemo(() => items.filter((item) => item.comment_status === "rate_limited").length, [items]);
   const commentSkippedCount = useMemo(() => items.filter((item) => item.comment_status === "skipped_rate_limited").length, [items]);
   const lowQualityCount = useMemo(() => items.filter((item) => item.quality_status && item.quality_status !== "valid_detail").length, [items]);
@@ -293,9 +305,61 @@ export function XhsCrawlerPage() {
     finally { setIsLoadingAccounts(false); }
   }
 
+  async function loadKeywordGroups() {
+    try {
+      const result = await fetchKeywordGroups("xhs");
+      setKeywordGroups(result.items);
+      setSelectedKeywordGroupId((current) => current && result.items.some((group) => group.id === current) ? current : null);
+    } catch { setError("关键词组加载失败。"); }
+  }
+
+  async function handleSimpleRun() {
+    setError(null);
+    setSummaryMessage(null);
+    setKeywordGroupSummary(null);
+    if (!selectedAccountId) { setError("请先选择一个 PC 账号。"); return; }
+    if (!selectedKeywordGroupId) { setError("请先选择一个关键词组。"); return; }
+    setIsRunning(true);
+    setItems([]);
+    setSuccessCount(0);
+    setFailedCount(0);
+    setProgressMsg(null);
+    try {
+      const summary = await crawlXhsKeywordGroupStream(
+        {
+          account_id: selectedAccountId,
+          keyword_group_id: selectedKeywordGroupId,
+          keyword_limit: keywordLimit,
+          max_notes_per_keyword: maxNotesPerKeyword,
+          time_sleep: timeSleep,
+          comment_sleep: commentSleep,
+          fetch_comments: fetchCommentsChecked,
+          sort_type_choice: filters.sort_type_choice,
+          note_type: filters.note_type,
+          note_time: filters.note_time,
+        },
+        (_index, item) => { setItems((prev) => [...prev, item]); },
+        (msg) => { setProgressMsg(msg); },
+        (msg) => { setError(msg); },
+      );
+      setKeywordGroupSummary(summary);
+      setSuccessCount(summary.success_count);
+      setFailedCount(summary.failed_count);
+      setSummaryMessage(summary.summary_message || `采集完成：保存 ${summary.saved_count} 条，跳过 ${summary.skipped_count} 条。`);
+      setProgressMsg(null);
+    } catch (err: unknown) {
+      const axiosErr = err as { message?: string };
+      setError(axiosErr?.message || "关键词组采集失败");
+    }
+    finally { setIsRunning(false); }
+  }
+
   async function handleRun(e?: FormEvent) {
     e?.preventDefault();
     setError(null);
+    setSummaryMessage(null);
+    setKeywordGroupSummary(null);
+    if (isKeywordGroupMode) { await handleSimpleRun(); return; }
     if (!selectedAccountId) { setError("请先选择一个 PC 账号。"); return; }
     const parsedUrls = splitUrls(urls);
     if (mode !== "search" && parsedUrls.length === 0) { setError("请至少输入一个笔记链接。"); return; }
@@ -322,7 +386,7 @@ export function XhsCrawlerPage() {
     finally { setIsRunning(false); }
   }
 
-  useEffect(() => { void loadAccounts(); }, []);
+  useEffect(() => { void loadAccounts(); void loadKeywordGroups(); }, []);
 
   const noPcAccount = !isLoadingAccounts && pcAccounts.length === 0;
 
@@ -332,6 +396,7 @@ export function XhsCrawlerPage() {
     { title: "诊断", key: "diagnostic_kind", width: 130, render: (_, item) => diagnosticKindTag(item) },
     { title: "提示", key: "user_message", width: 220, ellipsis: true, render: (_, item) => item.user_message ? <Text type="secondary" style={{ fontSize: 12 }}>{item.user_message}</Text> : "-" },
     { title: "入库", key: "saved", width: 90, render: (_, item) => savedStatusTag(item) },
+    { title: "关键词", dataIndex: "keyword", width: 110, render: (value: string) => value || "-" },
     { title: "来源", dataIndex: "source", width: 200, ellipsis: true },
     { title: "标题", key: "title", width: 200, ellipsis: true, render: (_, item) => item.note?.title || "-" },
     { title: "作者", key: "author", width: 100, render: (_, item) => item.note?.author_name || "-" },
@@ -358,6 +423,13 @@ export function XhsCrawlerPage() {
 
       <Card style={{ marginBottom: 24 }}>
         <Form layout="vertical" onFinish={() => void handleRun()}>
+          <Alert
+            type="info"
+            showIcon
+            message="关键词组一键采集"
+            description="选择关键词组后，系统会自动低频搜索、获取详情，只保存有效内容，并在结束后汇总保存和跳过原因。"
+            style={{ marginBottom: 16 }}
+          />
           <Row gutter={16}>
             <Col span={8}>
               <Form.Item label="PC 账号">
@@ -365,28 +437,50 @@ export function XhsCrawlerPage() {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="抓取方式">
-                <Select value={mode} onChange={(v) => setMode(v)} options={[{ value: "note_urls", label: "直接爬取笔记链接" }, { value: "search", label: "通过搜索爬取详情" }, { value: "comments", label: "只爬取评论" }]} />
+              <Form.Item label="关键词组">
+                <Select allowClear value={selectedKeywordGroupId ?? undefined} onChange={(value) => setSelectedKeywordGroupId(value ?? null)} placeholder="选择关键词组后一键采集" options={keywordGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.keywords.length} 词` }))} />
               </Form.Item>
             </Col>
-            <Col span={4}>
-              <Form.Item label="Time Sleep">
-                <InputNumber min={0} max={60} step={0.5} value={timeSleep} onChange={(v) => setTimeSleep(v ?? 1)} style={{ width: "100%" }} />
-              </Form.Item>
-            </Col>
-            <Col span={4}>
-              <Form.Item label="Comment Sleep">
-                <InputNumber min={0} max={120} step={0.5} value={commentSleep} onChange={(v) => setCommentSleep(v ?? 5)} style={{ width: "100%" }} />
-              </Form.Item>
-            </Col>
+            {isKeywordGroupMode ? (
+              <>
+                <Col span={4}><Form.Item label="关键词数"><InputNumber min={1} max={20} value={keywordLimit} onChange={(v) => setKeywordLimit(v ?? 5)} style={{ width: "100%" }} /></Form.Item></Col>
+                <Col span={4}><Form.Item label="每词最多"><InputNumber min={1} max={50} value={maxNotesPerKeyword} onChange={(v) => setMaxNotesPerKeyword(v ?? 5)} style={{ width: "100%" }} /></Form.Item></Col>
+              </>
+            ) : (
+              <Col span={8}>
+                <Form.Item label="抓取方式">
+                  <Select value={mode} onChange={(v) => setMode(v)} options={[{ value: "note_urls", label: "直接爬取笔记链接" }, { value: "search", label: "通过搜索爬取详情" }, { value: "comments", label: "只爬取评论" }]} />
+                </Form.Item>
+              </Col>
+            )}
           </Row>
+          {isKeywordGroupMode && selectedKeywordGroup ? (
+            <Alert type="success" showIcon message={`将采集「${selectedKeywordGroup.name}」前 ${Math.min(keywordLimit, selectedKeywordGroup.keywords.length)} 个关键词，每个关键词最多 ${maxNotesPerKeyword} 条。`} style={{ marginBottom: 16 }} />
+          ) : null}
           <Row gutter={16}>
             <Col span={8} style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
-              <Checkbox checked={fetchCommentsChecked} onChange={(e) => setFetchCommentsChecked(e.target.checked)} disabled={mode === "comments"}>同时抓取评论</Checkbox>
+              <Checkbox checked={fetchCommentsChecked} onChange={(e) => setFetchCommentsChecked(e.target.checked)} disabled={!isKeywordGroupMode && mode === "comments"}>同时抓取评论</Checkbox>
             </Col>
           </Row>
 
-          {mode === "search" ? (
+          {isKeywordGroupMode ? (
+            <Collapse
+              ghost
+              activeKey={showAdvanced ? ["advanced"] : []}
+              onChange={(keys) => setShowAdvanced(Array.isArray(keys) ? keys.includes("advanced") : keys === "advanced")}
+              items={[{
+                key: "advanced",
+                label: <Space><SettingOutlined />高级设置</Space>,
+                children: <Row gutter={16}>
+                  <Col span={4}><Form.Item label="Time Sleep"><InputNumber min={0} max={60} step={0.5} value={timeSleep} onChange={(v) => setTimeSleep(v ?? 1)} style={{ width: "100%" }} /></Form.Item></Col>
+                  <Col span={4}><Form.Item label="Comment Sleep"><InputNumber min={0} max={120} step={0.5} value={commentSleep} onChange={(v) => setCommentSleep(v ?? 5)} style={{ width: "100%" }} /></Form.Item></Col>
+                  <Col span={4}><Form.Item label="排序"><Select value={filters.sort_type_choice} onChange={(v) => setFilters((c) => ({ ...c, sort_type_choice: v }))} options={sortOptions} /></Form.Item></Col>
+                  <Col span={4}><Form.Item label="类型"><Select value={filters.note_type} onChange={(v) => setFilters((c) => ({ ...c, note_type: v }))} options={noteTypeOptions} /></Form.Item></Col>
+                  <Col span={4}><Form.Item label="时间范围"><Select value={filters.note_time} onChange={(v) => setFilters((c) => ({ ...c, note_time: v }))} options={noteTimeOptions} /></Form.Item></Col>
+                </Row>,
+              }]}
+            />
+          ) : mode === "search" ? (
             <Row gutter={16}>
               <Col span={8}><Form.Item label="搜索关键词"><Input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="低卡早餐、通勤穿搭" /></Form.Item></Col>
               <Col span={4}><Form.Item label="爬取数量"><InputNumber min={1} max={200} value={maxNotes} onChange={(v) => { const n = v ?? 20; setMaxNotes(n); setPages(Math.max(1, Math.ceil(n / 20))); }} style={{ width: "100%" }} /></Form.Item></Col>
@@ -401,13 +495,15 @@ export function XhsCrawlerPage() {
           )}
 
           <Space>
-            <Button type="primary" htmlType="submit" loading={isRunning} disabled={noPcAccount} icon={mode === "search" ? <SearchOutlined /> : <CloudDownloadOutlined />}>
-              {isRunning ? "抓取中..." : "开始抓取"}
+            <Button type="primary" htmlType="submit" loading={isRunning} disabled={noPcAccount || (isKeywordGroupMode && !selectedKeywordGroupId)} icon={isKeywordGroupMode || mode === "search" ? <SearchOutlined /> : <CloudDownloadOutlined />}>
+              {isRunning ? "抓取中..." : isKeywordGroupMode ? "开始采集" : "开始抓取"}
             </Button>
             <Button icon={<FileExcelOutlined />} onClick={() => items.length && exportRowsToExcel(items)} disabled={!items.length}>导出 Excel</Button>
           </Space>
         </Form>
 
+        {summaryMessage && <Alert message={summaryMessage} type="success" showIcon style={{ marginTop: 16 }} />}
+        {keywordGroupSummary && <Text type="secondary" style={{ display: "block", marginTop: 8 }}>保存 {keywordGroupSummary.saved_count} 条 · 跳过 {keywordGroupSummary.skipped_count} 条 · 访问频繁 {keywordGroupSummary.rate_limited_count} 条 · 详情缺失 {keywordGroupSummary.missing_detail_count} 条</Text>}
         {error && <Alert message={error} type="error" showIcon style={{ marginTop: 16 }} />}
         {noPcAccount && (
           <Empty description="还没有可用的 PC 账号" style={{ marginTop: 24 }}>

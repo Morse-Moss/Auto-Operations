@@ -25,14 +25,15 @@ from backend.app.services.account_service import (
     serialize_account,
     upsert_platform_account_from_login,
 )
+from backend.app.services.huitun_account_service import HUITUN_INVALID_LOGIN_MESSAGE, validate_huitun_login_state
 from xhs_utils.cookie_util import trans_cookies
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
 class CookieImportRequest(BaseModel):
-    platform: str = Field(pattern="^xhs$")
-    sub_type: str = Field(pattern="^(pc|creator)$")
+    platform: str = Field(pattern="^(xhs|huitun)$")
+    sub_type: str = Field(pattern="^(pc|creator|main)$")
     cookie_string: str = Field(min_length=3)
     sync_creator: bool = False
 
@@ -56,6 +57,13 @@ def get_xhs_self_profile_adapter() -> XhsSelfProfileAdapter:
 
 def _select_adapter(sub_type: str, pc_adapter: XhsPcLoginAdapter, creator_adapter: XhsCreatorLoginAdapter):
     return creator_adapter if sub_type == "creator" else pc_adapter
+
+
+def _validate_account_type(platform: str, sub_type: str) -> None:
+    if platform == "xhs" and sub_type not in {"pc", "creator"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported XHS account type")
+    if platform == "huitun" and sub_type != "main":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported Huitun account type")
 
 
 def _sync_creator_account_from_pc_cookie(
@@ -111,18 +119,25 @@ def import_cookie(
     creator_adapter: XhsCreatorLoginAdapter = Depends(get_creator_account_adapter),
     self_profile_adapter: XhsSelfProfileAdapter = Depends(get_xhs_self_profile_adapter),
 ):
-    adapter = _select_adapter(payload.sub_type, pc_adapter, creator_adapter)
-    try:
-        user_info = adapter.get_user_info(trans_cookies(payload.cookie_string))
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cookie is invalid or expired") from exc
-
-    if payload.sub_type == "pc":
+    _validate_account_type(payload.platform, payload.sub_type)
+    if payload.platform == "huitun":
         try:
-            self_profile = self_profile_adapter.get_self_profile(cookie_header_from_text(payload.cookie_string))
-            user_info = enrich_user_info_with_xhs_self_profile(user_info, self_profile)
-        except Exception:
-            pass
+            user_info = validate_huitun_login_state(payload.cookie_string)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=HUITUN_INVALID_LOGIN_MESSAGE) from exc
+    else:
+        adapter = _select_adapter(payload.sub_type, pc_adapter, creator_adapter)
+        try:
+            user_info = adapter.get_user_info(trans_cookies(payload.cookie_string))
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cookie is invalid or expired") from exc
+
+        if payload.sub_type == "pc":
+            try:
+                self_profile = self_profile_adapter.get_self_profile(cookie_header_from_text(payload.cookie_string))
+                user_info = enrich_user_info_with_xhs_self_profile(user_info, self_profile)
+            except Exception:
+                pass
 
     account, action = upsert_platform_account_from_login(
         db=db,
@@ -132,7 +147,7 @@ def import_cookie(
         user_info=user_info,
         cookies_text=payload.cookie_string,
     )
-    if payload.sub_type == "pc" and payload.sync_creator:
+    if payload.platform == "xhs" and payload.sub_type == "pc" and payload.sync_creator:
         _sync_creator_account_from_pc_cookie(
             db=db,
             user_id=current_user.id,
@@ -170,15 +185,18 @@ def check_account(
         db.refresh(account)
         return serialize_account(account)
 
-    adapter = _select_adapter(account.sub_type or "pc", pc_adapter, creator_adapter)
     try:
         cookies_text = decrypt_text(cookie_version.encrypted_cookies)
-        user_info = adapter.get_user_info(decode_cookie_text(cookies_text))
-        try:
-            self_profile = self_profile_adapter.get_self_profile(cookie_header_from_text(cookies_text))
-            user_info = enrich_user_info_with_xhs_self_profile(user_info, self_profile)
-        except Exception:
-            pass
+        if account.platform == "huitun":
+            user_info = validate_huitun_login_state(cookies_text)
+        else:
+            adapter = _select_adapter(account.sub_type or "pc", pc_adapter, creator_adapter)
+            user_info = adapter.get_user_info(decode_cookie_text(cookies_text))
+            try:
+                self_profile = self_profile_adapter.get_self_profile(cookie_header_from_text(cookies_text))
+                user_info = enrich_user_info_with_xhs_self_profile(user_info, self_profile)
+            except Exception:
+                pass
         account.status = "active"
         account.status_message = ""
         account.nickname = user_info.get("nickname", account.nickname)
@@ -187,7 +205,7 @@ def check_account(
         account.profile_json = json.dumps(account_profile_from_user_info(user_info), ensure_ascii=False, separators=(",", ":"))
         account.updated_at = shanghai_now()
 
-        if account.sub_type == "creator":
+        if account.platform == "xhs" and account.sub_type == "creator":
             try:
                 from apis.xhs_creator_apis import XHS_Creator_Apis
                 creator_cookies = decode_cookie_text(cookies_text)
@@ -201,7 +219,7 @@ def check_account(
                 account.status_message = f"上传凭证验证异常: {upload_exc}"
     except Exception as exc:
         account.status = "expired"
-        account.status_message = str(exc)
+        account.status_message = HUITUN_INVALID_LOGIN_MESSAGE if account.platform == "huitun" else str(exc)
         account.updated_at = shanghai_now()
 
     db.commit()

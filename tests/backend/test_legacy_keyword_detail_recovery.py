@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from backend.app.services.crawl_diagnostics import diagnostic_payload_summary, redact_diagnostic_raw
+from backend.app.services.huitun_crypto import decrypt_huitun_ext_data
 from backend.app.services.huitun_keyword_source import (
     dedupe_keyword_candidates,
     parse_hotword_rows_from_cells,
@@ -14,6 +15,12 @@ from backend.app.services.xhs_detail_recovery import (
     mask_xsec_token,
     should_reject_short_explore_url,
 )
+
+
+def test_decrypt_huitun_ext_data_matches_web_client_aes_ecb_payload():
+    encrypted = "Wwqv3HPZinqRDh8BaBPy5Hq54ohd4/T3A3YGtR+95x5NVHXAeQGZhgho9nAYUF4DzZnHsomjpTgz+ThHadh3DQ=="
+
+    assert decrypt_huitun_ext_data(encrypted) == {"list": [{"keyword": "浴缸", "hotValue": "12.3万"}]}
 
 
 def test_parse_huitun_number_handles_empty_and_units():

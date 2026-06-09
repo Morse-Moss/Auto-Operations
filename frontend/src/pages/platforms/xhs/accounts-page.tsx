@@ -67,7 +67,7 @@ export function XhsAccountsPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const loadedAccounts = await fetchAccounts("xhs");
+      const loadedAccounts = await fetchAccounts();
       setAccounts(loadedAccounts);
     } catch {
       setError("账号列表加载失败。");
@@ -141,7 +141,7 @@ export function XhsAccountsPage() {
               账号矩阵
             </Title>
             <Text style={{ color: "rgba(255,255,255,0.45)", marginTop: 4, display: "block" }}>
-              管理 PC 与 Creator 账号、Cookie 状态、健康检查和账号作用域。
+              管理小红书与灰豚账号、登录态、健康检查和账号作用域。
             </Text>
           </div>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
@@ -176,10 +176,10 @@ export function XhsAccountsPage() {
             description={
               <Space direction="vertical" size={4}>
                 <Text strong style={{ color: "rgba(255,255,255,0.65)" }}>
-                  还没有绑定小红书账号
+                  还没有绑定小红书或灰豚账号
                 </Text>
                 <Text style={{ color: "rgba(255,255,255,0.35)", fontSize: 13 }}>
-                  先绑定一个 PC 账号，用于搜索、抓取和账号健康检查；Creator 账号用于发布。
+                  绑定小红书 PC 账号用于搜索和抓取；绑定灰豚账号用于自动获取关键词候选词。
                 </Text>
               </Space>
             }
@@ -193,7 +193,9 @@ export function XhsAccountsPage() {
             {accounts.map((account) => {
               const isChecking = checkingAccountIds.has(account.id);
               const isCreator = account.sub_type === "creator";
+              const isHuitun = account.platform === "huitun";
               const statusColor = statusColorMap[account.status] || "default";
+              const borderColor = isHuitun ? "#d48806" : isCreator ? "#722ed1" : "#1668dc";
 
               return (
                 <Col xs={24} sm={24} md={12} lg={8} key={account.id}>
@@ -201,8 +203,8 @@ export function XhsAccountsPage() {
                     size="small"
                     style={{
                       background: "#1a1a1a",
-                      borderColor: isCreator ? "#303050" : "#303030",
-                      borderLeft: `3px solid ${isCreator ? "#722ed1" : "#1668dc"}`,
+                      borderColor: isHuitun ? "#4d3a12" : isCreator ? "#303050" : "#303030",
+                      borderLeft: `3px solid ${borderColor}`,
                     }}
                     styles={{ body: { padding: 20 } }}
                   >
@@ -238,7 +240,24 @@ export function XhsAccountsPage() {
                     </div>
 
                     {/* Stats row */}
-                    {isCreator ? (
+                    {isHuitun ? (
+                      <Row gutter={16} style={{ marginBottom: 12 }}>
+                        <Col span={12}>
+                          <Statistic
+                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>类型</span>}
+                            value="灰豚"
+                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
+                          />
+                        </Col>
+                        <Col span={12}>
+                          <Statistic
+                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>用途</span>}
+                            value="关键词获取"
+                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
+                          />
+                        </Col>
+                      </Row>
+                    ) : isCreator ? (
                       <Row gutter={16} style={{ marginBottom: 12 }}>
                         <Col span={12}>
                           <Statistic

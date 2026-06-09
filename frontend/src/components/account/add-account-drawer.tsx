@@ -12,8 +12,14 @@ type AddAccountDrawerProps = {
   onBound: () => void;
 };
 
-type AccountType = "pc" | "creator";
+type AccountPlatform = "xhs" | "huitun";
+type AccountType = "pc" | "creator" | "main";
 type LoginMethod = "qr" | "phone" | "cookie";
+
+const platformOptions = [
+  { label: "小红书", value: "xhs" as const },
+  { label: "灰豚", value: "huitun" as const },
+];
 
 const accountTypeOptions = [
   { label: "PC", value: "pc" as const },
@@ -27,8 +33,15 @@ const loginMethodOptions = [
 ];
 
 export function AddAccountDrawer({ open, onClose, onBound }: AddAccountDrawerProps) {
+  const [platform, setPlatform] = useState<AccountPlatform>("xhs");
   const [accountType, setAccountType] = useState<AccountType>("pc");
   const [method, setMethod] = useState<LoginMethod>("qr");
+
+  function handlePlatformChange(nextPlatform: AccountPlatform) {
+    setPlatform(nextPlatform);
+    setMethod("qr");
+    setAccountType(nextPlatform === "huitun" ? "main" : "pc");
+  }
 
   function handleConfirmed(account: PlatformAccount) {
     const actionText = account.action === "updated" ? "已更新到账号矩阵" : "已加入账号矩阵";
@@ -41,9 +54,9 @@ export function AddAccountDrawer({ open, onClose, onBound }: AddAccountDrawerPro
       title={
         <div>
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>
-            XHS Account
+            Account Matrix
           </div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: "rgba(255,255,255,0.88)" }}>添加小红书账号</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: "rgba(255,255,255,0.88)" }}>添加小红书 / 灰豚账号</div>
         </div>
       }
       placement="right"
@@ -59,27 +72,38 @@ export function AddAccountDrawer({ open, onClose, onBound }: AddAccountDrawerPro
       <div style={{ marginBottom: 20 }}>
         <Segmented
           block
-          value={accountType}
-          options={accountTypeOptions}
-          onChange={(val) => setAccountType(val as AccountType)}
+          value={platform}
+          options={platformOptions}
+          onChange={(val) => handlePlatformChange(val as AccountPlatform)}
         />
       </div>
+
+      {platform === "xhs" ? (
+        <div style={{ marginBottom: 20 }}>
+          <Segmented
+            block
+            value={accountType}
+            options={accountTypeOptions}
+            onChange={(val) => setAccountType(val as AccountType)}
+          />
+        </div>
+      ) : null}
 
       <div style={{ marginBottom: 24 }}>
         <Segmented
           block
           value={method}
-          options={loginMethodOptions}
+          options={platform === "huitun" ? loginMethodOptions.filter((option) => option.value !== "phone") : loginMethodOptions}
           onChange={(val) => setMethod(val as LoginMethod)}
         />
       </div>
 
       {method === "qr" ? (
-        <QrLoginPanel accountType={accountType} onConfirmed={handleConfirmed} />
+        <QrLoginPanel platform={platform} accountType={platform === "huitun" ? "main" : accountType} onConfirmed={handleConfirmed} />
       ) : method === "cookie" ? (
-        <CookieImportPanel accountType={accountType} onImported={handleConfirmed} />
+        <CookieImportPanel platform={platform} accountType={platform === "huitun" ? "main" : accountType} onImported={handleConfirmed} />
       ) : (
-        <PhoneLoginPanel accountType={accountType} onConfirmed={handleConfirmed} />
+        <PhoneLoginPanel accountType={accountType as "pc" | "creator"} onConfirmed={handleConfirmed} />
       )}
     </Drawer>
   );

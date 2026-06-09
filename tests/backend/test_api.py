@@ -115,24 +115,45 @@ def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
     crawler_page_source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
 
     assert "createHuitunKeywordDiscoveryRun" in api_source
+    assert "createHuitunQrLoginSession" in api_source
+    assert "pollHuitunLoginSession" in api_source
+    assert "importHuitunCookieAccount" in api_source
     assert "fetchHuitunKeywordDiscoveryRun" in api_source
     assert "importKeywordCandidatesToGroup" in api_source
     assert "importKeywordCandidates" in api_source
     assert "fetchXhsCrawlDiagnostics" in api_source
+    assert "crawlXhsKeywordGroupStream" in api_source
     assert '"/keyword-groups/huitun/discovery-runs"' in api_source
     assert '"/xhs/crawl/diagnostics"' in api_source
+    assert '"/api/xhs/crawl/keyword-group"' in api_source
     assert "export type KeywordDiscoveryItem" in types_source
     assert "export type KeywordDiscoveryRun" in types_source
     assert "export type HuitunDiscoveryRunPayload" in types_source
     assert "export type CrawlDiagnostic" in types_source
+    assert '"huitun"' in types_source
+    assert "live_account" in types_source
+    assert "account_id?: number" in types_source
+    assert "XhsKeywordGroupCrawlPayload" in types_source
     assert "quality_status" in types_source
     assert "diagnostic_kind" in types_source
     assert "灰豚热词" in keywords_page_source
+    assert "获取灰豚候选词" in keywords_page_source
+    assert "手工导入灰豚热词" in keywords_page_source
+    assert "live_account" in keywords_page_source
+    assert "fetchHuitunHotwordsFromAccount" in keywords_page_source
     assert "parseHuitunHotwords" in keywords_page_source
     assert "importSelectedCandidates" in keywords_page_source
+    assert "keyword_group_id" in keywords_page_source
+    assert "开始采集" in keywords_page_source
     assert "quality_status" in crawler_page_source
     assert "diagnostic_kind" in crawler_page_source
     assert "是否已入库" in crawler_page_source
+    assert "关键词组一键采集" in crawler_page_source
+    assert "傻瓜模式" not in crawler_page_source
+    assert "高级设置" in crawler_page_source
+    assert "crawlXhsKeywordGroupStream" in crawler_page_source
+    assert "summary_message" in crawler_page_source
+    assert "采集完成" in crawler_page_source
 
 
 def test_discovery_uses_antd_components_and_preserves_core_logic():
@@ -546,6 +567,61 @@ class FailingQrLoginAdapter:
         raise RuntimeError("proxy refused while creating qrcode")
 
 
+class FakeHuitunLiveKeywordClient:
+    def fetch_huitun_hotwords(self, cookie_text, seed_keyword, limit):
+        assert cookie_text == '{"xhsapiToken":"keyword-token"}'
+        assert seed_keyword == "低卡早餐"
+        assert limit == 20
+        return [
+            {
+                "source_keyword": "低卡早餐",
+                "keyword": "低卡早餐食谱",
+                "hot_value_text": "12.3w",
+                "hot_value_number": 123000,
+                "note_count": 456,
+                "interaction_text": "3.2w",
+                "interaction_number": 32000,
+                "categories": [{"label": "美食", "rate": "80"}],
+                "rank_index": 1,
+            },
+            {
+                "source_keyword": "低卡早餐",
+                "keyword": "低卡早餐搭配",
+                "hot_value_text": "8.1w",
+                "hot_value_number": 81000,
+                "note_count": 220,
+                "interaction_text": "1.9w",
+                "interaction_number": 19000,
+                "categories": [{"label": "生活", "rate": "60"}],
+                "rank_index": 2,
+            },
+        ]
+
+
+class FakeHuitunAccountClient:
+    def create_huitun_qrcode(self):
+        return {
+            "ticket": "huitun-ticket-123",
+            "qr_url": "http://weixin.qq.com/q/huitun-ticket-123",
+            "qr_image_data_url": "data:image/png;base64,ZmFrZS1oaXV0dW4tcXI=",
+            "state": {"ticket": "huitun-ticket-123", "cookies": {"xhsapiToken": "temp-token"}},
+        }
+
+    def check_huitun_qrcode_status(self, state):
+        assert state["ticket"] == "huitun-ticket-123"
+        assert state["cookies"] == {"xhsapiToken": "temp-token"}
+        return {
+            "status": "confirmed",
+            "cookies_text": '{"xhsapiToken":"final-token"}',
+            "user_info": {
+                "external_user_id": "huitun-user-1",
+                "nickname": "灰豚运营号",
+                "avatar_url": "https://example.test/huitun-avatar.webp",
+                "profile": {"source": "huitun", "raw": {"userId": "huitun-user-1"}},
+            },
+        }
+
+
 class FakePhoneLoginAdapter:
     def create_phone_session(self, phone):
         assert phone == "13800138000"
@@ -573,6 +649,143 @@ def _register_and_get_access_token(username: str = "operator") -> str:
     )
     assert response.status_code == 200
     return response.json()["access_token"]
+
+
+def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
+    from backend.app.api.huitun_login_sessions import get_huitun_account_client
+    from backend.app.core.database import get_db
+    from backend.app.core.security import decrypt_text
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_huitun_account_client] = lambda: FakeHuitunAccountClient()
+    try:
+        access_token = _register_and_get_access_token()
+
+        create_response = client.post(
+            "/api/huitun/login-sessions/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert create_response.status_code == 200
+        created = create_response.json()
+        assert created["status"] == "pending"
+        assert created["qr_url"] == "http://weixin.qq.com/q/huitun-ticket-123"
+        assert created["qr_image_data_url"].startswith("data:image/png;base64,")
+        assert "xhsapiToken" not in str(created)
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.get(LoginSession, created["session_id"])
+            assert stored_session.platform == "huitun"
+            assert stored_session.sub_type == "main"
+            assert stored_session.qr_id == "huitun-ticket-123"
+            assert decrypt_text(stored_session.encrypted_temp_cookies) == '{"ticket":"huitun-ticket-123","cookies":{"xhsapiToken":"temp-token"}}'
+        finally:
+            db.close()
+
+        poll_response = client.get(
+            f"/api/huitun/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert poll_response.status_code == 200
+        polled = poll_response.json()
+        assert polled["status"] == "confirmed"
+        assert polled["account"]["platform"] == "huitun"
+        assert polled["account"]["sub_type"] == "main"
+        assert polled["account"]["nickname"] == "灰豚运营号"
+        assert "final-token" not in str(polled)
+
+        accounts_response = client.get(
+            "/api/accounts?platform=huitun",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert accounts_response.status_code == 200
+        accounts_payload = accounts_response.json()
+        assert accounts_payload["total"] == 1
+        assert accounts_payload["items"][0]["nickname"] == "灰豚运营号"
+        assert accounts_payload["items"][0]["sub_type"] == "main"
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.query(PlatformAccount).one()
+            assert account.platform == "huitun"
+            assert account.sub_type == "main"
+            assert account.external_user_id == "huitun-user-1"
+            cookie_version = db.query(AccountCookieVersion).one()
+            assert cookie_version.platform_account_id == account.id
+            assert decrypt_text(cookie_version.encrypted_cookies) == '{"xhsapiToken":"final-token"}'
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_huitun_account_client, None)
+
+
+
+def test_huitun_live_account_discovery_uses_owned_account_and_persists_candidates(tmp_path):
+    from backend.app.api.keyword_groups import get_huitun_live_keyword_client
+    from backend.app.core.database import get_db
+    from backend.app.core.security import encrypt_text
+    from backend.app.models import AccountCookieVersion, KeywordDiscoveryItem, PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_huitun_live_keyword_client] = lambda: FakeHuitunLiveKeywordClient()
+    try:
+        access_token = _register_and_get_access_token("huitun-keyword-operator")
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = PlatformAccount(
+                user_id=1,
+                platform="huitun",
+                sub_type="main",
+                external_user_id="huitun-keyword-user",
+                nickname="灰豚取词号",
+                status="active",
+            )
+            db.add(account)
+            db.flush()
+            db.add(
+                AccountCookieVersion(
+                    platform_account_id=account.id,
+                    encrypted_cookies=encrypt_text('{"xhsapiToken":"keyword-token"}'),
+                )
+            )
+            db.commit()
+            account_id = account.id
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/keyword-groups/huitun/discovery-runs",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "source_mode": "live_account",
+                "account_id": account_id,
+                "limit_per_seed": 20,
+                "inputs": [{"source_keyword": "低卡早餐"}],
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["source_mode"] == "live_account"
+        assert payload["status"] == "completed"
+        assert payload["seed_keywords"] == ["低卡早餐"]
+        assert [item["keyword"] for item in payload["items"]] == ["低卡早餐食谱", "低卡早餐搭配"]
+        assert payload["items"][0]["source_keyword"] == "低卡早餐"
+        assert payload["items"][0]["hot_value_number"] == 123000
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            items = db.query(KeywordDiscoveryItem).order_by(KeywordDiscoveryItem.rank_index).all()
+            assert len(items) == 2
+            assert items[0].keyword == "低卡早餐食谱"
+            assert items[0].raw_json["keyword"] == "低卡早餐食谱"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_huitun_live_keyword_client, None)
+
 
 
 def test_xhs_pc_qrcode_login_session_persists_and_confirms_account(tmp_path):
@@ -3137,6 +3350,104 @@ def test_xhs_crawl_routes_are_authenticated_task_backed_and_persist_notes(tmp_pa
     finally:
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
         app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_xhs_keyword_group_crawl_streams_human_summary_and_saves_valid_detail(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import KeywordGroup, Note
+
+    class FakeKeywordGroupCrawlAdapter:
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def search_note(self, keyword, page=1, **kwargs):
+            return True, "ok", {
+                "data": {
+                    "items": [
+                        {
+                            "note_card": {
+                                "note_id": "kg-valid-001",
+                                "display_title": f"{keyword} 搜索卡片",
+                                "desc": "搜索摘要",
+                                "xsec_token": "kg-token-001",
+                                "user": {"nickname": "早餐研究员"},
+                                "interact_info": {"liked_count": 12, "collected_count": 3, "comment_count": 1},
+                                "cover": {"url": "https://img.example/kg-cover.png"},
+                            }
+                        },
+                        {
+                            "note_card": {
+                                "note_id": "kg-short-001",
+                                "display_title": "缺参数卡片",
+                                "desc": "只有短链",
+                                "user": {"nickname": "短链作者"},
+                            }
+                        },
+                    ],
+                    "has_more": False,
+                }
+            }
+
+        def get_note_info(self, url):
+            return True, "ok", {
+                "data": {
+                    "items": [
+                        {
+                            "note_card": {
+                                "note_id": "kg-valid-001",
+                                "display_title": "低卡早餐详情",
+                                "desc": "鸡蛋、燕麦和酸奶的低卡早餐搭配。",
+                                "user": {"nickname": "早餐研究员"},
+                                "interact_info": {"liked_count": 88, "collected_count": 21, "comment_count": 5},
+                                "image_list": [{"url": "https://img.example/kg-detail.png"}],
+                                "tag_list": [{"name": "低卡早餐"}],
+                            }
+                        }
+                    ]
+                }
+            }
+
+        def get_note_comments(self, note_url):
+            return True, "ok", {"data": {"comments": []}}
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(tmp_path, "keyword-group-crawl-owner")
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeKeywordGroupCrawlAdapter
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        group = KeywordGroup(user_id=1, platform="xhs", name="早餐热词", keywords=["低卡早餐"])
+        db.add(group)
+        db.commit()
+        group_id = group.id
+    finally:
+        db.close()
+
+    try:
+        response = client.post(
+            "/api/xhs/crawl/keyword-group",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "keyword_group_id": group_id, "keyword_limit": 1, "max_notes_per_keyword": 2, "time_sleep": 0},
+        )
+        assert response.status_code == 200
+        parsed = _parse_sse_response(response)
+        assert parsed["saved_count"] == 1
+        assert parsed["skipped_count"] >= 1
+        assert parsed["missing_detail_count"] >= 1
+        assert parsed["summary_message"].startswith("采集完成")
+        assert any(item.get("keyword") == "低卡早餐" for item in parsed["items"])
+        assert any(item.get("saved") is True for item in parsed["items"])
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            notes = db.query(Note).filter(Note.note_id == "kg-valid-001").all()
+            assert len(notes) == 1
+            assert notes[0].title == "低卡早餐详情"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
 
 
 def test_xhs_data_crawl_marks_partial_failures_and_fetches_comments(tmp_path):

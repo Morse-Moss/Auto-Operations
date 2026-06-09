@@ -6,7 +6,7 @@
 #
 # Usage:
 #   docker build -t spider-xhs .
-#   docker run -p 8000:8000 -v ./data:/app/data -v ./config:/app/config spider-xhs
+#   docker run -p 18081:18081 -v ./data:/app/data -v ./config:/app/config spider-xhs
 # ==============================================================================
 
 # ---------------------------------------------------------------------------
@@ -66,10 +66,10 @@ ENV PYTHONUNBUFFERED=1 \
     FRONTEND_SERVE_STATIC=true \
     CONFIG_FILE=/app/config/default.yaml
 
-EXPOSE 8000
+EXPOSE 18081
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/api/health || exit 1
+    CMD curl -f http://localhost:18081/api/health || exit 1
 
-CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "18081"]

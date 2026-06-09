@@ -2,15 +2,16 @@ import { Alert, Button, Checkbox, Form, Input, Space } from "antd";
 import { ImportOutlined } from "@ant-design/icons";
 import { useState } from "react";
 
-import { importXhsCookieAccount } from "../../lib/api";
+import { importHuitunCookieAccount, importXhsCookieAccount } from "../../lib/api";
 import type { PlatformAccount } from "../../types";
 
 type CookieImportPanelProps = {
-  accountType: "pc" | "creator";
+  platform?: "xhs" | "huitun";
+  accountType: "pc" | "creator" | "main";
   onImported: (account: PlatformAccount) => void;
 };
 
-export function CookieImportPanel({ accountType, onImported }: CookieImportPanelProps) {
+export function CookieImportPanel({ platform = "xhs", accountType, onImported }: CookieImportPanelProps) {
   const [cookieString, setCookieString] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,11 +26,13 @@ export function CookieImportPanel({ accountType, onImported }: CookieImportPanel
 
     setIsSubmitting(true);
     try {
-      const account = await importXhsCookieAccount({
-        sub_type: accountType,
-        cookie_string: cookieString.trim(),
-        sync_creator: accountType === "pc" ? syncCreator : undefined
-      });
+      const account = platform === "huitun"
+        ? await importHuitunCookieAccount({ cookie_string: cookieString.trim() })
+        : await importXhsCookieAccount({
+            sub_type: accountType as "pc" | "creator",
+            cookie_string: cookieString.trim(),
+            sync_creator: accountType === "pc" ? syncCreator : undefined
+          });
       onImported(account);
       setCookieString("");
     } catch {
@@ -46,14 +49,14 @@ export function CookieImportPanel({ accountType, onImported }: CookieImportPanel
           <Input.TextArea
             value={cookieString}
             onChange={(e) => setCookieString(e.target.value)}
-            placeholder="a1=...; web_session=...;"
+            placeholder={platform === "huitun" ? "xhsapiToken=...;" : "a1=...; web_session=...;"}
             rows={6}
             style={{ background: "#1f1f1f", borderColor: "#303030", color: "rgba(255,255,255,0.88)" }}
           />
         </Form.Item>
       </Form>
 
-      {accountType === "pc" ? (
+      {platform === "xhs" && accountType === "pc" ? (
         <Checkbox
           checked={syncCreator}
           onChange={(event) => setSyncCreator(event.target.checked)}

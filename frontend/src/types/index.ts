@@ -1,4 +1,4 @@
-export type PlatformId = "xhs" | "douyin" | "kuaishou" | "weibo" | "xianyu" | "taobao";
+export type PlatformId = "xhs" | "huitun" | "douyin" | "kuaishou" | "weibo" | "xianyu" | "taobao";
 
 export type PlatformMeta = {
   id: PlatformId;
@@ -48,7 +48,7 @@ export type AuthPayload = AuthTokens & {
 export type PlatformAccount = {
   id: number;
   platform: PlatformId;
-  sub_type: "pc" | "creator" | null;
+  sub_type: "pc" | "creator" | "main" | null;
   external_user_id?: string;
   nickname: string;
   avatar_url?: string;
@@ -137,10 +137,35 @@ export type XhsDataCrawlPayload = {
   geo?: string;
 };
 
+export type XhsKeywordGroupCrawlPayload = {
+  account_id: number;
+  keyword_group_id: number;
+  keyword_limit?: number;
+  max_notes_per_keyword?: number;
+  time_sleep?: number;
+  comment_sleep?: number;
+  fetch_comments?: boolean;
+  sort_type_choice?: number;
+  note_type?: number;
+  note_time?: number;
+};
+
+export type XhsKeywordGroupCrawlSummary = {
+  total: number;
+  success_count: number;
+  failed_count: number;
+  saved_count: number;
+  skipped_count: number;
+  rate_limited_count: number;
+  missing_detail_count: number;
+  summary_message: string;
+};
+
 export type XhsDataCrawlItem = {
   source: string;
   status: "success" | "partial" | "failed" | "skipped" | string;
   error: string;
+  keyword?: string;
   quality_status?: string;
   recoverable?: boolean;
   diagnostic_kind?: string | null;
@@ -590,7 +615,7 @@ export type KeywordGroupDetail = KeywordGroup & {
   };
 };
 
-export type HuitunDiscoverySourceMode = "manual_table" | "manual_json" | "local_connector_output";
+export type HuitunDiscoverySourceMode = "manual_table" | "manual_json" | "local_connector_output" | "live_account";
 
 export type KeywordDiscoveryItem = {
   id: number;
@@ -628,6 +653,7 @@ export type KeywordDiscoveryRun = {
 export type HuitunDiscoveryRunPayload = {
   source_mode: HuitunDiscoverySourceMode;
   limit_per_seed?: number;
+  account_id?: number;
   inputs: Array<{
     source_keyword: string;
     table_rows?: string[][];

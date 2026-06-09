@@ -1,6 +1,7 @@
 import {
   DeleteOutlined,
   EditOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -10,6 +11,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   Empty,
   Form,
   Input,
@@ -25,19 +27,21 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
   createHuitunKeywordDiscoveryRun,
   createKeywordGroup,
   deleteKeywordGroup,
+  fetchAccounts,
   fetchKeywordGroup,
   fetchKeywordGroups,
   importKeywordCandidates,
   importKeywordCandidatesToGroup,
   updateKeywordGroup,
 } from "../../../lib/api";
-import type { KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, KeywordGroupDetail } from "../../../types";
+import type { KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, KeywordGroupDetail, PlatformAccount } from "../../../types";
 
 const { Text } = Typography;
 
@@ -69,6 +73,7 @@ function categoryText(item: KeywordDiscoveryItem): string {
 }
 
 export function XhsKeywordsPage() {
+  const navigate = useNavigate();
   const [groups, setGroups] = useState<KeywordGroup[]>([]);
   const [detailsByGroup, setDetailsByGroup] = useState<
     Record<number, KeywordGroupDetail>
@@ -78,6 +83,8 @@ export function XhsKeywordsPage() {
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isWorking, setIsWorking] = useState(false);
+  const [huitunAccounts, setHuitunAccounts] = useState<PlatformAccount[]>([]);
+  const [selectedHuitunAccountId, setSelectedHuitunAccountId] = useState<number | null>(null);
   const [huitunSeed, setHuitunSeed] = useState("");
   const [huitunRows, setHuitunRows] = useState("");
   const [huitunRun, setHuitunRun] = useState<KeywordDiscoveryRun | null>(null);
@@ -92,8 +99,10 @@ export function XhsKeywordsPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await fetchKeywordGroups("xhs");
+      const [result, accounts] = await Promise.all([fetchKeywordGroups("xhs"), fetchAccounts("huitun")]);
       setGroups(result.items);
+      setHuitunAccounts(accounts);
+      setSelectedHuitunAccountId((currentId) => currentId ?? accounts[0]?.id ?? null);
       const details = await Promise.all(
         result.items.map(async (group) => {
           try {
@@ -205,6 +214,37 @@ export function XhsKeywordsPage() {
     }
   }
 
+  async function fetchHuitunHotwordsFromAccount() {
+    const seed = huitunSeed.trim();
+    if (!seed) {
+      setMessage("请输入一个种子关键词。");
+      return;
+    }
+    if (!selectedHuitunAccountId) {
+      setMessage("请先到账号矩阵绑定灰豚账号。");
+      return;
+    }
+    setIsHuitunWorking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const run = await createHuitunKeywordDiscoveryRun({
+        source_mode: "live_account",
+        account_id: selectedHuitunAccountId,
+        limit_per_seed: 50,
+        inputs: [{ source_keyword: seed }],
+      });
+      setHuitunRun(run);
+      setSelectedCandidateIds(run.items.map((item) => item.id));
+      setTargetGroupName(seed ? `${seed} 热词` : "灰豚热词");
+      setMessage(run.items.length ? "已获取灰豚候选词，请选择要导入的关键词。" : "没有获取到候选词，可展开手工导入灰豚热词临时处理。");
+    } catch {
+      setMessage("灰豚候选词获取失败，请检查账号登录态，或使用手工导入灰豚热词。");
+    } finally {
+      setIsHuitunWorking(false);
+    }
+  }
+
   async function parseHuitunHotwords() {
     const seed = huitunSeed.trim();
     const tableRows = parseHuitunTableRows(huitunRows);
@@ -297,18 +337,28 @@ export function XhsKeywordsPage() {
       />
 
       <Card
-        title="灰豚热词导入"
-        extra={<Tag color="purple">手工粘贴 / 本地导出</Tag>}
+        title="灰豚候选词"
+        extra={<Tag color="gold">账号登录后自动获取</Tag>}
         style={{ background: "#1f1f1f", borderColor: "#303030", marginBottom: 24 }}
       >
         <Alert
           type="info"
           showIcon
-          message="把灰豚热词表格复制到这里，系统只解析候选词并去重，不代管灰豚登录状态。"
+          message="输入一个种子关键词，系统会用已绑定的灰豚账号低频获取候选词，运营选择后直接导入关键词组。"
           style={{ marginBottom: 16 }}
         />
         <Row gutter={16}>
           <Col xs={24} md={8}>
+            <Form.Item label="灰豚账号">
+              <Select
+                value={selectedHuitunAccountId ?? undefined}
+                onChange={setSelectedHuitunAccountId}
+                placeholder="请选择灰豚账号"
+                options={huitunAccounts.map((account) => ({ value: account.id, label: account.nickname || account.external_user_id || `灰豚账号 ${account.id}` }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={10}>
             <Form.Item label="种子关键词">
               <Input
                 value={huitunSeed}
@@ -317,47 +367,72 @@ export function XhsKeywordsPage() {
               />
             </Form.Item>
           </Col>
-          <Col xs={24} md={16}>
-            <Form.Item label="灰豚热词表格">
-              <Input.TextArea
-                value={huitunRows}
-                onChange={(e) => setHuitunRows(e.target.value)}
-                placeholder="每行一个热词，按灰豚表格复制：关键词、热度、笔记数、互动、分类"
-                autoSize={{ minRows: 3, maxRows: 6 }}
-              />
+          <Col xs={24} md={6}>
+            <Form.Item label=" ">
+              <Button type="primary" block onClick={() => void fetchHuitunHotwordsFromAccount()} loading={isHuitunWorking}>
+                获取灰豚候选词
+              </Button>
             </Form.Item>
           </Col>
         </Row>
-        <Space wrap style={{ marginBottom: huitunRun?.items.length ? 16 : 0 }}>
-          <Button type="primary" onClick={() => void parseHuitunHotwords()} loading={isHuitunWorking}>
-            解析灰豚热词
-          </Button>
-          {huitunRun?.items.length ? (
-            <>
-              <Select
-                value={targetGroupId}
-                onChange={setTargetGroupId}
+
+        <Collapse
+          ghost
+          items={[
+            {
+              key: "manual",
+              label: "手工导入灰豚热词",
+              children: (
+                <>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="自动获取失败时，把灰豚热词表格复制到这里作为临时兜底。"
+                    style={{ marginBottom: 16 }}
+                  />
+                  <Form.Item label="灰豚热词表格">
+                    <Input.TextArea
+                      value={huitunRows}
+                      onChange={(e) => setHuitunRows(e.target.value)}
+                      placeholder="每行一个热词，按灰豚表格复制：关键词、热度、笔记数、互动、分类"
+                      autoSize={{ minRows: 3, maxRows: 6 }}
+                    />
+                  </Form.Item>
+                  <Button onClick={() => void parseHuitunHotwords()} loading={isHuitunWorking}>
+                    解析灰豚热词
+                  </Button>
+                </>
+              ),
+            },
+          ]}
+          style={{ marginBottom: huitunRun?.items.length ? 16 : 0 }}
+        />
+
+        {huitunRun?.items.length ? (
+          <Space wrap style={{ marginBottom: 16 }}>
+            <Select
+              value={targetGroupId}
+              onChange={setTargetGroupId}
+              style={{ width: 220 }}
+              options={[
+                { value: "create", label: "创建新关键词组" },
+                ...groups.map((group) => ({ value: group.id, label: group.name })),
+              ]}
+            />
+            {targetGroupId === "create" && (
+              <Input
+                value={targetGroupName}
+                onChange={(e) => setTargetGroupName(e.target.value)}
+                placeholder="新关键词组名称"
                 style={{ width: 220 }}
-                options={[
-                  { value: "create", label: "创建新关键词组" },
-                  ...groups.map((group) => ({ value: group.id, label: group.name })),
-                ]}
               />
-              {targetGroupId === "create" && (
-                <Input
-                  value={targetGroupName}
-                  onChange={(e) => setTargetGroupName(e.target.value)}
-                  placeholder="新关键词组名称"
-                  style={{ width: 220 }}
-                />
-              )}
-              <Button onClick={() => void importSelectedCandidates()} disabled={!selectedCandidateIds.length} loading={isHuitunWorking}>
-                导入选中候选词
-              </Button>
-              <Text type="secondary">已选 {selectedCandidateIds.length} / {huitunRun.items.length}</Text>
-            </>
-          ) : null}
-        </Space>
+            )}
+            <Button onClick={() => void importSelectedCandidates()} disabled={!selectedCandidateIds.length} loading={isHuitunWorking}>
+              导入选中候选词
+            </Button>
+            <Text type="secondary">已选 {selectedCandidateIds.length} / {huitunRun.items.length}</Text>
+          </Space>
+        ) : null}
         {huitunRun?.items.length ? (
           <Table<KeywordDiscoveryItem>
             rowKey="id"
@@ -519,6 +594,14 @@ export function XhsKeywordsPage() {
                   ) : null}
 
                   <Space>
+                    <Button
+                      type="primary"
+                      icon={<PlayCircleOutlined />}
+                      disabled={isWorking}
+                      onClick={() => navigate(`/platforms/xhs/crawler?keyword_group_id=${group.id}`)}
+                    >
+                      开始采集
+                    </Button>
                     <Button
                       icon={<EditOutlined />}
                       disabled={isWorking}

@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
+from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, Note, User
+from backend.app.models import AccountCookieVersion, KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, Note, PlatformAccount, User
 from backend.app.schemas.common import paginated
+from backend.app.services import huitun_live_keyword_source
 from backend.app.services.huitun_keyword_source import (
     dedupe_keyword_candidates,
     parse_hotword_rows_from_cells,
@@ -42,8 +44,9 @@ class HuitunDiscoveryInput(BaseModel):
 
 
 class HuitunDiscoveryRunRequest(BaseModel):
-    source_mode: Literal["manual_table", "manual_json", "local_connector_output"] = "manual_table"
+    source_mode: Literal["manual_table", "manual_json", "local_connector_output", "live_account"] = "manual_table"
     limit_per_seed: int = Field(default=20, ge=1, le=100)
+    account_id: Optional[int] = None
     inputs: list[HuitunDiscoveryInput] = Field(min_length=1, max_length=50)
 
 
@@ -261,6 +264,27 @@ def _normalize_manual_item(source_keyword: str, index: int, item: dict[str, Any]
     }
 
 
+def _latest_huitun_cookie_text(db: Session, current_user: User, account_id: int | None) -> str:
+    if account_id is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择灰豚账号。")
+    account = db.get(PlatformAccount, account_id)
+    if account is None or account.user_id != current_user.id or account.platform != "huitun" or account.sub_type != "main":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="灰豚账号不存在。")
+    cookie_version = db.scalars(
+        select(AccountCookieVersion)
+        .where(AccountCookieVersion.platform_account_id == account.id)
+        .order_by(AccountCookieVersion.created_at.desc())
+    ).first()
+    if cookie_version is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="灰豚登录态已过期，请到账号矩阵重新登录。")
+    return decrypt_text(cookie_version.encrypted_cookies)
+
+
+def get_huitun_live_keyword_client():
+    return huitun_live_keyword_source
+
+
+
 def _rows_from_huitun_input(input_item: HuitunDiscoveryInput, source_mode: str) -> list[dict[str, Any]]:
     source_keyword = input_item.source_keyword.strip()
     rows: list[dict[str, Any]] = []
@@ -320,6 +344,7 @@ def create_huitun_discovery_run(
     payload: HuitunDiscoveryRunRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    live_keyword_client=Depends(get_huitun_live_keyword_client),
 ):
     seed_keywords = _normalize_keywords([input_item.source_keyword for input_item in payload.inputs])
     run = KeywordDiscoveryRun(
@@ -335,8 +360,20 @@ def create_huitun_discovery_run(
     db.flush()
 
     rows: list[dict[str, Any]] = []
-    for input_item in payload.inputs:
-        rows.extend(_rows_from_huitun_input(input_item, payload.source_mode)[: payload.limit_per_seed])
+    if payload.source_mode == "live_account":
+        cookies_text = _latest_huitun_cookie_text(db, current_user, payload.account_id)
+        try:
+            for input_item in payload.inputs:
+                rows.extend(live_keyword_client.fetch_huitun_hotwords(cookies_text, input_item.source_keyword, payload.limit_per_seed))
+        except RuntimeError as exc:
+            run.status = "failed"
+            run.error_message = str(exc)
+            run.finished_at = shanghai_now()
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    else:
+        for input_item in payload.inputs:
+            rows.extend(_rows_from_huitun_input(input_item, payload.source_mode)[: payload.limit_per_seed])
     rows = dedupe_keyword_candidates(rows)
 
     items: list[KeywordDiscoveryItem] = []
