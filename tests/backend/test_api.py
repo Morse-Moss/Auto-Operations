@@ -21,7 +21,7 @@ def test_platforms_endpoint_exposes_product_registry():
     response = client.get("/api/platforms")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["total"] == 6
+    assert payload["total"] == 9
     assert payload["items"][0]["id"] == "xhs"
     assert payload["items"][0]["enabled"] is True
     assert payload["items"][1]["status"] == "coming_soon"
