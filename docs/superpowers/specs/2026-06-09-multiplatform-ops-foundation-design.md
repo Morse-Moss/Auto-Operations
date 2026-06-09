@@ -126,7 +126,8 @@ Platform Registry 是平台事实源。它不再只是前端卡片数据，而�
 - `name_cn`：中文名称。
 - `name_en`：英文名称。
 - `enabled`：当前是否开放真实工作区。
-- `release_stage`：`enabled`、`beta`、`planned` 或 `unavailable`。
+- `release_stage`：`enabled`、`beta`、`planned` 或 `unavailable`，作为平台发布阶段的 canonical 字段。
+- `status`：legacy compatibility 字段；当平台处于 `planned` 时继续返回 `coming_soon`，其余阶段与 `release_stage` 对齐。
 - `platform_type`：`content`、`social`、`commerce` 或 `hybrid`。
 - `capabilities`：能力矩阵。
 - `auth_modes`：认证方式。
@@ -407,7 +408,7 @@ GET /platforms
 GET /platforms
 ```
 
-返回分页平台列表，包含基础信息和能力摘要。为兼容现有前端，原字段 `id`、`name_cn`、`name_en`、`enabled`、`status`、`accent_color`、`icon` 必须继续存在。其中 `status` 可以保留为 `release_stage` 的兼容别名，避免前端一次性改动过大。
+返回分页平台列表，包含基础信息和能力摘要。为兼容现有前端，原字段 `id`、`name_cn`、`name_en`、`enabled`、`status`、`accent_color`、`icon` 必须继续存在。其中 `release_stage` 是 canonical 字段；`status` 只作为 legacy compatibility 字段保留，`planned` 平台继续返回 `coming_soon`，其它阶段与 `release_stage` 对齐，避免前端一次性改动过大。
 
 ### 9.2 单个平台详情
 
@@ -518,6 +519,7 @@ const href = platform.enabled && platform.default_route
 未启用平台：
 
 - API 仍返回平台元数据。
+- `release_stage=planned` 表示 canonical 的发布阶段；legacy `status` 继续返回 `coming_soon` 供旧消费者使用。
 - 前端展示 planned / coming soon。
 - 不允许进入真实业务工作台。
 
