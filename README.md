@@ -30,14 +30,15 @@
 
 ---
 
-## 当前仓库基线（2026-06-02）
+## 当前仓库基线（2026-06-09）
 
 本仓库已迁移为 `XHS_ALL_IN_ONE` 主系统基线：根目录代表 Web-first 小红书运营平台，而不是原 TypeScript CLI 采集器。
 
 - 主系统：Python/FastAPI 后端、SQLAlchemy/Alembic 数据模型、React/Vite/Ant Design 前端、原生 XHS PC/Creator 适配层。
 - 旧系统：原 TypeScript CLI 能力保留在 `legacy/xhs-ops-collector/`，仅作为增强能力来源，不再定义根目录架构。
-- 已保留：历史 `docs/` 和本地 `data/`；旧 SQLite 数据不自动合并到新数据库。
-- 已验证：前端 build、后端 `pytest`（130 passed）和 `/api/health` 健康检查通过。
+- 已接入增强：灰豚账号矩阵、灰豚二维码登录/Cookie 兜底、灰豚实时热词解密取词、关键词组导入、小红书关键词组低频串行采集与详情质量门禁。
+- 本地固定端口：前端 `18080`，后端 `18081`；不要使用 `8000` 作为本项目默认端口。
+- 已验证：前端 build、后端 `pytest`（159 passed）和「浴缸」灰豚取词 → 关键词组导入 → XHS 采集入库真实低频链路通过。
 - 本机提示：当前 Windows 环境裸 `python` 可能被 WindowsApps alias 拦截，建议使用 `py -3` 执行 Python 命令。
 
 真实账号发布、自动运营和生产部署仍需单独的风险评估、QA 设计和明确授权。项目开发规则见 `CLAUDE.md`。
@@ -48,7 +49,7 @@
 
 | | 传统方案 | XHS_ALL_IN_ONE |
 |---|---|---|
-| **数据采集** | 写脚本 / 用第三方爬虫 | 平台内搜索 + 一键入库，素材自动下载到本地 |
+| **数据采集** | 写脚本 / 用第三方爬虫 | 灰豚取词 + 关键词组低频串行采集 + 有效详情入库，素材自动下载到本地 |
 | **内容管理** | Excel / 文件夹 / 各种笔记软件 | 统一内容库，标签筛选，卡片预览 |
 | **AI 改写** | 复制到 ChatGPT → 手动粘贴回来 | 编辑器内一键改写，标题/正文/标签全覆盖 |
 | **图片处理** | Photoshop / 在线工具 | AI 图片润色 + 参考图，原位替换 |
@@ -62,7 +63,7 @@
 
 ### 账号矩阵 — 多账号绑定与健康管理
 
-支持绑定多个 PC / Creator 账号，扫码登录、手机验证码、Cookie 导入三种方式。Cookie 加密存储，2 小时自动健康巡检，过期自动通知。
+支持绑定小红书 PC / Creator 账号和灰豚账号。小红书支持扫码登录、手机验证码、Cookie 导入；灰豚支持二维码登录和 Cookie 兜底导入。Cookie 加密存储，2 小时自动健康巡检，过期自动通知。
 
 <img src="./static/frontend_1.jpg" width="600" />
 
@@ -127,9 +128,10 @@
 
 | 模块 | 功能 |
 |------|------|
-| **账号矩阵** | 多 PC / Creator 账号绑定、Cookie 加密存储、2h 自动健康巡检、过期通知 |
+| **账号矩阵** | 小红书 PC / Creator 与灰豚账号绑定、Cookie 加密存储、2h 自动健康巡检、过期通知 |
+| **关键词组** | 灰豚账号实时取词、候选词导入关键词组、手工导入兜底 |
 | **笔记发现** | 关键词搜索、URL 直查、多维筛选、已保存标记、一键入库 |
-| **数据抓取** | 批量 URL / 搜索 / 评论抓取、Excel 导出、素材本地下载 |
+| **数据抓取** | 批量 URL / 搜索 / 评论抓取、关键词组低频串行采集、详情质量门禁、Excel 导出、素材本地下载 |
 | **内容库** | 卡片/列表双视图、自定义标签、批量操作、JSON/CSV 导出、查看原文 |
 | **草稿工坊** | 三栏编辑器、AI 改写正文、润色标题/标签、拖拽排序素材、AI 图片润色 |
 | **图片工坊** | AI 图片生成（支持参考图）、图片描述、AI/普通图片资产管理 |
@@ -184,12 +186,12 @@ cd frontend && npm install && cd ..
 
 ```bash
 # 一键启动（后端 + 前端）
-python main.py --with-frontend
+py -3 main.py --with-frontend
 ```
 
 启动后访问：
 - 前端: http://localhost:18080
-- API 文档: http://localhost:8000/docs
+- API 文档: http://localhost:18081/docs
 
 首次启动自动创建数据库，注册账号即可使用。
 
@@ -225,7 +227,7 @@ XHS_ALL_IN_ONE/
 │       ├── components/layout/      # 侧边栏 + 通知系统
 │       ├── lib/api.ts              # HTTP 客户端
 │       └── types/                  # TypeScript 类型
-├── tests/                          # 后端测试（130 passed）
+├── tests/                          # 后端测试（159 passed）
 ├── Dockerfile                      # 多阶段构建
 └── docker-compose.yml              # 编排文件
 ```
@@ -245,7 +247,7 @@ scheduler:
   enabled: false                    # 启用定时任务（自动运营/监控/Cookie巡检）
 ```
 
-主要环境变量：`SECRET_KEY`、`DATABASE_TYPE`、`DATABASE_URL`、`SCHEDULER_ENABLED`
+主要环境变量：`SECRET_KEY`、`DATABASE_TYPE`、`DATABASE_URL`、`SCHEDULER_ENABLED`、`SERVER_PORT`、`FRONTEND_DEV_PORT`
 
 ---
 
