@@ -1,5 +1,5 @@
 import { Drawer, Segmented, message } from "antd";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { PlatformAccount } from "../../types";
 import { CookieImportPanel } from "./cookie-import-panel";
@@ -10,6 +10,7 @@ type AddAccountDrawerProps = {
   open: boolean;
   onClose: () => void;
   onBound: () => void;
+  defaultAccountType?: "pc" | "creator";
 };
 
 type AccountPlatform = "xhs" | "huitun";
@@ -32,10 +33,17 @@ const loginMethodOptions = [
   { label: "Cookie", value: "cookie" as const },
 ];
 
-export function AddAccountDrawer({ open, onClose, onBound }: AddAccountDrawerProps) {
+export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = "pc" }: AddAccountDrawerProps) {
   const [platform, setPlatform] = useState<AccountPlatform>("xhs");
-  const [accountType, setAccountType] = useState<AccountType>("pc");
+  const [accountType, setAccountType] = useState<AccountType>(defaultAccountType);
   const [method, setMethod] = useState<LoginMethod>("qr");
+
+  useEffect(() => {
+    if (!open) return;
+    setPlatform("xhs");
+    setAccountType(defaultAccountType);
+    setMethod("qr");
+  }, [defaultAccountType, open]);
 
   function handlePlatformChange(nextPlatform: AccountPlatform) {
     setPlatform(nextPlatform);

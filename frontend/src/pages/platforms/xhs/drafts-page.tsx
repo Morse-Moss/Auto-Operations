@@ -51,6 +51,7 @@ import {
   addDraftAsset,
   deleteDraft,
   deleteDraftAsset,
+  duplicateDraft,
   fetchDraftAssets,
   fetchDrafts,
   fetchGeneratedImageAssets,
@@ -235,6 +236,18 @@ export function XhsDraftsPage() {
   }
 
   /* ── draft CRUD ─────────────────────────────────────────────────── */
+
+  async function handleDuplicateDraft(draftId: number) {
+    clearStatus();
+    try {
+      const copied = await duplicateDraft(draftId);
+      setDrafts((prev) => [copied, ...prev.filter((draft) => draft.id !== copied.id)]);
+      selectDraft(copied);
+      setMessage(`草稿 #${copied.id} 已复制。`);
+    } catch {
+      setError("草稿复制失败。");
+    }
+  }
 
   async function handleDeleteDraft(draftId: number) {
     try {
@@ -763,6 +776,17 @@ export function XhsDraftsPage() {
                             </Tag>
                           )}
                         </div>
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleDuplicateDraft(draft.id);
+                          }}
+                          style={{ flexShrink: 0, paddingInline: 4 }}
+                        >
+                          复制草稿
+                        </Button>
                         <Popconfirm
                           title="删除此草稿？"
                           onConfirm={(e) => {

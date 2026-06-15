@@ -236,6 +236,44 @@ def send_draft_to_publish(
     return _serialize_publish_job(job)
 
 
+@router.post("/{draft_id}/duplicate")
+def duplicate_draft(
+    draft_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = db.get(AiDraft, draft_id)
+    if draft is None or draft.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
+
+    duplicated = AiDraft(
+        user_id=current_user.id,
+        platform=draft.platform,
+        title=f"{draft.title} - 副本",
+        body=draft.body,
+        tags=json.loads(json.dumps(draft.tags, ensure_ascii=False)) if draft.tags is not None else None,
+        source_note_id=draft.source_note_id,
+    )
+    db.add(duplicated)
+    db.flush()
+
+    draft_assets = db.scalars(
+        select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
+    ).all()
+    for asset in draft_assets:
+        db.add(DraftAsset(
+            draft_id=duplicated.id,
+            asset_type=asset.asset_type,
+            url=asset.url,
+            local_path=asset.local_path,
+            sort_order=asset.sort_order,
+        ))
+
+    db.commit()
+    db.refresh(duplicated)
+    return _serialize_draft(duplicated)
+
+
 @router.patch("/{draft_id}")
 def update_draft(
     draft_id: int,

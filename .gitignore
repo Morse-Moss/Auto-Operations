@@ -61,6 +61,9 @@ db.sqlite3
 .superpowers/
 .agent/
 
+# Local code index
+.codegraph/
+
 # IDE / OS
 .idea/
 .DS_Store

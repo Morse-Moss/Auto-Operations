@@ -22,6 +22,7 @@ import {
   UserOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { AddAccountDrawer } from "../../../components/account/add-account-drawer";
 import { checkAccount, deleteAccount, fetchAccounts } from "../../../lib/api";
@@ -57,6 +58,8 @@ const statusLabelMap: Record<string, string> = {
 };
 
 export function XhsAccountsPage() {
+  const [searchParams] = useSearchParams();
+  const defaultAccountType = searchParams.get("bind") === "creator" ? "creator" : "pc";
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -118,6 +121,12 @@ export function XhsAccountsPage() {
   useEffect(() => {
     void loadAccounts();
   }, []);
+
+  useEffect(() => {
+    if (searchParams.get("bind") === "creator") {
+      setDrawerOpen(true);
+    }
+  }, [searchParams]);
 
   return (
     <div style={{ padding: "0 0 32px" }}>
@@ -358,7 +367,12 @@ export function XhsAccountsPage() {
         )}
       </Card>
 
-      <AddAccountDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onBound={loadAccounts} />
+      <AddAccountDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        onBound={loadAccounts}
+        defaultAccountType={defaultAccountType}
+      />
     </div>
   );
 }

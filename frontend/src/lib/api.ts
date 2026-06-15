@@ -527,6 +527,11 @@ export async function fetchDrafts(platform = "xhs"): Promise<Paginated<Draft>> {
   return response.data;
 }
 
+export async function duplicateDraft(draftId: number): Promise<Draft> {
+  const response = await http.post<Draft>(`/drafts/${draftId}/duplicate`);
+  return response.data;
+}
+
 export async function updateDraft(draftId: number, payload: { title?: string; body?: string; tags?: { id?: string; name: string }[] }): Promise<Draft> {
   const response = await http.patch<Draft>(`/drafts/${draftId}`, payload);
   return response.data;
@@ -775,6 +780,13 @@ export async function createHuitunKeywordDiscoveryRun(
   payload: HuitunDiscoveryRunPayload
 ): Promise<KeywordDiscoveryRun> {
   const response = await http.post<KeywordDiscoveryRun>("/keyword-groups/huitun/discovery-runs", payload);
+  return response.data;
+}
+
+export async function fetchHuitunKeywordDiscoveryRuns(page = 1, page_size = 10): Promise<Paginated<KeywordDiscoveryRun>> {
+  const response = await http.get<Paginated<KeywordDiscoveryRun>>("/keyword-groups/huitun/discovery-runs", {
+    params: { page, page_size },
+  });
   return response.data;
 }
 

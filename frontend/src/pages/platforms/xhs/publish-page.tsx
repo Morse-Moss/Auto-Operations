@@ -32,6 +32,7 @@ import {
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
@@ -82,7 +83,14 @@ const panelStyle: React.CSSProperties = {
 
 const cardBodyStyle: React.CSSProperties = { padding: 16 };
 
+const visibilityOptions = [
+  { value: "public" as const, label: "公开可见" },
+  { value: "private" as const, label: "仅自己可见" },
+  { value: "mutual_friends" as const, label: "仅互关好友可见（当前接口不支持）", disabled: true },
+];
+
 export function XhsPublishPage() {
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<PublishJob[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [assets, setAssets] = useState<PublishAsset[]>([]);
@@ -102,6 +110,9 @@ export function XhsPublishPage() {
   const [error, setError] = useState<string | null>(null);
 
   const creatorAccounts = accounts.filter((a) => a.platform === "xhs" && a.sub_type === "creator");
+  const xhsAccounts = accounts.filter((a) => a.platform === "xhs");
+  const pcAccounts = xhsAccounts.filter((a) => a.sub_type === "pc");
+  const hasCreatorAccounts = creatorAccounts.length > 0;
   const filteredJobs = statusFilter === "all" ? jobs : jobs.filter((j) => j.status === statusFilter);
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? null;
   const imageAssets = assets.filter((a) => a.asset_type === "image");
@@ -478,9 +489,32 @@ export function XhsPublishPage() {
                               onChange={(val) => setSelectedAccountId(val)}
                               placeholder="选择 Creator 账号"
                               style={{ width: "100%" }}
-                              options={creatorAccounts.map((a) => ({ value: a.id, label: a.nickname || `账号 #${a.id}` }))}
+                              options={creatorAccounts.map((a) => ({
+                                value: a.id,
+                                label: `${a.nickname || `账号 #${a.id}`} · Creator${a.status && a.status !== "unknown" ? ` · ${a.status === "active" || a.status === "healthy" ? "正常" : a.status}` : ""}`,
+                              }))}
                               notFoundContent="暂无 Creator 账号"
                             />
+                            {!hasCreatorAccounts && (
+                              <Alert
+                                type="warning"
+                                showIcon
+                                style={{ marginTop: 8 }}
+                                message="发布需要小红书 Creator 账号"
+                                description={
+                                  <Space direction="vertical" size={4}>
+                                    <Text type="secondary" style={{ fontSize: 12 }}>
+                                      {pcAccounts.length > 0
+                                        ? "当前只检测到小红书 PC 账号。PC 账号可用于搜索和采集，发布中心需要单独绑定 Creator 账号。"
+                                        : "当前还没有可用于发布的小红书 Creator 账号。"}
+                                    </Text>
+                                    <Button size="small" type="link" style={{ padding: 0 }} onClick={() => navigate("/platforms/xhs/accounts?bind=creator")}>
+                                      去绑定 Creator 账号
+                                    </Button>
+                                  </Space>
+                                }
+                              />
+                            )}
                           </Form.Item>
                           <Form.Item label="地点">
                             <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="可不填" />
@@ -491,10 +525,7 @@ export function XhsPublishPage() {
                                 <Select
                                   value={privacyChoice}
                                   onChange={(val) => setPrivacyChoice(val)}
-                                  options={[
-                                    { value: "public", label: "公开" },
-                                    { value: "private", label: "私密" },
-                                  ]}
+                                  options={visibilityOptions}
                                 />
                               </Form.Item>
                             </Col>

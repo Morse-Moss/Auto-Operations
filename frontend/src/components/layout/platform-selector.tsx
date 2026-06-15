@@ -13,7 +13,7 @@ export function PlatformSelector({ platforms }: { platforms: PlatformMeta[] }) {
     <Row gutter={[20, 20]}>
       {platforms.map((platform) => {
         const href = platform.enabled
-          ? `/platforms/${platform.id}/dashboard`
+          ? platform.default_route ?? `/platforms/${platform.id}/dashboard`
           : `/platforms/${platform.id}`;
 
         return (

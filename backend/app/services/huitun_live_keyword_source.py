@@ -12,6 +12,8 @@ from backend.app.services.huitun_keyword_source import dedupe_keyword_candidates
 HUITUN_HOTWORD_SEARCH_URL = "https://xhsapi.huitun.com/hotword/search/v2"
 HUITUN_LIVE_FAILED_MESSAGE = "灰豚候选词获取失败，请先使用手工导入。"
 HUITUN_LOGIN_EXPIRED_MESSAGE = "灰豚登录态已过期，请到账号矩阵重新登录。"
+HUITUN_STRUCTURE_CHANGED_MESSAGE = "灰豚候选词返回结构已变化，请先使用手工导入并等待适配。"
+HUITUN_EMPTY_RESULT_MESSAGE = "灰豚没有返回候选词，请换一个种子词或稍后重试。"
 
 
 def _now_ms() -> int:
@@ -27,15 +29,20 @@ def _session_from_cookie_text(cookie_text: str) -> requests.Session:
     return session
 
 
-def _first_list(value: Any) -> list[Any]:
+def _first_list(value: Any) -> list[Any] | None:
     if isinstance(value, list):
         return value
     if isinstance(value, dict):
-        for key in ("list", "items", "records", "rows", "data"):
+        for key in ("list", "items", "records", "rows", "data", "result"):
             nested = value.get(key)
-            if isinstance(nested, list):
-                return nested
-    return []
+            candidate = _first_list(nested)
+            if candidate is not None:
+                return candidate
+        for nested in value.values():
+            candidate = _first_list(nested)
+            if candidate is not None:
+                return candidate
+    return None
 
 
 def _row_from_item(source_keyword: str, index: int, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -79,14 +86,24 @@ def _rows_from_response(source_keyword: str, payload: dict[str, Any], limit: int
             ext_data = decrypt_huitun_ext_data(ext_data)
         except ValueError as exc:
             raise RuntimeError(HUITUN_EXT_DATA_DECRYPT_FAILED_MESSAGE) from exc
+
+    candidate_list = _first_list(ext_data) if isinstance(ext_data, (dict, list)) else None
+    if candidate_list is None:
+        candidate_list = _first_list(payload)
+    if candidate_list is None:
+        raise RuntimeError(HUITUN_STRUCTURE_CHANGED_MESSAGE)
+
     rows: list[dict[str, Any]] = []
-    for index, item in enumerate(_first_list(ext_data)):
+    for index, item in enumerate(candidate_list):
         if not isinstance(item, dict):
             continue
         row = _row_from_item(source_keyword, index, item)
         if row:
             rows.append(row)
-    return dedupe_keyword_candidates(prioritize_exact_hotword_rows(source_keyword, rows))[:limit]
+    rows = dedupe_keyword_candidates(prioritize_exact_hotword_rows(source_keyword, rows))[:limit]
+    if not rows:
+        raise RuntimeError(HUITUN_EMPTY_RESULT_MESSAGE)
+    return rows
 
 
 def fetch_huitun_hotwords(cookie_text: str, seed_keyword: str, limit: int) -> list[dict[str, Any]]:

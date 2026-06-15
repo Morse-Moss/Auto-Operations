@@ -35,6 +35,7 @@ import {
   createKeywordGroup,
   deleteKeywordGroup,
   fetchAccounts,
+  fetchHuitunKeywordDiscoveryRuns,
   fetchKeywordGroup,
   fetchKeywordGroups,
   importKeywordCandidates,
@@ -49,6 +50,13 @@ function splitKeywords(value: string): string[] {
   return value
     .split(/[,，\n]/)
     .map((keyword) => keyword.trim())
+    .filter(Boolean);
+}
+
+function splitSeedKeywords(value: string): string[] {
+  return value
+    .split(/[\r\n,，]+/)
+    .map((seed) => seed.trim())
     .filter(Boolean);
 }
 
@@ -72,6 +80,13 @@ function categoryText(item: KeywordDiscoveryItem): string {
     .join("；");
 }
 
+function failedSeedText(run: KeywordDiscoveryRun): string {
+  return (run.seed_results ?? [])
+    .filter((result) => result.status === "failed")
+    .map((result) => `${result.source_keyword}${result.error_message ? `：${result.error_message}` : ""}`)
+    .join("；");
+}
+
 export function XhsKeywordsPage() {
   const navigate = useNavigate();
   const [groups, setGroups] = useState<KeywordGroup[]>([]);
@@ -88,6 +103,7 @@ export function XhsKeywordsPage() {
   const [huitunSeed, setHuitunSeed] = useState("");
   const [huitunRows, setHuitunRows] = useState("");
   const [huitunRun, setHuitunRun] = useState<KeywordDiscoveryRun | null>(null);
+  const [huitunRuns, setHuitunRuns] = useState<KeywordDiscoveryRun[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([]);
   const [targetGroupId, setTargetGroupId] = useState<number | "create">("create");
   const [targetGroupName, setTargetGroupName] = useState("");
@@ -99,9 +115,14 @@ export function XhsKeywordsPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const [result, accounts] = await Promise.all([fetchKeywordGroups("xhs"), fetchAccounts("huitun")]);
+      const [result, accounts, discoveryRuns] = await Promise.all([
+        fetchKeywordGroups("xhs"),
+        fetchAccounts("huitun"),
+        fetchHuitunKeywordDiscoveryRuns(1, 5),
+      ]);
       setGroups(result.items);
       setHuitunAccounts(accounts);
+      setHuitunRuns(discoveryRuns.items);
       setSelectedHuitunAccountId((currentId) => currentId ?? accounts[0]?.id ?? null);
       const details = await Promise.all(
         result.items.map(async (group) => {
@@ -215,9 +236,9 @@ export function XhsKeywordsPage() {
   }
 
   async function fetchHuitunHotwordsFromAccount() {
-    const seed = huitunSeed.trim();
-    if (!seed) {
-      setMessage("请输入一个种子关键词。");
+    const seeds = splitSeedKeywords(huitunSeed);
+    if (!seeds.length) {
+      setMessage("请输入至少一个种子关键词。");
       return;
     }
     if (!selectedHuitunAccountId) {
@@ -232,12 +253,18 @@ export function XhsKeywordsPage() {
         source_mode: "live_account",
         account_id: selectedHuitunAccountId,
         limit_per_seed: 50,
-        inputs: [{ source_keyword: seed }],
+        inputs: seeds.map((source_keyword) => ({ source_keyword })),
       });
       setHuitunRun(run);
+      setHuitunRuns((currentRuns) => [run, ...currentRuns.filter((item) => item.id !== run.id)].slice(0, 5));
       setSelectedCandidateIds(run.items.map((item) => item.id));
-      setTargetGroupName(seed ? `${seed} 热词` : "灰豚热词");
-      setMessage(run.items.length ? "已获取灰豚候选词，请选择要导入的关键词。" : "没有获取到候选词，可展开手工导入灰豚热词临时处理。");
+      setTargetGroupName(seeds.length === 1 ? `${seeds[0]} 热词` : "灰豚批量热词");
+      const failedSeeds = (run.seed_results ?? []).filter((result) => result.status === "failed");
+      if (run.items.length && failedSeeds.length) {
+        setMessage(`已获取 ${run.items.length} 个候选词，${failedSeeds.length} 个种子词失败，成功结果仍可导入。`);
+      } else {
+        setMessage(run.items.length ? "已获取灰豚候选词，请选择要导入的关键词。" : "没有获取到候选词，可展开手工导入灰豚热词临时处理。");
+      }
     } catch {
       setMessage("灰豚候选词获取失败，请检查账号登录态，或使用手工导入灰豚热词。");
     } finally {
@@ -344,7 +371,7 @@ export function XhsKeywordsPage() {
         <Alert
           type="info"
           showIcon
-          message="输入一个种子关键词，系统会用已绑定的灰豚账号低频获取候选词，运营选择后直接导入关键词组。"
+          message="输入多个种子关键词，系统会用已绑定的灰豚账号低频逐个获取候选词；单个种子失败不会隐藏其他成功结果。"
           style={{ marginBottom: 16 }}
         />
         <Row gutter={16}>
@@ -360,10 +387,11 @@ export function XhsKeywordsPage() {
           </Col>
           <Col xs={24} md={10}>
             <Form.Item label="种子关键词">
-              <Input
+              <Input.TextArea
                 value={huitunSeed}
                 onChange={(e) => setHuitunSeed(e.target.value)}
-                placeholder="例如：低卡早餐"
+                placeholder="例如：低卡早餐、通勤穿搭\n敏感肌护肤"
+                autoSize={{ minRows: 2, maxRows: 4 }}
               />
             </Form.Item>
           </Col>
@@ -408,6 +436,27 @@ export function XhsKeywordsPage() {
           style={{ marginBottom: huitunRun?.items.length ? 16 : 0 }}
         />
 
+        {huitunRun?.seed_results?.length ? (
+          <div style={{ marginBottom: 16 }}>
+            <Space wrap>
+              {huitunRun.seed_results.map((result) => (
+                <Tag key={result.source_keyword} color={result.status === "failed" ? "red" : "green"}>
+                  {result.source_keyword} · {result.status === "failed" ? "种子失败" : `${result.item_count} 个候选词`}
+                </Tag>
+              ))}
+              {huitunRun.status === "partial_failed" && <Tag color="orange">partial_failed</Tag>}
+            </Space>
+            {failedSeedText(huitunRun) && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginTop: 8 }}
+                message={`失败种子：${failedSeedText(huitunRun)}`}
+              />
+            )}
+          </div>
+        ) : null}
+
         {huitunRun?.items.length ? (
           <Space wrap style={{ marginBottom: 16 }}>
             <Select
@@ -442,6 +491,26 @@ export function XhsKeywordsPage() {
             pagination={{ pageSize: 8 }}
             rowSelection={{ selectedRowKeys: selectedCandidateIds, onChange: (keys) => setSelectedCandidateIds(keys.map(Number)) }}
           />
+        ) : null}
+
+        {huitunRuns.length ? (
+          <div style={{ marginTop: 16 }}>
+            <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>最近灰豚发现记录</Text>
+            <List
+              size="small"
+              dataSource={huitunRuns}
+              renderItem={(run) => (
+                <List.Item onClick={() => setHuitunRun(run)} style={{ cursor: "pointer" }}>
+                  <Space wrap>
+                    <Text>{run.seed_keywords.join("，") || `发现记录 #${run.id}`}</Text>
+                    <Tag color={run.status === "partial_failed" ? "orange" : run.status === "failed" ? "red" : "green"}>{run.status}</Tag>
+                    <Text type="secondary">成功 {run.summary?.success_seed_count ?? 0} / 失败 {run.summary?.failed_seed_count ?? 0} / 候选 {run.summary?.total_item_count ?? 0}</Text>
+                    {failedSeedText(run) && <Text type="danger">失败种子：{failedSeedText(run)}</Text>}
+                  </Space>
+                </List.Item>
+              )}
+            />
+          </div>
         ) : null}
       </Card>
 

@@ -1,4 +1,28 @@
-export type PlatformId = "xhs" | "huitun" | "douyin" | "kuaishou" | "weibo" | "xianyu" | "taobao";
+export type PlatformId =
+  | "xhs"
+  | "huitun"
+  | "douyin"
+  | "kuaishou"
+  | "bilibili"
+  | "wechat_channels"
+  | "wechat_official"
+  | "weibo"
+  | "xianyu"
+  | "taobao";
+
+export type PlatformReleaseStage = "enabled" | "beta" | "planned" | "unavailable";
+export type PlatformRegion = "cn" | "global";
+export type PlatformType = "content" | "social" | "commerce" | "hybrid";
+export type PlatformRiskLevel = "low" | "medium" | "high";
+export type PlatformCapabilityStatus = "available" | "partial" | "planned" | "blocked";
+
+export type PlatformCapability = {
+  key: string;
+  status: PlatformCapabilityStatus;
+  risk: PlatformRiskLevel;
+  requires_confirmation: boolean;
+  notes: string;
+};
 
 export type PlatformMeta = {
   id: PlatformId;
@@ -6,6 +30,14 @@ export type PlatformMeta = {
   name_en: string;
   enabled: boolean;
   status: "enabled" | "coming_soon";
+  release_stage: PlatformReleaseStage;
+  region: PlatformRegion;
+  platform_type: PlatformType;
+  default_route: string | null;
+  adapter_key: string | null;
+  risk_level: PlatformRiskLevel;
+  auth_modes: string[];
+  capabilities: PlatformCapability[];
   accent_color: string;
   icon: string;
 };
@@ -636,6 +668,19 @@ export type KeywordDiscoveryItem = {
   created_at: string;
 };
 
+export type HuitunKeywordDiscoverySeedResult = {
+  source_keyword: string;
+  status: "success" | "failed" | string;
+  item_count: number;
+  error_message?: string;
+};
+
+export type HuitunKeywordDiscoverySummary = {
+  success_seed_count: number;
+  failed_seed_count: number;
+  total_item_count: number;
+};
+
 export type KeywordDiscoveryRun = {
   id: number;
   platform: PlatformId;
@@ -647,6 +692,8 @@ export type KeywordDiscoveryRun = {
   error_message?: string | null;
   created_at: string;
   finished_at?: string | null;
+  seed_results: HuitunKeywordDiscoverySeedResult[];
+  summary: HuitunKeywordDiscoverySummary;
   items: KeywordDiscoveryItem[];
 };
 

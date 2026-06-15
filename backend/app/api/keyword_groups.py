@@ -108,7 +108,76 @@ def _serialize_discovery_item(item: KeywordDiscoveryItem) -> dict[str, Any]:
     }
 
 
+RUN_METADATA_VERSION = 1
+
+
+def _run_metadata(seed_results: list[dict[str, Any]], total_item_count: int) -> dict[str, Any]:
+    success_seed_count = sum(1 for result in seed_results if result.get("status") == "success")
+    failed_seed_count = sum(1 for result in seed_results if result.get("status") == "failed")
+    return {
+        "version": RUN_METADATA_VERSION,
+        "seed_results": seed_results,
+        "summary": {
+            "success_seed_count": success_seed_count,
+            "failed_seed_count": failed_seed_count,
+            "total_item_count": total_item_count,
+        },
+    }
+
+
+def _metadata_text(seed_results: list[dict[str, Any]], total_item_count: int) -> str:
+    return json.dumps(_run_metadata(seed_results, total_item_count), ensure_ascii=False)
+
+
+def _parse_run_metadata(error_message: str | None, items: list[KeywordDiscoveryItem]) -> dict[str, Any]:
+    if error_message:
+        try:
+            metadata = json.loads(error_message)
+        except json.JSONDecodeError:
+            metadata = None
+        if isinstance(metadata, dict) and metadata.get("version") == RUN_METADATA_VERSION:
+            seed_results = metadata.get("seed_results")
+            summary = metadata.get("summary")
+            if isinstance(seed_results, list) and isinstance(summary, dict):
+                return {"seed_results": seed_results, "summary": summary}
+
+    counts_by_seed: dict[str, int] = {}
+    for item in items:
+        counts_by_seed[item.source_keyword] = counts_by_seed.get(item.source_keyword, 0) + 1
+    seed_results = [_seed_success(source_keyword, item_count) for source_keyword, item_count in counts_by_seed.items()]
+    return _run_metadata(seed_results, len(items))
+
+
+def _seed_success(source_keyword: str, item_count: int) -> dict[str, Any]:
+    return {
+        "source_keyword": source_keyword,
+        "status": "success",
+        "item_count": item_count,
+        "error_message": "",
+    }
+
+
+def _seed_failure(source_keyword: str, error_message: str) -> dict[str, Any]:
+    return {
+        "source_keyword": source_keyword,
+        "status": "failed",
+        "item_count": 0,
+        "error_message": error_message,
+    }
+
+
+def _status_from_seed_results(seed_results: list[dict[str, Any]]) -> str:
+    has_success = any(result.get("status") == "success" for result in seed_results)
+    has_failure = any(result.get("status") == "failed" for result in seed_results)
+    if has_success and has_failure:
+        return "partial_failed"
+    if has_failure:
+        return "failed"
+    return "completed"
+
+
 def _serialize_discovery_run(run: KeywordDiscoveryRun, items: list[KeywordDiscoveryItem]) -> dict[str, Any]:
+    metadata = _parse_run_metadata(run.error_message, items)
     return {
         "id": run.id,
         "platform": run.platform,
@@ -121,6 +190,8 @@ def _serialize_discovery_run(run: KeywordDiscoveryRun, items: list[KeywordDiscov
         "created_at": run.created_at.isoformat(),
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "items": [_serialize_discovery_item(item) for item in items],
+        "seed_results": metadata["seed_results"],
+        "summary": metadata["summary"],
     }
 
 
@@ -360,20 +431,23 @@ def create_huitun_discovery_run(
     db.flush()
 
     rows: list[dict[str, Any]] = []
+    seed_results: list[dict[str, Any]] = []
     if payload.source_mode == "live_account":
         cookies_text = _latest_huitun_cookie_text(db, current_user, payload.account_id)
-        try:
-            for input_item in payload.inputs:
-                rows.extend(live_keyword_client.fetch_huitun_hotwords(cookies_text, input_item.source_keyword, payload.limit_per_seed))
-        except RuntimeError as exc:
-            run.status = "failed"
-            run.error_message = str(exc)
-            run.finished_at = shanghai_now()
-            db.commit()
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        for input_item in payload.inputs:
+            source_keyword = input_item.source_keyword.strip()
+            try:
+                seed_rows = live_keyword_client.fetch_huitun_hotwords(cookies_text, source_keyword, payload.limit_per_seed)
+            except RuntimeError as exc:
+                seed_results.append(_seed_failure(source_keyword, str(exc)))
+                continue
+            rows.extend(seed_rows)
+            seed_results.append(_seed_success(source_keyword, len(seed_rows)))
     else:
         for input_item in payload.inputs:
-            rows.extend(_rows_from_huitun_input(input_item, payload.source_mode)[: payload.limit_per_seed])
+            seed_rows = _rows_from_huitun_input(input_item, payload.source_mode)[: payload.limit_per_seed]
+            rows.extend(seed_rows)
+            seed_results.append(_seed_success(input_item.source_keyword.strip(), len(seed_rows)))
     rows = dedupe_keyword_candidates(rows)
 
     items: list[KeywordDiscoveryItem] = []
@@ -398,13 +472,33 @@ def create_huitun_discovery_run(
         db.add(item)
         items.append(item)
 
-    run.status = "completed"
+    run.status = _status_from_seed_results(seed_results)
+    run.error_message = _metadata_text(seed_results, len(items))
     run.finished_at = shanghai_now()
     db.commit()
     db.refresh(run)
     for item in items:
         db.refresh(item)
     return _serialize_discovery_run(run, items)
+
+
+@router.get("/huitun/discovery-runs")
+def list_huitun_discovery_runs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    runs = db.scalars(
+        select(KeywordDiscoveryRun)
+        .where(
+            KeywordDiscoveryRun.user_id == current_user.id,
+            KeywordDiscoveryRun.platform == "xhs",
+            KeywordDiscoveryRun.source == "huitun",
+        )
+        .order_by(KeywordDiscoveryRun.created_at.desc(), KeywordDiscoveryRun.id.desc())
+    ).all()
+    return paginated([_serialize_discovery_run(run, []) for run in runs], page, page_size)
 
 
 @router.get("/huitun/discovery-runs/{run_id}")

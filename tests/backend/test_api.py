@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
@@ -154,6 +155,139 @@ def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
     assert "crawlXhsKeywordGroupStream" in crawler_page_source
     assert "summary_message" in crawler_page_source
     assert "采集完成" in crawler_page_source
+
+
+def test_frontend_exposes_task_10_to_14_api_and_type_contracts():
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+
+    assert "fetchHuitunKeywordDiscoveryRuns" in api_source
+    assert "duplicateDraft" in api_source
+    assert "export type KeywordDiscoveryRun" in types_source
+    keyword_discovery_run_match = re.search(
+        r"export\s+type\s+KeywordDiscoveryRun\s*=\s*\{(?P<body>.*?)\n\};",
+        types_source,
+        re.DOTALL,
+    )
+    assert keyword_discovery_run_match, "KeywordDiscoveryRun type block is required"
+    keyword_discovery_run_body = keyword_discovery_run_match.group("body")
+    assert re.search(r"\bseed_results\b", keyword_discovery_run_body)
+    assert re.search(r"\bsummary\b", keyword_discovery_run_body)
+    assert (
+        "export type HuitunKeywordDiscoverySeedResult" in types_source
+        or "export type HuitunSeedResult" in types_source
+    )
+    assert (
+        "export type HuitunKeywordDiscoverySummary" in types_source
+        or "export type HuitunDiscoverySummary" in types_source
+    )
+
+
+def _matching_brace_index(source, open_brace_index, max_length=None):
+    depth = 0
+    limit = len(source) if max_length is None else min(len(source), open_brace_index + max_length)
+    for index in range(open_brace_index, limit):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _extract_named_helper_bodies(source, names):
+    bodies = []
+    name_pattern = "|".join(re.escape(name) for name in names)
+    for match in re.finditer(rf"\bfunction\s+(?:{name_pattern})\s*\(", source):
+        open_brace_index = source.find("{", match.end())
+        if open_brace_index == -1:
+            continue
+        close_brace_index = _matching_brace_index(source, open_brace_index)
+        if close_brace_index is not None:
+            bodies.append(source[open_brace_index + 1 : close_brace_index])
+
+    for match in re.finditer(rf"\bconst\s+(?:{name_pattern})\s*=", source):
+        arrow_index = source.find("=>", match.end())
+        if arrow_index == -1:
+            continue
+        body_start = arrow_index + 2
+        while body_start < len(source) and source[body_start].isspace():
+            body_start += 1
+        if body_start < len(source) and source[body_start] == "{":
+            close_brace_index = _matching_brace_index(source, body_start)
+            if close_brace_index is not None:
+                bodies.append(source[body_start + 1 : close_brace_index])
+        else:
+            body_end = source.find(";", body_start)
+            if body_end != -1:
+                bodies.append(source[body_start:body_end])
+    return bodies
+
+
+def test_keywords_page_supports_batch_huitun_discovery_runs_and_seed_diagnostics():
+    source = open("frontend/src/pages/platforms/xhs/keywords-page.tsx", encoding="utf-8").read()
+
+    seed_splitter_bodies = _extract_named_helper_bodies(source, ["splitSeedKeywords", "parseSeedKeywords"])
+    assert seed_splitter_bodies, "Batch discovery needs a dedicated seed splitter"
+    assert any(
+        re.search(r"\.split\s*\(", body)
+        and re.search(r"(?:\\r|\\n|\\r\?\\n|\\s)", body)
+        and re.search(r"(?:,|，|\\uFF0C)", body)
+        for body in seed_splitter_bodies
+    ), "Seed splitter must split on newline and comma/Chinese comma separators"
+    assert "TextArea" in source
+    assert "fetchHuitunKeywordDiscoveryRuns" in source
+    assert "huitunRuns" in source or "discoveryRuns" in source
+    assert "seed_results" in source
+    assert "partial_failed" in source
+    assert re.search(r"失败[^`'\"}]{0,80}(种子词|种子|seed)|(?:种子词|种子|seed)[^`'\"}]{0,80}失败", source, re.IGNORECASE)
+
+
+def test_real_drafts_route_exposes_duplicate_draft_action():
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    router_source = open("frontend/src/app/router.tsx", encoding="utf-8").read()
+    source = open("frontend/src/pages/platforms/xhs/rewrite-page.tsx", encoding="utf-8").read()
+
+    assert 'path="/platforms/xhs/drafts"' in router_source
+    assert "rewrite-page" in router_source
+    assert "duplicateDraft" in api_source
+    assert "handleDuplicateDraft" in source
+    assert re.search(r"handleDuplicateDraft[\s\S]*?duplicateDraft\s*\(", source)
+    assert re.search(r"function\s+selectDraft[\s\S]*?setRewritePreview\s*\(\s*null\s*\)", source)
+    assert "复制草稿" in source
+    assert 'aria-label="复制草稿"' in source
+
+
+def _object_slices_containing(source, text, max_length=2500):
+    for match in re.finditer(re.escape(text), source):
+        object_start = source.rfind("{", 0, match.start())
+        while object_start != -1:
+            object_end = _matching_brace_index(source, object_start, max_length=max_length)
+            if object_end is not None and object_start <= match.start() <= object_end:
+                yield source[object_start : object_end + 1]
+            object_start = source.rfind("{", 0, object_start)
+
+
+def test_publish_page_shows_visibility_labels_and_unsupported_mutual_friends_copy():
+    source = open("frontend/src/pages/platforms/xhs/publish-page.tsx", encoding="utf-8").read()
+
+    assert "公开可见" in source
+    assert "仅自己可见" in source
+    mutual_friends_option_slices = list(_object_slices_containing(source, "仅互关好友可见"))
+    assert any(
+        re.search(r"不支持|unsupported", option_slice, re.IGNORECASE)
+        and re.search(r"\bdisabled\s*:\s*true\b", option_slice)
+        for option_slice in mutual_friends_option_slices
+    ), "Mutual-friends visibility must be visibly unsupported and disabled in the same option vicinity"
+
+
+def test_rewrite_page_splits_generate_reference_inputs_before_combining():
+    source = open("frontend/src/pages/platforms/xhs/rewrite-page.tsx", encoding="utf-8").read()
+
+    assert "referenceLinks" in source
+    assert "referenceContext" in source
+    assert "buildGenerateReference" in source or "combineGenerateReference" in source
 
 
 def test_discovery_uses_antd_components_and_preserves_core_logic():

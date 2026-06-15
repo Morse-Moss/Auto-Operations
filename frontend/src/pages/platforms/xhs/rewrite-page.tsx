@@ -1,4 +1,5 @@
 import {
+  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   ExperimentOutlined,
@@ -54,6 +55,7 @@ import { Link } from "react-router-dom";
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
   addDraftAsset,
+  duplicateDraft,
   deleteDraft,
   deleteDraftAsset,
   fetchDraftAssets,
@@ -74,6 +76,8 @@ import {
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { DraftAsset } from "../../../lib/api";
+import { DEFAULT_REWRITE_TEMPLATE_KEY, REWRITE_TEMPLATES } from "./rewrite-templates";
+import type { RewriteTemplateKey } from "./rewrite-templates";
 import type { Draft, GeneratedImageAsset, SavedNote, UserImageFile } from "../../../types";
 
 const { Text, Paragraph } = Typography;
@@ -132,6 +136,13 @@ function getAssetTypeFromUrl(url: string): "image" | "video" {
   const lower = url.toLowerCase();
   if (/\.(mp4|mov|avi|mkv|flv|wmv)/.test(lower)) return "video";
   return "image";
+}
+
+function buildGenerateReference(referenceLinks: string, referenceContext: string): string {
+  return [
+    referenceLinks.trim() ? `参考链接：\n${referenceLinks.trim()}` : "",
+    referenceContext.trim() ? `参考背景：\n${referenceContext.trim()}` : "",
+  ].filter(Boolean).join("\n\n");
 }
 
 /* ── sortable image thumbnail ─────────────────────────────────────── */
@@ -198,9 +209,11 @@ export function XhsDraftsPage() {
   const [selectedDraftId, setSelectedDraftId] = useState<number | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [instruction, setInstruction] = useState("保留事实，增强小红书种草感，语气自然。");
+  const [rewriteTemplate, setRewriteTemplate] = useState<RewriteTemplateKey>(DEFAULT_REWRITE_TEMPLATE_KEY);
+  const [instruction, setInstruction] = useState(REWRITE_TEMPLATES[DEFAULT_REWRITE_TEMPLATE_KEY].instruction);
   const [topic, setTopic] = useState("");
-  const [reference, setReference] = useState("");
+  const [referenceLinks, setReferenceLinks] = useState("");
+  const [referenceContext, setReferenceContext] = useState("");
   const [titleOptions, setTitleOptions] = useState<string[]>([]);
   const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [systemPrompt, setSystemPrompt] = useState("你是小红书内容创作助手，擅长写吸引人的标题和正文。");
@@ -363,6 +376,12 @@ export function XhsDraftsPage() {
     setError(null);
   }
 
+  function handleRewriteTemplateChange(value: string | number) {
+    const next = value as RewriteTemplateKey;
+    setRewriteTemplate(next);
+    setInstruction(REWRITE_TEMPLATES[next].instruction);
+  }
+
   function selectDraft(draft: Draft, mode: AiContentMode = "rewrite") {
     setActiveMode(mode);
     setSelectedDraftId(draft.id);
@@ -373,6 +392,7 @@ export function XhsDraftsPage() {
         ? draft.tags.map((t) => ({ id: t.id || "", name: t.name || "" }))
         : [],
     );
+    setRewritePreview(null);
     clearStatus();
   }
 
@@ -422,6 +442,18 @@ export function XhsDraftsPage() {
     }
   }
 
+  async function handleDuplicateDraft(draftId: number) {
+    clearStatus();
+    try {
+      const copied = await duplicateDraft(draftId);
+      setDrafts((prev) => [copied, ...prev.filter((draft) => draft.id !== copied.id)]);
+      selectDraft(copied);
+      setMessage("草稿已复制，可继续编辑副本。");
+    } catch {
+      setError("草稿复制失败。");
+    }
+  }
+
   function upsertDraft(draft: Draft, mode: AiContentMode = activeMode) {
     setDrafts((current) => {
       const exists = current.some((item) => item.id === draft.id);
@@ -459,7 +491,7 @@ export function XhsDraftsPage() {
       const draft = await generateNoteWithAi({
         platform: "xhs",
         topic: topic.trim(),
-        reference,
+        reference: buildGenerateReference(referenceLinks, referenceContext),
         instruction,
       });
       upsertDraft(draft, "generate");
@@ -682,8 +714,17 @@ export function XhsDraftsPage() {
                             {formatDraftTime(draft.created_at)}
                           </Text>
                         </div>
+                        <Button
+                          type="text"
+                          size="small"
+                          aria-label="复制草稿"
+                          title="复制草稿"
+                          icon={<CopyOutlined />}
+                          onClick={(e) => { e.stopPropagation(); void handleDuplicateDraft(draft.id); }}
+                          style={{ flexShrink: 0 }}
+                        />
                         <Popconfirm title="删除此草稿？" onConfirm={(e) => { e?.stopPropagation(); void handleDeleteDraft(draft.id); }} onCancel={(e) => e?.stopPropagation()}>
-                          <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={(e) => e.stopPropagation()} style={{ flexShrink: 0 }} />
+                          <Button type="text" danger size="small" aria-label="删除草稿" icon={<DeleteOutlined />} onClick={(e) => e.stopPropagation()} style={{ flexShrink: 0 }} />
                         </Popconfirm>
                       </div>
                     </List.Item>
@@ -879,7 +920,7 @@ export function XhsDraftsPage() {
               items={[
                 {
                   key: "system-prompt",
-                  label: "系统提示词 (可选)",
+                  label: "高级设置：角色提示词",
                   children: (
                     <TextArea
                       rows={4}
@@ -893,11 +934,28 @@ export function XhsDraftsPage() {
             />
 
             <div style={{ marginBottom: 16 }}>
+              <div style={{ marginBottom: 12 }}>
+                <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 6 }}>改写模式</Text>
+                <Segmented
+                  block
+                  size="small"
+                  value={rewriteTemplate}
+                  onChange={handleRewriteTemplateChange}
+                  options={Object.entries(REWRITE_TEMPLATES).map(([key, template]) => ({
+                    value: key,
+                    label: template.label,
+                  }))}
+                />
+                <Text type="secondary" style={{ display: "block", marginTop: 6, fontSize: 11 }}>
+                  {REWRITE_TEMPLATES[rewriteTemplate].description}
+                </Text>
+              </div>
               <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 6 }}>AI 改写指令</Text>
-              <Input
+              <TextArea
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
-                placeholder="保留事实，增强种草感"
+                placeholder="填写 AI 改写指令"
+                rows={5}
                 style={{ marginBottom: 8 }}
               />
               <Button
@@ -908,7 +966,7 @@ export function XhsDraftsPage() {
                 type="primary"
                 icon={<ExperimentOutlined />}
               >
-                AI 改写正文
+                {REWRITE_TEMPLATES[rewriteTemplate].buttonLabel}
               </Button>
             </div>
 
@@ -1313,12 +1371,20 @@ export function XhsDraftsPage() {
                 placeholder="例如：通勤低卡早餐怎么搭配"
               />
             </Form.Item>
-            <Form.Item label="参考材料">
+            <Form.Item label="参考链接">
               <TextArea
-                value={reference}
-                onChange={(e) => setReference(e.target.value)}
-                placeholder="竞品笔记、卖点、评论洞察或人群信息"
-                rows={6}
+                value={referenceLinks}
+                onChange={(e) => setReferenceLinks(e.target.value)}
+                placeholder="每行一个竞品笔记、素材或资料链接"
+                rows={3}
+              />
+            </Form.Item>
+            <Form.Item label="参考背景">
+              <TextArea
+                value={referenceContext}
+                onChange={(e) => setReferenceContext(e.target.value)}
+                placeholder="卖点、评论洞察、人群信息或必须保留的事实"
+                rows={5}
               />
             </Form.Item>
             <Form.Item label="AI 指令">
