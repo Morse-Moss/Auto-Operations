@@ -29,7 +29,7 @@ export type PlatformMeta = {
   name_cn: string;
   name_en: string;
   enabled: boolean;
-  status: "enabled" | "coming_soon";
+  status: "enabled" | "beta" | "coming_soon" | "unavailable";
   release_stage: PlatformReleaseStage;
   region: PlatformRegion;
   platform_type: PlatformType;
@@ -40,6 +40,23 @@ export type PlatformMeta = {
   capabilities: PlatformCapability[];
   accent_color: string;
   icon: string;
+};
+
+export type WechatOfficialCapabilityOverview = {
+  key: string;
+  label: string;
+  status: PlatformCapabilityStatus;
+  message: string;
+};
+
+export type WechatOfficialOverview = {
+  platform_id: "wechat_official";
+  stage: "foundation_ready" | string;
+  external_integration_enabled: boolean;
+  research_required_before_integration: boolean;
+  research_topics: string[];
+  capabilities: WechatOfficialCapabilityOverview[];
+  blocked_actions: string[];
 };
 
 export type Paginated<T> = {

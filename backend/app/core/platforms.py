@@ -163,6 +163,45 @@ _XHS_CAPABILITIES = [
 ]
 
 
+_WECHAT_OFFICIAL_CAPABILITIES = [
+    PlatformCapability(
+        key=CapabilityKey.ACCOUNT_MANAGE,
+        status=CapabilityStatus.PLANNED,
+        risk=RiskLevel.MEDIUM,
+        requires_confirmation=False,
+        notes="公众号账号配置待 GitHub 开源系统调研和微信官方 API 策略确认后接入；本轮不开放凭据输入。",
+    ),
+    PlatformCapability(
+        key=CapabilityKey.CONTENT_LIBRARY,
+        status=CapabilityStatus.PLANNED,
+        risk=RiskLevel.LOW,
+        requires_confirmation=False,
+        notes="公众号图文内容库待正式接入设计后实现；本轮只展示平台骨架状态。",
+    ),
+    PlatformCapability(
+        key=CapabilityKey.CONTENT_REWRITE,
+        status=CapabilityStatus.PLANNED,
+        risk=RiskLevel.LOW,
+        requires_confirmation=False,
+        notes="公众号文章改写待内容模型确认后实现；本轮不生成或同步真实公众号草稿。",
+    ),
+    PlatformCapability(
+        key=CapabilityKey.PUBLISH_DRY_RUN,
+        status=CapabilityStatus.PLANNED,
+        risk=RiskLevel.MEDIUM,
+        requires_confirmation=False,
+        notes="公众号发布 dry-run 待草稿箱、素材和群发 API 能力确认后设计；本轮不执行发布模拟。",
+    ),
+    PlatformCapability(
+        key=CapabilityKey.PUBLISH_REAL_PUBLISH,
+        status=CapabilityStatus.BLOCKED,
+        risk=RiskLevel.HIGH,
+        requires_confirmation=True,
+        notes="公众号群发发布属于高风险动作；正式 QA、dry-run 和动作级确认机制完成前保持阻断。",
+    ),
+]
+
+
 _PLATFORMS: List[PlatformMeta] = [
     PlatformMeta(
         id=PlatformId.XHS,
@@ -236,14 +275,17 @@ _PLATFORMS: List[PlatformMeta] = [
         id=PlatformId.WECHAT_OFFICIAL,
         name_cn="公众号",
         name_en="WeChat Official",
-        enabled=False,
-        release_stage=ReleaseStage.PLANNED,
+        enabled=True,
+        release_stage=ReleaseStage.BETA,
         region=PlatformRegion.CN,
         platform_type=PlatformType.CONTENT,
         accent_color="#0a9b57",
         icon="wechat_official",
+        default_route="/platforms/wechat-official/dashboard",
+        adapter_key="wechat_official",
         risk_level=RiskLevel.MEDIUM,
         auth_modes=[AuthMode.NONE],
+        capabilities=_WECHAT_OFFICIAL_CAPABILITIES,
     ),
     PlatformMeta(
         id=PlatformId.WEIBO,

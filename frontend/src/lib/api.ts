@@ -73,6 +73,7 @@ import type {
   UserImageFile,
   TagPayload,
   TaskRecord,
+  WechatOfficialOverview,
   XhsNoteSearchResponse,
   XhsDataCrawlItem,
   XhsDataCrawlPayload,
@@ -216,6 +217,11 @@ export async function fetchPlatforms(): Promise<PlatformMeta[]> {
 
 export async function fetchXhsOverview(): Promise<DashboardOverview> {
   const response = await http.get<DashboardOverview>("/xhs/analytics/overview");
+  return response.data;
+}
+
+export async function fetchWechatOfficialOverview(): Promise<WechatOfficialOverview> {
+  const response = await http.get<WechatOfficialOverview>("/wechat-official/overview");
   return response.data;
 }
 

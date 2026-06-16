@@ -8,6 +8,7 @@ import { ModelConfigPage } from "../pages/models/model-config-page";
 import { PlatformSelectPage } from "../pages/platform-select/platform-select-page";
 import { SettingsPage } from "../pages/settings/settings-page";
 import { TaskCenterPage } from "../pages/tasks/task-center-page";
+import { WechatOfficialDashboard } from "../pages/wechat-official/wechat-official-dashboard";
 import { AutoOpsPage } from "../pages/platforms/xhs/auto-ops-page";
 import { XhsAccountsPage } from "../pages/platforms/xhs/accounts-page";
 import { XhsAnalyticsPage } from "../pages/platforms/xhs/analytics-page";
@@ -60,6 +61,7 @@ export function AppRouter() {
             </ProtectedRoute>
           }
         >
+          <Route path="/platforms/wechat-official/dashboard" element={<WechatOfficialDashboard />} />
           <Route path="/platforms/xhs/dashboard" element={<XhsDashboard />} />
           <Route path="/platforms/xhs/accounts" element={<XhsAccountsPage />} />
           <Route path="/platforms/xhs/analytics" element={<XhsAnalyticsPage />} />
