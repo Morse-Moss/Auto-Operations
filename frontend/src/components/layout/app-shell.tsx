@@ -57,14 +57,14 @@ const mainNavItems: MenuProps["items"] = [
   { key: "/platforms/xhs/discovery", icon: <SearchOutlined />, label: "笔记发现" },
   { key: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "数据抓取" },
   { key: "/platforms/xhs/keywords", icon: <KeyOutlined />, label: "关键词组" },
-  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "数据洞察" },
-  { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "竞品监控" },
-  { key: "/platforms/xhs/image-studio", icon: <StarOutlined />, label: "图片工坊" },
-  { key: "/platforms/xhs/video-studio", icon: <VideoCameraOutlined />, label: "视频工坊" },
   { key: "/platforms/xhs/library", icon: <DatabaseOutlined />, label: "内容库" },
   { key: "/platforms/xhs/drafts", icon: <FileTextOutlined />, label: "草稿工坊" },
+  { key: "/platforms/xhs/image-studio", icon: <StarOutlined />, label: "图片工坊" },
+  { key: "/platforms/xhs/video-studio", icon: <VideoCameraOutlined />, label: "视频工坊" },
   { key: "/platforms/xhs/publish", icon: <SendOutlined />, label: "发布中心" },
   { key: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "自动运营" },
+  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "数据洞察" },
+  { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "竞品监控" },
 ];
 
 const footerNavItems: MenuProps["items"] = [

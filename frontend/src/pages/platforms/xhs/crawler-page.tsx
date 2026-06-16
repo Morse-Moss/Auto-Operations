@@ -10,7 +10,7 @@ import {
   SearchOutlined,
   SettingOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Form, Input, InputNumber, Row, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Form, Input, InputNumber, Radio, Row, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -49,6 +49,8 @@ const distanceOptions = [
   { value: 1, label: "同城" },
   { value: 2, label: "附近" },
 ];
+
+type CrawlChannel = "keyword_group" | "manual_keyword";
 
 function splitUrls(value: string): string[] {
   return value.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean);
@@ -258,17 +260,19 @@ function exportRowsToExcel(items: XhsDataCrawlItem[]) {
 
 export function XhsCrawlerPage() {
   const [searchParams] = useSearchParams();
-  const initialKeywordGroupId = Number(searchParams.get("keyword_group_id") || 0) || null;
+  const parsedKeywordGroupId = Number(searchParams.get("keyword_group_id") || 0);
+  const queryKeywordGroupId = Number.isFinite(parsedKeywordGroupId) && parsedKeywordGroupId > 0 ? parsedKeywordGroupId : null;
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
   const [keywordGroups, setKeywordGroups] = useState<KeywordGroup[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
-  const [selectedKeywordGroupId, setSelectedKeywordGroupId] = useState<number | null>(initialKeywordGroupId);
+  const [selectedKeywordGroupId, setSelectedKeywordGroupId] = useState<number | null>(queryKeywordGroupId);
+  const [crawlChannel, setCrawlChannel] = useState<CrawlChannel>(queryKeywordGroupId ? "keyword_group" : "manual_keyword");
   const [keywordLimit, setKeywordLimit] = useState(5);
   const [maxNotesPerKeyword, setMaxNotesPerKeyword] = useState(5);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [summaryMessage, setSummaryMessage] = useState<string | null>(null);
   const [keywordGroupSummary, setKeywordGroupSummary] = useState<XhsKeywordGroupCrawlSummary | null>(null);
-  const [mode, setMode] = useState<XhsDataCrawlMode>(initialKeywordGroupId ? "search" : "note_urls");
+  const [mode, setMode] = useState<XhsDataCrawlMode>("search");
   const [urls, setUrls] = useState("");
   const [keyword, setKeyword] = useState("");
   const [pages, setPages] = useState(1);
@@ -287,7 +291,7 @@ export function XhsCrawlerPage() {
 
   const pcAccounts = useMemo(() => accounts.filter((a) => a.platform === "xhs" && a.sub_type === "pc"), [accounts]);
   const selectedKeywordGroup = useMemo(() => keywordGroups.find((group) => group.id === selectedKeywordGroupId) || null, [keywordGroups, selectedKeywordGroupId]);
-  const isKeywordGroupMode = Boolean(selectedKeywordGroupId);
+  const isKeywordGroupMode = crawlChannel === "keyword_group";
   const commentRateLimitedCount = useMemo(() => items.filter((item) => item.comment_status === "rate_limited").length, [items]);
   const commentSkippedCount = useMemo(() => items.filter((item) => item.comment_status === "skipped_rate_limited").length, [items]);
   const lowQualityCount = useMemo(() => items.filter((item) => item.quality_status && item.quality_status !== "valid_detail").length, [items]);
@@ -309,8 +313,18 @@ export function XhsCrawlerPage() {
     try {
       const result = await fetchKeywordGroups("xhs");
       setKeywordGroups(result.items);
-      setSelectedKeywordGroupId((current) => current && result.items.some((group) => group.id === current) ? current : null);
+      setSelectedKeywordGroupId((current) => {
+        if (current && result.items.some((group) => group.id === current)) return current;
+        return null;
+      });
     } catch { setError("关键词组加载失败。"); }
+  }
+
+  function handleChannelChange(nextChannel: CrawlChannel) {
+    setCrawlChannel(nextChannel);
+    if (nextChannel === "manual_keyword") {
+      setMode("search");
+    }
   }
 
   async function handleSimpleRun() {
@@ -386,6 +400,17 @@ export function XhsCrawlerPage() {
     finally { setIsRunning(false); }
   }
 
+  useEffect(() => {
+    if (queryKeywordGroupId) {
+      setSelectedKeywordGroupId(queryKeywordGroupId);
+      setCrawlChannel("keyword_group");
+      return;
+    }
+    setSelectedKeywordGroupId(null);
+    setCrawlChannel("manual_keyword");
+    setMode("search");
+  }, [queryKeywordGroupId]);
+
   useEffect(() => { void loadAccounts(); void loadKeywordGroups(); }, []);
 
   const noPcAccount = !isLoadingAccounts && pcAccounts.length === 0;
@@ -417,7 +442,7 @@ export function XhsCrawlerPage() {
           <Text type="secondary">搜索结果、笔记详情和评论抓取，失败项单独标注并可导出 Excel</Text>
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} onClick={loadAccounts} loading={isLoadingAccounts}>刷新账号</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => { void loadAccounts(); void loadKeywordGroups(); }} loading={isLoadingAccounts}>刷新账号和关键词组</Button>
         </Col>
       </Row>
 
@@ -426,37 +451,149 @@ export function XhsCrawlerPage() {
           <Alert
             type="info"
             showIcon
-            message="关键词组一键采集"
-            description="选择关键词组后，系统会自动低频搜索、获取详情，只保存有效内容，并在结束后汇总保存和跳过原因。"
+            message="选择采集通道"
+            description="关键词组适合计划内批量采集；手动关键词适合临时验证选题。系统会低频搜索、获取详情，只保存有效内容，并在结束后汇总保存和跳过原因。"
             style={{ marginBottom: 16 }}
           />
+
           <Row gutter={16}>
-            <Col span={8}>
+            <Col xs={24} md={8}>
               <Form.Item label="PC 账号">
-                <Select value={selectedAccountId} onChange={setSelectedAccountId} placeholder="选择 PC 账号" options={pcAccounts.map((a) => ({ value: a.id, label: `${a.nickname || `PC 账号 ${a.id}`} · ${a.status}` }))} />
+                <Select
+                  value={selectedAccountId}
+                  onChange={setSelectedAccountId}
+                  placeholder="选择 PC 账号"
+                  options={pcAccounts.map((a) => ({ value: a.id, label: `${a.nickname || `PC 账号 ${a.id}`} · ${a.status}` }))}
+                />
               </Form.Item>
             </Col>
-            <Col span={8}>
-              <Form.Item label="关键词组">
-                <Select allowClear value={selectedKeywordGroupId ?? undefined} onChange={(value) => setSelectedKeywordGroupId(value ?? null)} placeholder="选择关键词组后一键采集" options={keywordGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.keywords.length} 词` }))} />
+            <Col xs={24} md={16}>
+              <Form.Item label="采集通道">
+                <Radio.Group value={crawlChannel} onChange={(e) => handleChannelChange(e.target.value as CrawlChannel)}>
+                  <Radio.Button value="keyword_group">关键词组采集</Radio.Button>
+                  <Radio.Button value="manual_keyword">手动关键词</Radio.Button>
+                </Radio.Group>
               </Form.Item>
             </Col>
-            {isKeywordGroupMode ? (
-              <>
-                <Col span={4}><Form.Item label="关键词数"><InputNumber min={1} max={20} value={keywordLimit} onChange={(v) => setKeywordLimit(v ?? 5)} style={{ width: "100%" }} /></Form.Item></Col>
-                <Col span={4}><Form.Item label="每词最多"><InputNumber min={1} max={50} value={maxNotesPerKeyword} onChange={(v) => setMaxNotesPerKeyword(v ?? 5)} style={{ width: "100%" }} /></Form.Item></Col>
-              </>
-            ) : (
-              <Col span={8}>
-                <Form.Item label="抓取方式">
-                  <Select value={mode} onChange={(v) => setMode(v)} options={[{ value: "note_urls", label: "直接爬取笔记链接" }, { value: "search", label: "通过搜索爬取详情" }, { value: "comments", label: "只爬取评论" }]} />
-                </Form.Item>
-              </Col>
-            )}
           </Row>
-          {isKeywordGroupMode && selectedKeywordGroup ? (
-            <Alert type="success" showIcon message={`将采集「${selectedKeywordGroup.name}」前 ${Math.min(keywordLimit, selectedKeywordGroup.keywords.length)} 个关键词，每个关键词最多 ${maxNotesPerKeyword} 条。`} style={{ marginBottom: 16 }} />
-          ) : null}
+
+          {isKeywordGroupMode ? (
+            <>
+              <Row gutter={16}>
+                <Col xs={24} md={8}>
+                  <Form.Item label="关键词组">
+                    <Select
+                      allowClear
+                      value={selectedKeywordGroupId ?? undefined}
+                      onChange={(value) => setSelectedKeywordGroupId(value ?? null)}
+                      placeholder="选择关键词组后一键采集"
+                      options={keywordGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.keywords.length} 词` }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={12} md={4}>
+                  <Form.Item label="关键词数">
+                    <InputNumber min={1} max={20} value={keywordLimit} onChange={(v) => setKeywordLimit(v ?? 5)} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={12} md={4}>
+                  <Form.Item label="每词最多">
+                    <InputNumber min={1} max={50} value={maxNotesPerKeyword} onChange={(v) => setMaxNotesPerKeyword(v ?? 5)} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              {selectedKeywordGroup ? (
+                <Alert
+                  type="success"
+                  showIcon
+                  message={`将采集「${selectedKeywordGroup.name}」前 ${Math.min(keywordLimit, selectedKeywordGroup.keywords.length)} 个关键词，每个关键词最多 ${maxNotesPerKeyword} 条。`}
+                  style={{ marginBottom: 16 }}
+                />
+              ) : null}
+            </>
+          ) : (
+            <>
+              {mode === "search" ? (
+                <>
+                  <Alert
+                    type="success"
+                    showIcon
+                    message="手动关键词采集"
+                    description="输入一个关键词后，系统会按搜索结果抓取详情。适合临时验证选题、探索新关键词。"
+                    style={{ marginBottom: 16 }}
+                  />
+                  <Row gutter={16}>
+                    <Col xs={24} md={8}>
+                      <Form.Item label="搜索关键词">
+                        <Input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="低卡早餐、通勤穿搭" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Form.Item label="爬取数量">
+                        <InputNumber min={1} max={200} value={maxNotes} onChange={(v) => { const n = v ?? 20; setMaxNotes(n); setPages(Math.max(1, Math.ceil(n / 20))); }} style={{ width: "100%" }} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Form.Item label="排序">
+                        <Select value={filters.sort_type_choice} onChange={(v) => setFilters((c) => ({ ...c, sort_type_choice: v }))} options={sortOptions} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Form.Item label="类型">
+                        <Select value={filters.note_type} onChange={(v) => setFilters((c) => ({ ...c, note_type: v }))} options={noteTypeOptions} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Form.Item label="时间范围">
+                        <Select value={filters.note_time} onChange={(v) => setFilters((c) => ({ ...c, note_time: v }))} options={noteTimeOptions} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Form.Item label="距离">
+                        <Select value={filters.pos_distance} onChange={(v) => setFilters((c) => ({ ...c, pos_distance: v }))} options={distanceOptions} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Form.Item label="Geo">
+                        <Input value={filters.geo} onChange={(e) => setFilters((c) => ({ ...c, geo: e.target.value }))} placeholder="经纬度" />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                </>
+              ) : (
+                <Form.Item label="笔记链接">
+                  <Input.TextArea value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="每行一个链接，也可以用英文逗号分隔" rows={4} />
+                </Form.Item>
+              )}
+
+              <Collapse
+                ghost
+                items={[{
+                  key: "secondary-crawl-modes",
+                  label: <Space><CloudDownloadOutlined />更多抓取方式（笔记链接 / 评论）</Space>,
+                  children: (
+                    <Row gutter={16}>
+                      <Col xs={24} md={8}>
+                        <Form.Item label="辅助抓取方式">
+                          <Select
+                            value={mode}
+                            onChange={(value) => setMode(value)}
+                            options={[
+                              { value: "search", label: "通过搜索爬取详情" },
+                              { value: "note_urls", label: "直接爬取笔记链接" },
+                              { value: "comments", label: "只爬取评论" },
+                            ]}
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  ),
+                }]}
+                style={{ marginBottom: 8 }}
+              />
+            </>
+          )}
+
           <Row gutter={16}>
             <Col span={8} style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
               <Checkbox checked={fetchCommentsChecked} onChange={(e) => setFetchCommentsChecked(e.target.checked)} disabled={!isKeywordGroupMode && mode === "comments"}>同时抓取评论</Checkbox>
@@ -480,23 +617,11 @@ export function XhsCrawlerPage() {
                 </Row>,
               }]}
             />
-          ) : mode === "search" ? (
-            <Row gutter={16}>
-              <Col span={8}><Form.Item label="搜索关键词"><Input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="低卡早餐、通勤穿搭" /></Form.Item></Col>
-              <Col span={4}><Form.Item label="爬取数量"><InputNumber min={1} max={200} value={maxNotes} onChange={(v) => { const n = v ?? 20; setMaxNotes(n); setPages(Math.max(1, Math.ceil(n / 20))); }} style={{ width: "100%" }} /></Form.Item></Col>
-              <Col span={4}><Form.Item label="排序"><Select value={filters.sort_type_choice} onChange={(v) => setFilters((c) => ({ ...c, sort_type_choice: v }))} options={sortOptions} /></Form.Item></Col>
-              <Col span={4}><Form.Item label="类型"><Select value={filters.note_type} onChange={(v) => setFilters((c) => ({ ...c, note_type: v }))} options={noteTypeOptions} /></Form.Item></Col>
-              <Col span={4}><Form.Item label="时间范围"><Select value={filters.note_time} onChange={(v) => setFilters((c) => ({ ...c, note_time: v }))} options={noteTimeOptions} /></Form.Item></Col>
-              <Col span={4}><Form.Item label="距离"><Select value={filters.pos_distance} onChange={(v) => setFilters((c) => ({ ...c, pos_distance: v }))} options={distanceOptions} /></Form.Item></Col>
-              <Col span={4}><Form.Item label="Geo"><Input value={filters.geo} onChange={(e) => setFilters((c) => ({ ...c, geo: e.target.value }))} placeholder="经纬度" /></Form.Item></Col>
-            </Row>
-          ) : (
-            <Form.Item label="笔记链接"><Input.TextArea value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="每行一个链接，也可以用英文逗号分隔" rows={4} /></Form.Item>
-          )}
+          ) : null}
 
           <Space>
-            <Button type="primary" htmlType="submit" loading={isRunning} disabled={noPcAccount || (isKeywordGroupMode && !selectedKeywordGroupId)} icon={isKeywordGroupMode || mode === "search" ? <SearchOutlined /> : <CloudDownloadOutlined />}>
-              {isRunning ? "抓取中..." : isKeywordGroupMode ? "开始采集" : "开始抓取"}
+            <Button type="primary" htmlType="submit" loading={isRunning} disabled={noPcAccount} icon={isKeywordGroupMode || mode === "search" ? <SearchOutlined /> : <CloudDownloadOutlined />}>
+              {isRunning ? "抓取中..." : isKeywordGroupMode ? "开始采集" : mode === "search" ? "开始抓取关键词" : "开始抓取"}
             </Button>
             <Button icon={<FileExcelOutlined />} onClick={() => items.length && exportRowsToExcel(items)} disabled={!items.length}>导出 Excel</Button>
           </Space>
