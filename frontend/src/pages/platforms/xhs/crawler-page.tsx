@@ -486,7 +486,7 @@ export function XhsCrawlerPage() {
                       allowClear
                       value={selectedKeywordGroupId ?? undefined}
                       onChange={(value) => setSelectedKeywordGroupId(value ?? null)}
-                      placeholder="选择关键词组后一键采集"
+                      placeholder="选择关键词组一键采集"
                       options={keywordGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.keywords.length} 词` }))}
                     />
                   </Form.Item>

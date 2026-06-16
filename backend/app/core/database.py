@@ -110,6 +110,7 @@ def _normalize_sqlite_datetime_storage(bind) -> None:
         "monitoring_snapshots": ["created_at"],
         "keyword_groups": ["created_at", "updated_at"],
         "api_logs": ["created_at"],
+        "analysis_reports": ["created_at", "started_at", "finished_at"],
     }
     with bind.begin() as connection:
         connection.execute(

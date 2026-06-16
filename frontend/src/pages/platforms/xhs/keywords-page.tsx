@@ -1,4 +1,5 @@
 import {
+  BarChartOutlined,
   DeleteOutlined,
   EditOutlined,
   PlayCircleOutlined,
@@ -670,6 +671,13 @@ export function XhsKeywordsPage() {
                       onClick={() => navigate(`/platforms/xhs/crawler?keyword_group_id=${group.id}`)}
                     >
                       开始采集
+                    </Button>
+                    <Button
+                      icon={<BarChartOutlined />}
+                      disabled={isWorking}
+                      onClick={() => navigate(`/platforms/xhs/analytics?keyword_group_id=${group.id}`)}
+                    >
+                      分析
                     </Button>
                     <Button
                       icon={<EditOutlined />}

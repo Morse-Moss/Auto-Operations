@@ -4,6 +4,7 @@ import {
   DownloadOutlined,
   FileTextOutlined,
   FireOutlined,
+  PlusOutlined,
   ReloadOutlined,
   TagsOutlined,
   UserOutlined,
@@ -14,39 +15,58 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
+  Descriptions,
   Divider,
+  Drawer,
   Empty,
+  Form,
+  Input,
   List,
   Progress,
   Row,
+  Select,
   Space,
   Spin,
   Statistic,
+  Steps,
   Table,
   Tag,
   Typography,
+  message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
+  checkXhsAnalysisHealth,
+  createXhsAnalysisDrafts,
+  createXhsAnalysisReport,
   createXhsAnalyticsReport,
   downloadExportFile,
+  fetchKeywordGroups,
+  fetchXhsAnalysisReport,
+  fetchXhsAnalysisReports,
   fetchXhsCommentInsights,
   fetchXhsHotTopics,
   fetchXhsOverview,
   fetchXhsTopContent,
 } from "../../../lib/api";
 import type {
+  AnalysisDataHealth,
+  AnalysisReport,
   AnalyticsCommentInsight,
   AnalyticsHotTopic,
   AnalyticsTopContent,
   DashboardOverview,
+  KeywordGroup,
+  TopicCard,
 } from "../../../types";
 
-const { Text } = Typography;
+const { Paragraph, Text } = Typography;
+const { TextArea } = Input;
 
 const fallbackOverview: DashboardOverview = {
   platform: "xhs",
@@ -68,8 +88,55 @@ const fallbackComments: AnalyticsCommentInsight = {
   top_comments: [],
 };
 
+const wizardSteps = [
+  { title: "选择范围" },
+  { title: "数据健康与样本预览" },
+  { title: "生成确认" },
+];
+
+const statusColorMap: Record<AnalysisReport["status"], string> = {
+  pending: "default",
+  running: "processing",
+  completed: "success",
+  failed: "error",
+};
+
+const healthColorMap: Record<AnalysisDataHealth["status"], string> = {
+  insufficient: "error",
+  minimum: "warning",
+  standard: "success",
+};
+
 function formatNumber(value = 0): string {
   return value.toLocaleString();
+}
+
+function formatDate(value?: string | null): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function splitLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function splitTags(value: string): string[] {
+  return value
+    .split(/[,，\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function evidenceLabel(evidenceId: string): string {
+  if (evidenceId.startsWith("note:")) return "笔记";
+  if (evidenceId.startsWith("comment:")) return "评论";
+  if (evidenceId.startsWith("keyword:")) return "关键词";
+  if (evidenceId.startsWith("metric:")) return "指标";
+  return "证据";
 }
 
 const topContentColumns: ColumnsType<AnalyticsTopContent> = [
@@ -107,33 +174,65 @@ const topContentColumns: ColumnsType<AnalyticsTopContent> = [
 const metricIconColors = ["#1668dc", "#52c41a", "#faad14", "#eb2f96"];
 
 export function XhsAnalyticsPage() {
+  const [searchParams] = useSearchParams();
   const [overview, setOverview] = useState<DashboardOverview>(fallbackOverview);
   const [topContent, setTopContent] = useState<AnalyticsTopContent[]>([]);
   const [hotTopics, setHotTopics] = useState<AnalyticsHotTopic[]>([]);
   const [commentInsights, setCommentInsights] =
     useState<AnalyticsCommentInsight>(fallbackComments);
+  const [keywordGroups, setKeywordGroups] = useState<KeywordGroup[]>([]);
+  const [analysisReports, setAnalysisReports] = useState<AnalysisReport[]>([]);
+  const [selectedReport, setSelectedReport] = useState<AnalysisReport | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [keywordGroupId, setKeywordGroupId] = useState<number | undefined>();
+  const [excludedNoteIds, setExcludedNoteIds] = useState<number[]>([]);
+  const [analysisHealth, setAnalysisHealth] = useState<AnalysisDataHealth | null>(null);
+  const [reportTitle, setReportTitle] = useState("小红书分析报告");
+  const [prefilledKeywordGroupId, setPrefilledKeywordGroupId] = useState<number | null>(null);
+  const [creatingReport, setCreatingReport] = useState(false);
+  const [wizardStep, setWizardStep] = useState(0);
+  const [checkingHealth, setCheckingHealth] = useState(false);
+  const [editedTopicCards, setEditedTopicCards] = useState<Record<string, TopicCard>>({});
+  const [creatingDraftCardId, setCreatingDraftCardId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reportMessage, setReportMessage] = useState<string | null>(null);
 
+  async function loadAnalysisReports() {
+    const reports = await fetchXhsAnalysisReports();
+    setAnalysisReports(reports);
+    setSelectedReport((current) => {
+      if (!current) return reports[0] ?? null;
+      return reports.find((report) => report.id === current.id) ?? current;
+    });
+  }
+
   async function loadAnalytics() {
     setIsLoading(true);
     setError(null);
     try {
-      const [overviewResult, topResult, topicsResult, commentsResult] =
+      const [overviewResult, topResult, topicsResult, commentsResult, groupsResult, reportsResult] =
         await Promise.all([
           fetchXhsOverview(),
           fetchXhsTopContent(),
           fetchXhsHotTopics(),
           fetchXhsCommentInsights(),
+          fetchKeywordGroups("xhs"),
+          fetchXhsAnalysisReports(),
         ]);
       setOverview(overviewResult);
       setTopContent(topResult.items);
       setHotTopics(topicsResult.items);
       setCommentInsights(commentsResult);
+      setKeywordGroups(groupsResult.items);
+      setAnalysisReports(reportsResult);
+      setSelectedReport((current) => {
+        if (!current) return reportsResult[0] ?? null;
+        return reportsResult.find((report) => report.id === current.id) ?? current;
+      });
     } catch {
-      setError("数据洞察加载失败。");
+      setError("小红书分析中心加载失败。");
     } finally {
       setIsLoading(false);
     }
@@ -143,6 +242,36 @@ export function XhsAnalyticsPage() {
     void loadAnalytics();
   }, []);
 
+  useEffect(() => {
+    const groupId = Number(searchParams.get("keyword_group_id"));
+    if (!(groupId > 0)) {
+      setPrefilledKeywordGroupId(null);
+      return;
+    }
+    if (prefilledKeywordGroupId === groupId) return;
+
+    const group = keywordGroups.find((item) => item.id === groupId);
+    setKeywordGroupId(groupId);
+    setReportTitle(group ? `${group.name} - 小红书分析报告` : `小红书分析报告 - 关键词组 ${groupId}`);
+    setWizardOpen(true);
+    setWizardStep(0);
+    setAnalysisHealth(null);
+    setExcludedNoteIds([]);
+    setPrefilledKeywordGroupId(groupId);
+  }, [keywordGroups, prefilledKeywordGroupId, searchParams]);
+
+  useEffect(() => {
+    if (!prefilledKeywordGroupId || keywordGroupId !== prefilledKeywordGroupId) return;
+    const group = keywordGroups.find((item) => item.id === prefilledKeywordGroupId);
+    if (group) {
+      setReportTitle(`${group.name} - 小红书分析报告`);
+    }
+  }, [keywordGroups, keywordGroupId, prefilledKeywordGroupId]);
+
+  useEffect(() => {
+    setEditedTopicCards({});
+  }, [selectedReport?.id]);
+
   async function generateReport() {
     setIsGeneratingReport(true);
     setError(null);
@@ -150,11 +279,96 @@ export function XhsAnalyticsPage() {
     try {
       const report = await createXhsAnalyticsReport({ format: "json" });
       await downloadExportFile(report.download_url, report.file_name);
-      setReportMessage(`已生成运营报告：${report.note_count} 篇笔记`);
+      setReportMessage(`已导出基础运营报告：${report.note_count} 篇笔记`);
     } catch {
-      setError("运营报告生成失败，请稍后重试。");
+      setError("基础运营报告导出失败，请稍后重试。");
     } finally {
       setIsGeneratingReport(false);
+    }
+  }
+
+  async function handleSelectReport(report: AnalysisReport) {
+    setSelectedReport(report);
+    try {
+      const detail = await fetchXhsAnalysisReport(report.id);
+      setSelectedReport(detail);
+    } catch {
+      message.error("分析报告详情加载失败。");
+    }
+  }
+
+  function openWizard() {
+    setWizardOpen(true);
+    setWizardStep(0);
+    setAnalysisHealth(null);
+    setExcludedNoteIds([]);
+    if (!reportTitle.trim()) {
+      setReportTitle("小红书分析报告");
+    }
+  }
+
+  async function handleCheckHealth() {
+    if (!keywordGroupId) {
+      message.warning("请先选择关键词组。");
+      return;
+    }
+    setCheckingHealth(true);
+    try {
+      const health = await checkXhsAnalysisHealth({
+        keyword_group_id: keywordGroupId,
+        excluded_note_ids: excludedNoteIds,
+      });
+      setAnalysisHealth(health);
+      setWizardStep(1);
+    } catch {
+      setAnalysisHealth(null);
+      message.error("数据健康检查失败，请确认关键词组存在且已登录。");
+    } finally {
+      setCheckingHealth(false);
+    }
+  }
+
+  async function handleCreateAnalysisReport() {
+    if (!keywordGroupId || !analysisHealth?.can_generate) return;
+    setCreatingReport(true);
+    try {
+      const report = await createXhsAnalysisReport({
+        keyword_group_id: keywordGroupId,
+        excluded_note_ids: excludedNoteIds,
+        title: reportTitle.trim() || "小红书分析报告",
+      });
+      setSelectedReport(report);
+      await loadAnalysisReports();
+      setWizardOpen(false);
+      message.success(report.status === "completed" ? "分析报告已生成" : "分析报告生成失败，请查看原因");
+    } catch {
+      message.error("分析报告创建失败，请查看模型配置或稍后重试。");
+    } finally {
+      setCreatingReport(false);
+    }
+  }
+
+  function updateTopicCard(card: TopicCard, patch: Partial<TopicCard>) {
+    setEditedTopicCards((current) => ({
+      ...current,
+      [card.id]: {
+        ...(current[card.id] ?? card),
+        ...patch,
+      },
+    }));
+  }
+
+  async function handleCreateDraft(card: TopicCard) {
+    if (!selectedReport) return;
+    const editedCard = editedTopicCards[card.id] ?? card;
+    setCreatingDraftCardId(card.id);
+    try {
+      await createXhsAnalysisDrafts(selectedReport.id, card.id, { topic_cards: [editedCard] });
+      message.success("草稿骨架已保存到草稿工坊");
+    } catch {
+      message.error("草稿骨架保存失败，请稍后重试。");
+    } finally {
+      setCreatingDraftCardId(null);
     }
   }
 
@@ -165,27 +379,435 @@ export function XhsAnalyticsPage() {
     { label: "话题数", value: hotTopics.length, icon: <TagsOutlined /> },
   ];
 
+  const reportColumns: ColumnsType<AnalysisReport> = [
+    {
+      title: "报告",
+      dataIndex: "title",
+      key: "title",
+      ellipsis: true,
+      render: (text: string, record) => (
+        <Button type="link" style={{ padding: 0 }} onClick={() => void handleSelectReport(record)}>
+          {text || `报告 #${record.id}`}
+        </Button>
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      key: "status",
+      width: 96,
+      render: (status: AnalysisReport["status"]) => <Tag color={statusColorMap[status]}>{status}</Tag>,
+    },
+    {
+      title: "健康",
+      dataIndex: ["data_health", "status"],
+      key: "health",
+      width: 96,
+      render: (_: unknown, record) => {
+        const status = record.data_health?.status;
+        return status ? <Tag color={healthColorMap[status]}>{status}</Tag> : "-";
+      },
+    },
+    {
+      title: "创建时间",
+      dataIndex: "created_at",
+      key: "created_at",
+      width: 180,
+      render: (value: string) => formatDate(value),
+    },
+  ];
+
   const maxTopicEngagement = hotTopics.length > 0
     ? Math.max(...hotTopics.map((t) => t.engagement))
     : 1;
 
   const termSizes = [18, 16, 15, 14, 13, 12];
 
+  function renderHealthPanel() {
+    if (!analysisHealth) {
+      return (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="先完成数据健康检查，系统会基于真实关键词组、笔记和评论判断能否生成报告。"
+        />
+      );
+    }
+
+    const metricItems = [
+      { label: "有效笔记", value: analysisHealth.metrics.valid_note_count },
+      { label: "评论", value: analysisHealth.metrics.comment_count },
+      { label: "覆盖关键词", value: analysisHealth.metrics.covered_keyword_count },
+      { label: "代表样本", value: analysisHealth.metrics.representative_note_count },
+    ];
+
+    return (
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        <Alert
+          showIcon
+          type={analysisHealth.can_generate ? "success" : "warning"}
+          message={analysisHealth.can_generate ? "当前数据达到生成门槛" : "当前数据低于最低门槛"}
+          description={`健康状态：${analysisHealth.status}，置信度上限：${analysisHealth.confidence_cap}`}
+        />
+        <Row gutter={[12, 12]}>
+          {metricItems.map((item) => (
+            <Col span={12} key={item.label}>
+              <Card size="small">
+                <Statistic title={item.label} value={item.value} />
+              </Card>
+            </Col>
+          ))}
+        </Row>
+        {analysisHealth.missing.length > 0 && (
+          <Card size="small" title="缺口">
+            <List
+              size="small"
+              dataSource={analysisHealth.missing}
+              renderItem={(item) => (
+                <List.Item>
+                  <Text>{item.message}</Text>
+                  <Text type="secondary">{item.current} / {item.required}</Text>
+                </List.Item>
+              )}
+            />
+          </Card>
+        )}
+        {analysisHealth.warnings.length > 0 && (
+          <Alert
+            showIcon
+            type="warning"
+            message="样本提醒"
+            description={analysisHealth.warnings.join("；")}
+          />
+        )}
+        <Card size="small" title="采集建议">
+          {analysisHealth.collection_plan.needed ? (
+            <Descriptions size="small" column={1}>
+              <Descriptions.Item label="建议关键词">
+                {analysisHealth.collection_plan.recommended_keywords.length > 0
+                  ? analysisHealth.collection_plan.recommended_keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>)
+                  : "按当前关键词组继续补采"}
+              </Descriptions.Item>
+              <Descriptions.Item label="每关键词建议补采笔记">
+                {analysisHealth.collection_plan.recommended_notes_per_keyword}
+              </Descriptions.Item>
+              <Descriptions.Item label="是否建议补采评论">
+                {analysisHealth.collection_plan.should_collect_comments ? "是" : "否"}
+              </Descriptions.Item>
+            </Descriptions>
+          ) : (
+            <Text type="secondary">当前样本已达到最低生成门槛。</Text>
+          )}
+        </Card>
+      </Space>
+    );
+  }
+
+  function renderWizardBody() {
+    if (wizardStep === 0) {
+      return (
+        <Form layout="vertical">
+          <Form.Item label="关键词组" required>
+            <Select
+              placeholder="选择一个真实关键词组"
+              value={keywordGroupId}
+              onChange={(value) => {
+                setKeywordGroupId(value);
+                setAnalysisHealth(null);
+                const group = keywordGroups.find((item) => item.id === value);
+                if (group) setReportTitle(`${group.name} - 小红书分析报告`);
+              }}
+              options={keywordGroups.map((group) => ({
+                label: `${group.name}（${group.keywords.length} 个关键词）`,
+                value: group.id,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="报告标题" required>
+            <Input value={reportTitle} onChange={(event) => setReportTitle(event.target.value)} />
+          </Form.Item>
+          <Alert
+            type="info"
+            showIcon
+            message="样本排除"
+            description="Task 10 保留 excludedNoteIds 请求参数；真实笔记排除 UI 留给后续任务实现。"
+          />
+        </Form>
+      );
+    }
+
+    if (wizardStep === 1) {
+      return renderHealthPanel();
+    }
+
+    return (
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        <Descriptions bordered size="small" column={1}>
+          <Descriptions.Item label="报告标题">{reportTitle || "小红书分析报告"}</Descriptions.Item>
+          <Descriptions.Item label="关键词组">
+            {keywordGroups.find((group) => group.id === keywordGroupId)?.name ?? keywordGroupId ?? "-"}
+          </Descriptions.Item>
+          <Descriptions.Item label="排除笔记数">{excludedNoteIds.length}</Descriptions.Item>
+          <Descriptions.Item label="健康状态">
+            {analysisHealth ? <Tag color={healthColorMap[analysisHealth.status]}>{analysisHealth.status}</Tag> : "未检查"}
+          </Descriptions.Item>
+          <Descriptions.Item label="模型生成状态">
+            {analysisHealth?.can_generate ? "允许调用后端生成报告" : "未达门槛，禁止生成"}
+          </Descriptions.Item>
+        </Descriptions>
+        {!analysisHealth?.can_generate && (
+          <Alert
+            showIcon
+            type="warning"
+            message="不能生成报告"
+            description="数据健康检查未通过，后端不会调用模型，也不会生成假报告。请先按采集建议补齐样本。"
+          />
+        )}
+      </Space>
+    );
+  }
+
+  function renderSummaryList(title: string, items: Array<{ id: string; text: string; evidence_ids: string[] }>) {
+    return (
+      <Card size="small" title={title}>
+        <List
+          size="small"
+          dataSource={items}
+          locale={{ emptyText: "暂无" }}
+          renderItem={(item) => (
+            <List.Item>
+              <Space direction="vertical" size={4}>
+                <Text>{item.text}</Text>
+                <Space wrap>
+                  {item.evidence_ids.map((evidenceId) => (
+                    <Tag key={evidenceId}>{evidenceLabel(evidenceId)} {evidenceId}</Tag>
+                  ))}
+                </Space>
+              </Space>
+            </List.Item>
+          )}
+        />
+      </Card>
+    );
+  }
+
+  function renderCompletedReport(report: AnalysisReport) {
+    const result = report.result_json;
+    if (!result) {
+      return <Alert type="warning" showIcon message="报告结果为空" description="后端未返回可展示的结构化结果。" />;
+    }
+
+    return (
+      <Space direction="vertical" size="large" style={{ width: "100%" }}>
+        <Card title="核心总结" style={{ background: "#1f1f1f", borderColor: "#303030" }}>
+          <Row gutter={[12, 12]}>
+            <Col xs={24} lg={8}>{renderSummaryList("事实", result.summary.facts)}</Col>
+            <Col xs={24} lg={8}>{renderSummaryList("推断", result.summary.inferences)}</Col>
+            <Col xs={24} lg={8}>{renderSummaryList("建议", result.summary.recommendations)}</Col>
+          </Row>
+        </Card>
+
+        <Card title="洞察卡" style={{ background: "#1f1f1f", borderColor: "#303030" }}>
+          <Row gutter={[12, 12]}>
+            {result.insight_cards.map((card) => (
+              <Col xs={24} lg={12} key={card.id}>
+                <Card size="small" title={card.title} extra={<Tag color="blue">{card.score}</Tag>}>
+                  <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                    <Text type="secondary">置信度：{card.confidence}｜{card.confidence_reason}</Text>
+                    <Progress percent={card.sub_scores.traffic_potential} size="small" format={() => "流量潜力"} />
+                    <Progress percent={card.sub_scores.demand_strength} size="small" format={() => "需求强度"} />
+                    <Progress percent={card.sub_scores.actionability} size="small" format={() => "可执行性"} />
+                    <Space wrap>
+                      {card.evidence_ids.map((evidenceId) => <Tag key={evidenceId}>{evidenceId}</Tag>)}
+                    </Space>
+                  </Space>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        </Card>
+
+        <Card title="选题卡与草稿骨架" style={{ background: "#1f1f1f", borderColor: "#303030" }}>
+          <Row gutter={[12, 12]}>
+            {result.topic_cards.map((card) => {
+              const editedCard = editedTopicCards[card.id] ?? card;
+              return (
+                <Col xs={24} lg={12} key={card.id}>
+                  <Card
+                    size="small"
+                    title={editedCard.title_direction || "未命名选题"}
+                    extra={
+                      <Button
+                        type="primary"
+                        size="small"
+                        onClick={() => void handleCreateDraft(card)}
+                        loading={creatingDraftCardId === card.id}
+                      >
+                        生成草稿骨架
+                      </Button>
+                    }
+                  >
+                    <Form layout="vertical">
+                      <Form.Item label="标题方向">
+                        <Input
+                          value={editedCard.title_direction}
+                          onChange={(event) => updateTopicCard(card, { title_direction: event.target.value })}
+                        />
+                      </Form.Item>
+                      <Form.Item label="目标痛点">
+                        <TextArea
+                          rows={2}
+                          value={editedCard.target_pain}
+                          onChange={(event) => updateTopicCard(card, { target_pain: event.target.value })}
+                        />
+                      </Form.Item>
+                      <Form.Item label="内容角度">
+                        <TextArea
+                          rows={2}
+                          value={editedCard.content_angle}
+                          onChange={(event) => updateTopicCard(card, { content_angle: event.target.value })}
+                        />
+                      </Form.Item>
+                      <Form.Item label="推荐结构（一行一个）">
+                        <TextArea
+                          rows={3}
+                          value={editedCard.recommended_structure.join("\n")}
+                          onChange={(event) => updateTopicCard(card, { recommended_structure: splitLines(event.target.value) })}
+                        />
+                      </Form.Item>
+                      <Form.Item label="标签（逗号或换行分隔）">
+                        <Input
+                          value={editedCard.tags.join("，")}
+                          onChange={(event) => updateTopicCard(card, { tags: splitTags(event.target.value) })}
+                        />
+                      </Form.Item>
+                      <Form.Item label="封面建议">
+                        <Input
+                          value={editedCard.cover_suggestion}
+                          onChange={(event) => updateTopicCard(card, { cover_suggestion: event.target.value })}
+                        />
+                      </Form.Item>
+                      <Form.Item label="风险提醒">
+                        <TextArea
+                          rows={2}
+                          value={editedCard.risk_warning}
+                          onChange={(event) => updateTopicCard(card, { risk_warning: event.target.value })}
+                        />
+                      </Form.Item>
+                    </Form>
+                    <Space wrap>
+                      {editedCard.evidence_ids.map((evidenceId) => <Tag key={evidenceId}>{evidenceId}</Tag>)}
+                    </Space>
+                  </Card>
+                </Col>
+              );
+            })}
+          </Row>
+        </Card>
+
+        <Collapse
+          items={[
+            {
+              key: "evidence",
+              label: "证据池",
+              children: (
+                <Space direction="vertical" style={{ width: "100%" }}>
+                  <Descriptions size="small" column={2} bordered>
+                    <Descriptions.Item label="笔记证据">{report.evidence_pool.notes.length}</Descriptions.Item>
+                    <Descriptions.Item label="评论证据">{report.evidence_pool.comments.length}</Descriptions.Item>
+                    <Descriptions.Item label="关键词证据">{report.evidence_pool.keywords.length}</Descriptions.Item>
+                    <Descriptions.Item label="指标证据">{report.evidence_pool.metrics.length}</Descriptions.Item>
+                  </Descriptions>
+                  <List
+                    size="small"
+                    dataSource={report.evidence_pool.notes.slice(0, 8)}
+                    locale={{ emptyText: "暂无笔记证据" }}
+                    renderItem={(note) => (
+                      <List.Item>
+                        <Space direction="vertical" size={2}>
+                          <Text>{note.evidence_id}｜{note.title}</Text>
+                          <Text type="secondary">互动 {formatNumber(note.engagement)}｜{note.excerpt}</Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                </Space>
+              ),
+            },
+          ]}
+        />
+
+        <Card title="HTML 导出" style={{ background: "#1f1f1f", borderColor: "#303030" }}>
+          {report.html_file_path ? (
+            <Paragraph copyable={{ text: report.html_file_path }}>
+              <Text type="secondary">服务端 HTML 路径：</Text>{report.html_file_path}
+            </Paragraph>
+          ) : (
+            <Text type="secondary">后端未返回 HTML 路径。</Text>
+          )}
+        </Card>
+      </Space>
+    );
+  }
+
+  function renderReportDetail() {
+    if (!selectedReport) {
+      return (
+        <Card style={{ background: "#1f1f1f", borderColor: "#303030" }}>
+          <Empty
+            description="还没有分析报告。请选择一个真实关键词组，先做数据健康检查，再生成有证据的洞察卡和选题卡。"
+          >
+            <Button type="primary" icon={<PlusOutlined />} onClick={openWizard}>创建分析报告</Button>
+          </Empty>
+        </Card>
+      );
+    }
+
+    if (selectedReport.status === "failed") {
+      return (
+        <Card title={selectedReport.title} style={{ background: "#1f1f1f", borderColor: "#303030" }}>
+          <Alert
+            type="error"
+            showIcon
+            message="分析报告生成失败"
+            description={selectedReport.error_message || "后端未返回失败原因。"}
+          />
+        </Card>
+      );
+    }
+
+    if (selectedReport.status !== "completed") {
+      return (
+        <Card title={selectedReport.title} style={{ background: "#1f1f1f", borderColor: "#303030" }}>
+          <Alert
+            type="info"
+            showIcon
+            message={`报告状态：${selectedReport.status}`}
+            description="报告尚未完成。请刷新历史列表查看最新状态。"
+          />
+        </Card>
+      );
+    }
+
+    return renderCompletedReport(selectedReport);
+  }
+
   return (
     <div>
-      <Alert type="info" showIcon message="数据洞察模块正在开发优化中，当前为基础版本，更多分析维度即将上线。" style={{ marginBottom: 16 }} />
       <PageHeader
-        eyebrow="XHS Analytics"
-        title="数据洞察"
-        description="基于已保存笔记、标签和评论生成可执行的内容机会视图。"
+        eyebrow="XHS Analysis Center"
+        title="小红书分析中心"
+        description="从真实关键词组、笔记和评论生成有证据的洞察卡、选题卡和草稿骨架。"
         action={
           <Space>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openWizard}>
+              创建分析报告
+            </Button>
             <Button
               icon={<DownloadOutlined />}
               onClick={generateReport}
               loading={isGeneratingReport}
             >
-              生成报告
+              导出基础报告
             </Button>
             <Button
               icon={<ReloadOutlined />}
@@ -248,10 +870,46 @@ export function XhsAnalyticsPage() {
 
       {isLoading ? (
         <div style={{ textAlign: "center", padding: 48 }}>
-          <Spin tip="正在加载数据洞察..." />
+          <Spin tip="正在加载小红书分析中心..." />
         </div>
       ) : (
         <>
+          <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+            <Col xs={24} lg={10}>
+              <Card
+                title="历史分析报告"
+                extra={<Tag>{analysisReports.length} 份</Tag>}
+                style={{ background: "#1f1f1f", borderColor: "#303030", height: "100%" }}
+              >
+                <Table<AnalysisReport>
+                  columns={reportColumns}
+                  dataSource={analysisReports}
+                  rowKey="id"
+                  size="small"
+                  pagination={{ pageSize: 5, size: "small" }}
+                  locale={{ emptyText: "暂无分析报告。" }}
+                  rowClassName={(record) => record.id === selectedReport?.id ? "ant-table-row-selected" : ""}
+                  onRow={(record) => ({
+                    onClick: () => void handleSelectReport(record),
+                  })}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} lg={14}>
+              <Card
+                title="当前报告"
+                extra={selectedReport ? <Tag color={statusColorMap[selectedReport.status]}>{selectedReport.status}</Tag> : null}
+                style={{ background: "#1f1f1f", borderColor: "#303030", minHeight: 300 }}
+              >
+                {renderReportDetail()}
+              </Card>
+            </Col>
+          </Row>
+
+          <Divider style={{ borderColor: "#303030", margin: "24px 0" }}>
+            <Text type="secondary">基础概览</Text>
+          </Divider>
+
           {/* ---- Main 2-column layout ---- */}
           <Row gutter={[16, 16]}>
             {/* Left column: Top Content table */}
@@ -423,6 +1081,47 @@ export function XhsAnalyticsPage() {
           </Card>
         </>
       )}
+
+      <Drawer
+        title="创建小红书分析报告"
+        width={720}
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        destroyOnHidden
+        footer={
+          <Space style={{ width: "100%", justifyContent: "space-between" }}>
+            <Button onClick={() => setWizardOpen(false)}>取消</Button>
+            <Space>
+              {wizardStep > 0 && <Button onClick={() => setWizardStep(wizardStep - 1)}>上一步</Button>}
+              {wizardStep === 0 && (
+                <Button type="primary" onClick={() => void handleCheckHealth()} loading={checkingHealth}>
+                  检查数据健康
+                </Button>
+              )}
+              {wizardStep === 1 && (
+                <Button type="primary" onClick={() => setWizardStep(2)} disabled={!analysisHealth}>
+                  进入生成确认
+                </Button>
+              )}
+              {wizardStep === 2 && (
+                <Button
+                  type="primary"
+                  onClick={() => void handleCreateAnalysisReport()}
+                  loading={creatingReport}
+                  disabled={!analysisHealth?.can_generate}
+                >
+                  生成报告
+                </Button>
+              )}
+            </Space>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size="large" style={{ width: "100%" }}>
+          <Steps current={wizardStep} items={wizardSteps} />
+          {renderWizardBody()}
+        </Space>
+      </Drawer>
     </div>
   );
 }

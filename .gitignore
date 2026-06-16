@@ -39,10 +39,12 @@ yarn-error.log*
 frontend/dist/
 dist/
 coverage/
+test-results/
 
 # Local data and generated storage
 data/
 backend/app/storage/
+frontend/backend/
 legacy/xhs-ops-collector/data/
 legacy/xhs-ops-collector/.tmp/
 .tmp/

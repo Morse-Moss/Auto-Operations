@@ -3,16 +3,19 @@ import { message } from "antd";
 
 import { fallbackPlatforms } from "./platforms";
 import type {
-  AuthPayload,
-  AutoTask,
-  AutoTaskCreatePayload,
-  AutoTaskRunResult,
-  AutoTaskUpdatePayload,
+  AnalysisDataHealth,
+  AnalysisHealthPayload,
+  AnalysisReport,
   AnalyticsCommentInsight,
   AnalyticsHotTopic,
   AnalyticsReportPayload,
   AnalyticsReportResponse,
   AnalyticsTopContent,
+  AuthPayload,
+  AutoTask,
+  AutoTaskCreatePayload,
+  AutoTaskRunResult,
+  AutoTaskUpdatePayload,
   AppNotification,
   BenchmarkCreateDraftsResponse,
   BenchmarkOverview,
@@ -21,6 +24,8 @@ import type {
   BatchTagNotesPayload,
   BatchTagNotesResponse,
   ComposeImagePayload,
+  CreateAnalysisReportPayload,
+  CreateDraftFromTopicCardsPayload,
   CreateDraftPayload,
   DashboardOverview,
   Draft,
@@ -258,6 +263,53 @@ export async function createXhsAnalyticsReport(
   payload: AnalyticsReportPayload = { format: "json" }
 ): Promise<AnalyticsReportResponse> {
   const response = await http.post<AnalyticsReportResponse>("/xhs/analytics/reports", payload);
+  return response.data;
+}
+
+export async function fetchXhsAnalysisReports(): Promise<AnalysisReport[]> {
+  const response = await http.get<AnalysisReport[]>("/xhs/analytics/analysis/reports");
+  return response.data;
+}
+
+export async function fetchXhsAnalysisReport(reportId: number): Promise<AnalysisReport> {
+  const response = await http.get<AnalysisReport>(`/xhs/analytics/analysis/reports/${reportId}`);
+  return response.data;
+}
+
+export async function checkXhsAnalysisHealth(payload: AnalysisHealthPayload): Promise<AnalysisDataHealth> {
+  const response = await http.post<AnalysisDataHealth>("/xhs/analytics/analysis/health", payload);
+  return response.data;
+}
+
+export async function createXhsAnalysisCollectionPlan(
+  payload: AnalysisHealthPayload
+): Promise<AnalysisDataHealth["collection_plan"]> {
+  const response = await http.post<AnalysisDataHealth["collection_plan"]>(
+    "/xhs/analytics/analysis/collection-plan",
+    payload
+  );
+  return response.data;
+}
+
+export async function createXhsAnalysisReport(payload: CreateAnalysisReportPayload): Promise<AnalysisReport> {
+  const response = await http.post<AnalysisReport>("/xhs/analytics/analysis/reports", payload);
+  return response.data;
+}
+
+export async function rerunXhsAnalysisReport(reportId: number): Promise<AnalysisReport> {
+  const response = await http.post<AnalysisReport>(`/xhs/analytics/analysis/reports/${reportId}/rerun`);
+  return response.data;
+}
+
+export async function createXhsAnalysisDrafts(
+  reportId: number,
+  cardId: string,
+  payload: CreateDraftFromTopicCardsPayload
+): Promise<Draft[]> {
+  const response = await http.post<Draft[]>(
+    `/xhs/analytics/analysis/reports/${reportId}/topic-cards/${cardId}/drafts`,
+    payload
+  );
   return response.data;
 }
 

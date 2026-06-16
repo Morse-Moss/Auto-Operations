@@ -63,6 +63,17 @@ class TextAiClient(Protocol):
     ) -> str:
         ...
 
+    def complete_json_prompt(
+        self,
+        *,
+        model_config: ModelConfig,
+        api_key: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+    ) -> str:
+        ...
+
 
 class ImageAiClient(Protocol):
     def generate_cover(
@@ -163,6 +174,23 @@ class OpenAICompatibleTextClient:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("AI response content is empty")
         return content.strip()
+
+    def complete_json_prompt(
+        self,
+        *,
+        model_config: ModelConfig,
+        api_key: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+    ) -> str:
+        return self._complete(
+            model_config=model_config,
+            api_key=api_key,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+        )
 
     def rewrite_note(
         self,

@@ -399,6 +399,134 @@ export type AnalyticsReportResponse = {
   };
 };
 
+export type AnalysisReportStatus = "pending" | "running" | "completed" | "failed";
+
+export type AnalysisDataHealth = {
+  status: "insufficient" | "minimum" | "standard";
+  can_generate: boolean;
+  confidence_cap: "none" | "low" | "medium" | "high";
+  metrics: {
+    valid_note_count: number;
+    comment_count: number;
+    covered_keyword_count: number;
+    representative_note_count: number;
+    high_engagement_note_count: number;
+    total_engagement?: number;
+  };
+  missing: Array<{ key: string; message: string; current: number; required: number }>;
+  warnings: string[];
+  collection_plan: {
+    needed: boolean;
+    recommended_keywords: string[];
+    recommended_notes_per_keyword: number;
+    should_collect_comments: boolean;
+  };
+};
+
+export type AnalysisEvidencePool = {
+  notes: Array<{
+    evidence_id: string;
+    note_id: number;
+    title: string;
+    author_name: string;
+    likes: number;
+    collects: number;
+    comments: number;
+    shares: number;
+    engagement: number;
+    matched_keywords: string[];
+    excerpt: string;
+  }>;
+  comments: Array<{
+    evidence_id: string;
+    comment_id: number;
+    note_id: number;
+    content: string;
+    like_count: number;
+    signals: string[];
+  }>;
+  keywords: Array<{ evidence_id: string; keyword: string; matched_notes: number; matched_comments: number }>;
+  metrics: Array<{ evidence_id: string; name: string; value: number; description: string }>;
+  benchmarks: Array<Record<string, unknown>>;
+};
+
+export type InsightCard = {
+  id: string;
+  title: string;
+  score: number;
+  sub_scores: {
+    traffic_potential: number;
+    demand_strength: number;
+    competition_pressure: number;
+    actionability: number;
+  };
+  confidence: "low" | "medium" | "high";
+  confidence_reason: string;
+  facts: Array<Record<string, unknown>>;
+  inferences: Array<Record<string, unknown>>;
+  recommendations: Array<Record<string, unknown>>;
+  evidence_ids: string[];
+  topic_card_ids: string[];
+};
+
+export type TopicCard = {
+  id: string;
+  insight_id: string;
+  title_direction: string;
+  target_pain: string;
+  content_angle: string;
+  recommended_structure: string[];
+  recommended_content_form: string[];
+  tags: string[];
+  cover_suggestion: string;
+  expected_advantage: string;
+  risk_warning: string;
+  evidence_ids: string[];
+};
+
+export type AnalysisResultJson = {
+  summary: {
+    facts: Array<{ id: string; text: string; evidence_ids: string[] }>;
+    inferences: Array<{ id: string; text: string; evidence_ids: string[] }>;
+    recommendations: Array<{ id: string; text: string; evidence_ids: string[] }>;
+  };
+  insight_cards: InsightCard[];
+  topic_cards: TopicCard[];
+  report_warnings: string[];
+};
+
+export type AnalysisReport = {
+  id: number;
+  platform: PlatformId;
+  report_type: string;
+  status: AnalysisReportStatus;
+  title: string;
+  input_config: Record<string, unknown>;
+  data_health: AnalysisDataHealth;
+  evidence_pool: AnalysisEvidencePool;
+  result_json?: AnalysisResultJson | null;
+  html_file_path: string;
+  error_message?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type AnalysisHealthPayload = {
+  keyword_group_id: number;
+  excluded_note_ids?: number[];
+  source_note_ids?: number[];
+  benchmark_target_ids?: number[];
+};
+
+export type CreateAnalysisReportPayload = AnalysisHealthPayload & {
+  title: string;
+};
+
+export type CreateDraftFromTopicCardsPayload = {
+  topic_cards: TopicCard[];
+};
+
 export type SaveNotesResponse = {
   saved_count: number;
   items: SavedNote[];
