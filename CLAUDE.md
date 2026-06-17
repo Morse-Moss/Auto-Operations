@@ -100,3 +100,12 @@ legacy 能力只在能提升主系统时接入。接入前必须先写设计，�
 - 密钥、token、密码不进代码。
 - 不自动 git push。
 - commit 只有在用户明确要求时执行，commit message 用英文，简洁描述变更意图。
+
+## Git 主线规则
+
+- 本项目唯一主线分支是 `master`，不是 `main`。
+- 本地运行和用户验收默认以 `master` 为事实源；长期占用固定端口的前后端服务应从 `master` 启动。
+- feature 分支或 worktree 只作为短期开发线程；线程提交不等于主线可用。
+- `/closeout` 或“收尾”必须报告当前线程分支、提交 SHA、`master` 是否包含该提交，以及运行服务是否需要重启。
+- scoped commit 完成后，如果 `master` 尚未包含该提交，必须先询问用户是否合并；用户同意后用 merge commit 合入 `master`（`git merge --no-ff`），不要默认用 fast-forward 指针移动。
+- 如果用户暂不同意合并，最终报告必须明确说明：已提交但未合入 `master`，当前主线服务看不到该功能。

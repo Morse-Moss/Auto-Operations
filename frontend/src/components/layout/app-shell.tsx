@@ -63,7 +63,7 @@ const mainNavItems: MenuProps["items"] = [
   { key: "/platforms/xhs/video-studio", icon: <VideoCameraOutlined />, label: "视频工坊" },
   { key: "/platforms/xhs/publish", icon: <SendOutlined />, label: "发布中心" },
   { key: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "自动运营" },
-  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "数据洞察" },
+  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "分析中心" },
   { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "竞品监控" },
 ];
 

@@ -12,7 +12,7 @@ from backend.app.models.note import Note, NoteComment
 
 MINIMUM_THRESHOLDS = {
     "valid_notes": 10,
-    "comments": 30,
+    "comments": 0,
     "keyword_coverage": 3,
     "representative_notes": 1,
 }
@@ -74,6 +74,10 @@ class XhsAnalysisCenterService:
         warnings = []
         if status == "minimum":
             warnings.append("样本未达标准阈值，结论仅供初筛")
+        if comment_count == 0:
+            warnings.append("当前没有已存评论，用户痛点和需求洞察会主要依赖笔记内容，建议补采评论后复查")
+        elif comment_count < STANDARD_THRESHOLDS["comments"]:
+            warnings.append("评论样本未达标准阈值，用户痛点洞察置信度有限")
         if len(high_engagement_note_ids) < STANDARD_THRESHOLDS["high_engagement_notes"]:
             warnings.append("整体互动样本偏少，高互动结论置信度有限")
 
@@ -551,11 +555,11 @@ class XhsAnalysisCenterService:
     def create_collection_plan(self, *, metrics: dict[str, int], keywords: list[str]) -> dict[str, Any]:
         needed = bool(self._missing_health_items(metrics))
         missing_notes = max(0, MINIMUM_THRESHOLDS["valid_notes"] - metrics["valid_note_count"])
-        missing_comments = max(0, MINIMUM_THRESHOLDS["comments"] - metrics["comment_count"])
         recommended_keywords = keywords[: max(1, MINIMUM_THRESHOLDS["keyword_coverage"] - metrics["covered_keyword_count"])] if needed else []
+        should_collect_comments = metrics["comment_count"] < STANDARD_THRESHOLDS["comments"]
         return {
-            "needed": needed,
-            "recommended_keywords": recommended_keywords,
-            "recommended_notes_per_keyword": max(0, (missing_notes + max(1, len(recommended_keywords)) - 1) // max(1, len(recommended_keywords))) if needed else 0,
-            "should_collect_comments": missing_comments > 0,
+            "needed": needed or should_collect_comments,
+            "recommended_keywords": recommended_keywords or (keywords[: max(1, min(3, len(keywords)))] if should_collect_comments else []),
+            "recommended_notes_per_keyword": max(0, (missing_notes + max(1, len(recommended_keywords)) - 1) // max(1, len(recommended_keywords))) if needed else 5 if should_collect_comments else 0,
+            "should_collect_comments": should_collect_comments,
         }

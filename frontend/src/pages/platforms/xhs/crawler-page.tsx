@@ -262,13 +262,19 @@ export function XhsCrawlerPage() {
   const [searchParams] = useSearchParams();
   const parsedKeywordGroupId = Number(searchParams.get("keyword_group_id") || 0);
   const queryKeywordGroupId = Number.isFinite(parsedKeywordGroupId) && parsedKeywordGroupId > 0 ? parsedKeywordGroupId : null;
+  const parsedKeywordLimit = Number(searchParams.get("keyword_limit") || 0);
+  const queryKeywordLimit = Number.isFinite(parsedKeywordLimit) && parsedKeywordLimit > 0 ? Math.min(20, Math.max(1, parsedKeywordLimit)) : null;
+  const parsedMaxNotesPerKeyword = Number(searchParams.get("max_notes_per_keyword") || 0);
+  const queryMaxNotesPerKeyword = Number.isFinite(parsedMaxNotesPerKeyword) && parsedMaxNotesPerKeyword > 0 ? Math.min(50, Math.max(1, parsedMaxNotesPerKeyword)) : null;
+  const queryFetchComments = searchParams.get("fetch_comments") === "1";
+  const fromAnalysisRecheck = searchParams.get("analysis_recheck") === "1";
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
   const [keywordGroups, setKeywordGroups] = useState<KeywordGroup[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [selectedKeywordGroupId, setSelectedKeywordGroupId] = useState<number | null>(queryKeywordGroupId);
   const [crawlChannel, setCrawlChannel] = useState<CrawlChannel>(queryKeywordGroupId ? "keyword_group" : "manual_keyword");
-  const [keywordLimit, setKeywordLimit] = useState(5);
-  const [maxNotesPerKeyword, setMaxNotesPerKeyword] = useState(5);
+  const [keywordLimit, setKeywordLimit] = useState(queryKeywordLimit ?? 5);
+  const [maxNotesPerKeyword, setMaxNotesPerKeyword] = useState(queryMaxNotesPerKeyword ?? 5);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [summaryMessage, setSummaryMessage] = useState<string | null>(null);
   const [keywordGroupSummary, setKeywordGroupSummary] = useState<XhsKeywordGroupCrawlSummary | null>(null);
@@ -279,7 +285,7 @@ export function XhsCrawlerPage() {
   const [maxNotes, setMaxNotes] = useState(20);
   const [timeSleep, setTimeSleep] = useState(1);
   const [commentSleep, setCommentSleep] = useState(5);
-  const [fetchCommentsChecked, setFetchCommentsChecked] = useState(false);
+  const [fetchCommentsChecked, setFetchCommentsChecked] = useState(queryFetchComments);
   const [filters, setFilters] = useState({ sort_type_choice: 0, note_type: 0, note_time: 0, note_range: 0, pos_distance: 0, geo: "" });
   const [items, setItems] = useState<XhsDataCrawlItem[]>([]);
   const [successCount, setSuccessCount] = useState(0);
@@ -476,6 +482,17 @@ export function XhsCrawlerPage() {
               </Form.Item>
             </Col>
           </Row>
+
+          {fromAnalysisRecheck && (
+            <Alert
+              type="info"
+              showIcon
+              message="正在补齐分析中心缺失数据"
+              description={`已按分析中心建议预填关键词组${queryMaxNotesPerKeyword ? `、每词 ${queryMaxNotesPerKeyword} 条` : ""}${queryFetchComments ? "，并开启评论采集" : ""}。请确认 PC 账号后点击下方按钮开始补采，采集完成后回到分析中心重新检查。`}
+              action={<Link to={selectedKeywordGroupId ? `/platforms/xhs/analytics?keyword_group_id=${selectedKeywordGroupId}` : "/platforms/xhs/analytics"}>回到分析中心</Link>}
+              style={{ marginBottom: 16 }}
+            />
+          )}
 
           {isKeywordGroupMode ? (
             <>

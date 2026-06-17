@@ -76,7 +76,7 @@ export function XhsDashboard() {
         <Col xs={24} md={16}>
           <Card
             title="高潜话题"
-            extra={<Link to="/platforms/xhs/analytics">查看洞察</Link>}
+            extra={<Link to="/platforms/xhs/analytics">查看分析</Link>}
             style={{ background: "#1f1f1f", borderColor: "#303030" }}
           >
             {overview.hot_topics.length === 0 ? (

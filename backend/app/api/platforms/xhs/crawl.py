@@ -20,7 +20,7 @@ from backend.app.api.platforms.xhs.pc import (
 from backend.app.api.tasks import serialize_task
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, NoteAsset, PlatformAccount, Task, User
+from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, NoteAsset, NoteComment, PlatformAccount, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.crawl_diagnostics import create_crawl_diagnostic, serialize_crawl_diagnostic
 from backend.app.services.xhs_detail_recovery import (
@@ -330,6 +330,30 @@ def _save_normalized_notes(
     for note in saved:
         db.refresh(note)
     return saved
+
+
+def _save_note_comments(db: Session, note: Note, comments: list[dict[str, Any]]) -> None:
+    if not comments:
+        return
+    db.execute(delete(NoteComment).where(NoteComment.note_id == note.id))
+    for comment in comments:
+        comment_id = str(comment.get("comment_id") or "").strip()
+        if not comment_id:
+            continue
+        db.add(
+            NoteComment(
+                note_id=note.id,
+                comment_id=comment_id,
+                user_name=str(comment.get("user_name") or ""),
+                user_id=comment.get("user_id"),
+                content=str(comment.get("content") or ""),
+                like_count=int(comment.get("like_count") or 0),
+                parent_comment_id=comment.get("parent_comment_id"),
+                created_at_remote=comment.get("created_at_remote"),
+                raw_json=comment.get("raw_json"),
+            )
+        )
+    db.commit()
 
 
 def _download_asset(url: str, user_id: int, asset_type: str) -> str | None:
@@ -812,7 +836,10 @@ def crawl_keyword_group(
 
                     saved = False
                     if quality["can_save"]:
-                        saved = bool(_save_normalized_notes(db, account, [detail_note]))
+                        saved_notes = _save_normalized_notes(db, account, [detail_note])
+                        saved = bool(saved_notes)
+                        if saved and comments_list:
+                            _save_note_comments(db, saved_notes[0], comments_list)
                         saved_count += 1 if saved else 0
                     else:
                         skipped_count += 1

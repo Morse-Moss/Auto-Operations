@@ -15,8 +15,8 @@ const sectionInfo: Record<string, { title: string; description: string }> = {
     description: "视觉笔记卡、标签、筛选、批量导出和素材下载的统一资产库。",
   },
   analytics: {
-    title: "数据洞察",
-    description: "围绕已抓取数据生成趋势、爆款拆解、评论痛点和关键词机会。",
+    title: "分析中心",
+    description: "围绕真实关键词组、笔记和评论生成有证据的分析报告与选题建议。",
   },
   benchmarks: {
     title: "竞品监控",

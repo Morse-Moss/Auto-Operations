@@ -37,7 +37,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
@@ -174,6 +174,7 @@ const topContentColumns: ColumnsType<AnalyticsTopContent> = [
 const metricIconColors = ["#1668dc", "#52c41a", "#faad14", "#eb2f96"];
 
 export function XhsAnalyticsPage() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [overview, setOverview] = useState<DashboardOverview>(fallbackOverview);
   const [topContent, setTopContent] = useState<AnalyticsTopContent[]>([]);
@@ -328,6 +329,26 @@ export function XhsAnalyticsPage() {
     }
   }
 
+  function handleCollectMissingData() {
+    if (!keywordGroupId || !analysisHealth) {
+      message.warning("请先选择关键词组并完成数据健康检查。");
+      return;
+    }
+    const params = new URLSearchParams({
+      keyword_group_id: String(keywordGroupId),
+      analysis_recheck: "1",
+    });
+    if (analysisHealth.collection_plan.needed) {
+      params.set("keyword_limit", String(Math.max(1, analysisHealth.collection_plan.recommended_keywords.length || 3)));
+      params.set("max_notes_per_keyword", String(Math.max(5, analysisHealth.collection_plan.recommended_notes_per_keyword || 10)));
+      if (analysisHealth.collection_plan.should_collect_comments) {
+        params.set("fetch_comments", "1");
+      }
+    }
+    setWizardOpen(false);
+    navigate(`/platforms/xhs/crawler?${params.toString()}`);
+  }
+
   async function handleCreateAnalysisReport() {
     if (!keywordGroupId || !analysisHealth?.can_generate) return;
     setCreatingReport(true);
@@ -479,21 +500,42 @@ export function XhsAnalyticsPage() {
             description={analysisHealth.warnings.join("；")}
           />
         )}
-        <Card size="small" title="采集建议">
+        <Card
+          size="small"
+          title="采集建议"
+          extra={analysisHealth.collection_plan.needed ? (
+            <Button type="primary" size="small" onClick={handleCollectMissingData}>
+              去补采缺失数据
+            </Button>
+          ) : null}
+        >
           {analysisHealth.collection_plan.needed ? (
-            <Descriptions size="small" column={1}>
-              <Descriptions.Item label="建议关键词">
-                {analysisHealth.collection_plan.recommended_keywords.length > 0
-                  ? analysisHealth.collection_plan.recommended_keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>)
-                  : "按当前关键词组继续补采"}
-              </Descriptions.Item>
-              <Descriptions.Item label="每关键词建议补采笔记">
-                {analysisHealth.collection_plan.recommended_notes_per_keyword}
-              </Descriptions.Item>
-              <Descriptions.Item label="是否建议补采评论">
-                {analysisHealth.collection_plan.should_collect_comments ? "是" : "否"}
-              </Descriptions.Item>
-            </Descriptions>
+            <Space direction="vertical" size="small" style={{ width: "100%" }}>
+              <Descriptions size="small" column={1}>
+                <Descriptions.Item label="为什么不能生成">
+                  {analysisHealth.missing.map((item) => item.message).join("；") || "样本未达到最低生成门槛"}
+                </Descriptions.Item>
+                <Descriptions.Item label="下一步怎么做">
+                  到数据抓取页补采关键词组笔记{analysisHealth.collection_plan.should_collect_comments ? "，并打开“同时抓取评论”" : ""}，完成后回到分析中心重新检查。
+                </Descriptions.Item>
+                <Descriptions.Item label="建议关键词">
+                  {analysisHealth.collection_plan.recommended_keywords.length > 0
+                    ? analysisHealth.collection_plan.recommended_keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>)
+                    : "按当前关键词组继续补采"}
+                </Descriptions.Item>
+                <Descriptions.Item label="每关键词建议补采笔记">
+                  {analysisHealth.collection_plan.recommended_notes_per_keyword}
+                </Descriptions.Item>
+                <Descriptions.Item label="是否建议补采评论">
+                  {analysisHealth.collection_plan.should_collect_comments ? "是" : "否"}
+                </Descriptions.Item>
+              </Descriptions>
+              <Alert
+                type="info"
+                showIcon
+                message="点击“去补采缺失数据”会自动带上当前关键词组、建议采集量和评论采集选项。"
+              />
+            </Space>
           ) : (
             <Text type="secondary">当前样本已达到最低生成门槛。</Text>
           )}
@@ -559,7 +601,12 @@ export function XhsAnalyticsPage() {
             showIcon
             type="warning"
             message="不能生成报告"
-            description="数据健康检查未通过，后端不会调用模型，也不会生成假报告。请先按采集建议补齐样本。"
+            description={(
+              <Space direction="vertical" size="small">
+                <Text>数据健康检查未通过，后端不会调用模型，也不会生成假报告。</Text>
+                <Button type="primary" onClick={handleCollectMissingData}>去补采缺失数据</Button>
+              </Space>
+            )}
           />
         )}
       </Space>

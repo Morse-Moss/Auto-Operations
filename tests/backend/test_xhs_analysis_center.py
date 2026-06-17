@@ -350,6 +350,30 @@ def test_analysis_health_below_minimum_blocks_generation(db_session: Session):
     assert health["collection_plan"]["needed"] is True
 
 
+def test_analysis_health_allows_generation_without_comments_but_recommends_comment_collection(db_session: Session):
+    user = _create_user(db_session, "minimum-no-comments")
+    group = _create_keyword_group(db_session, user.id, ["Claude Code", "AI编程", "Cursor"])
+    for index in range(10):
+        _create_note_with_comments(
+            db_session,
+            user.id,
+            title=f"Claude Code 入门 {index}",
+            content="Claude Code Cursor AI编程 新手配置",
+            comments=[],
+            raw_json={"liked_count": 20 + index, "collected_count": 10, "comment_count": 0, "share_count": 1},
+        )
+
+    service = XhsAnalysisCenterService(db_session)
+    health = service.check_health(user_id=user.id, keyword_group_id=group.id, excluded_note_ids=[])
+
+    assert health["status"] == "minimum"
+    assert health["can_generate"] is True
+    assert health["confidence_cap"] == "medium"
+    assert "comments" not in {item["key"] for item in health["missing"]}
+    assert health["collection_plan"]["should_collect_comments"] is True
+    assert any("没有已存评论" in warning for warning in health["warnings"])
+
+
 def test_analysis_health_minimum_caps_confidence_to_medium(db_session: Session):
     user = _create_user(db_session, "minimum")
     group = _create_keyword_group(db_session, user.id, ["Claude Code", "AI编程", "Cursor"])
