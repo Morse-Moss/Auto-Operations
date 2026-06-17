@@ -5912,6 +5912,78 @@ def test_ai_text_generation_endpoints_use_default_model_and_create_tasks(tmp_pat
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_runninghub_upload_reference_image_accepts_success_code_zero(tmp_path, monkeypatch):
+    from backend.app.core import config as config_module
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    media_dir = tmp_path / "storage" / "media"
+    media_dir.mkdir(parents=True)
+    ref = media_dir / "xhs-upload-u1-ref.png"
+    ref.write_bytes(b"fake-image")
+    monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"))
+
+    class FakeResponse:
+        status_code = 200
+        content = b'{"code":0,"msg":"success","data":{"filename":"openapi/ref.png"}}'
+        encoding = "utf-8"
+        apparent_encoding = "utf-8"
+        text = content.decode("utf-8")
+
+        def raise_for_status(self):
+            pass
+
+    class FakeSession:
+        def post(self, url, **kwargs):
+            return FakeResponse()
+
+    client_instance = RunningHubImageClient(session=FakeSession(), poll_interval_seconds=0, max_poll_attempts=1)
+
+    filename = client_instance._upload_reference_image(
+        base_url="https://www.runninghub.cn",
+        api_key="sk-test",
+        image_ref="/api/files/media/xhs-upload-u1-ref.png",
+        owner_user_id=1,
+    )
+
+    assert filename == "openapi/ref.png"
+
+
+def test_runninghub_upload_reference_image_accepts_filename_even_when_code_differs(tmp_path, monkeypatch):
+    from backend.app.core import config as config_module
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    media_dir = tmp_path / "storage" / "media"
+    media_dir.mkdir(parents=True)
+    ref = media_dir / "xhs-upload-u1-ref.png"
+    ref.write_bytes(b"fake-image")
+    monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"))
+
+    class FakeResponse:
+        status_code = 200
+        content = b'{"code":1,"msg":"success","data":{"filename":"openapi/ref.png"}}'
+        encoding = "utf-8"
+        apparent_encoding = "utf-8"
+        text = content.decode("utf-8")
+
+        def raise_for_status(self):
+            pass
+
+    class FakeSession:
+        def post(self, url, **kwargs):
+            return FakeResponse()
+
+    client_instance = RunningHubImageClient(session=FakeSession(), poll_interval_seconds=0, max_poll_attempts=1)
+
+    filename = client_instance._upload_reference_image(
+        base_url="https://www.runninghub.cn",
+        api_key="sk-test",
+        image_ref="/api/files/media/xhs-upload-u1-ref.png",
+        owner_user_id=1,
+    )
+
+    assert filename == "openapi/ref.png"
+
+
 def test_runninghub_rejects_too_many_reference_images_before_upload(tmp_path, monkeypatch):
     from backend.app.core import config as config_module
     from backend.app.models import ModelConfig

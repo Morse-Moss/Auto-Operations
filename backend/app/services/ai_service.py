@@ -420,14 +420,14 @@ class RunningHubImageClient:
             )
         response.raise_for_status()
         payload = _load_json_response(response)
-        if not isinstance(payload, dict) or payload.get("code") != 200:
-            message = payload.get("message") if isinstance(payload, dict) else "unknown"
-            raise ValueError(f"RunningHub 参考图上传失败: {message}")
-        data = payload.get("data") or {}
+        data = payload.get("data") if isinstance(payload, dict) else None
         filename = data.get("filename") if isinstance(data, dict) else None
-        if not isinstance(filename, str) or not filename:
-            raise ValueError("RunningHub upload response missing filename")
-        return filename
+        if isinstance(filename, str) and filename:
+            return filename
+        if not isinstance(payload, dict) or payload.get("code") not in {0, 200}:
+            message = self._message_from_payload(payload)
+            raise ValueError(f"RunningHub 参考图上传失败: {message}")
+        raise ValueError("RunningHub upload response missing filename")
 
     @staticmethod
     def _resolve_local_image_path(image_ref: str, *, owner_user_id: int | None = None) -> Path:
