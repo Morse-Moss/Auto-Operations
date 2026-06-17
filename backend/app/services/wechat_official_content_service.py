@@ -42,7 +42,7 @@ class WechatOfficialContentService:
                 continue
             if filters.get("min_read_count") is not None and read_count < int(filters["min_read_count"]):
                 continue
-            if filters.get("low_follower_evidence") is not None and bool(analysis.get("low_follower_evidence")) != bool(filters["low_follower_evidence"]):
+            if filters.get("low_follower_evidence") is not None and not _matches_low_follower_evidence(analysis.get("low_follower_evidence"), filters["low_follower_evidence"]):
                 continue
             if filters.get("recommendation_status") and analysis.get("recommendation_status") != filters["recommendation_status"]:
                 continue
@@ -93,3 +93,14 @@ def _analysis(article: WechatOfficialArticle) -> dict[str, Any]:
     raw = article.raw_json or {}
     analysis = raw.get("analysis")
     return dict(analysis) if isinstance(analysis, dict) else {}
+
+
+def _matches_low_follower_evidence(value: Any, expected: Any) -> bool:
+    expected_text = str(expected).strip().lower()
+    if expected_text in {"unknown", "manual", "inferred"}:
+        return str(value or "unknown").strip().lower() == expected_text
+    if expected_text in {"true", "1", "yes"}:
+        return bool(value) is True
+    if expected_text in {"false", "0", "no"}:
+        return bool(value) is False
+    return str(value or "").strip().lower() == expected_text

@@ -27,12 +27,14 @@ EXPECTED_TABLES = {
     "wechat_official_article_comment_replies",
     "wechat_official_ingest_errors",
     "wechat_official_draft_sources",
+    "wechat_official_redfox_configs",
 }
 
 
 SENSITIVE_FIELD_EXPECTATIONS = {
     "WechatOfficialBackendSession": {"encrypted_cookie", "encrypted_token"},
     "WechatOfficialArticleCredential": {"encrypted_cookie", "encrypted_token", "encrypted_key"},
+    "WechatOfficialRedfoxConfig": {"encrypted_api_key"},
 }
 
 
@@ -50,6 +52,7 @@ def _wechat_models():
         WechatOfficialDraftSource,
         WechatOfficialIngestError,
         WechatOfficialProxyNode,
+        WechatOfficialRedfoxConfig,
     )
 
     return {
@@ -65,6 +68,7 @@ def _wechat_models():
         "WechatOfficialDraftSource": WechatOfficialDraftSource,
         "WechatOfficialIngestError": WechatOfficialIngestError,
         "WechatOfficialProxyNode": WechatOfficialProxyNode,
+        "WechatOfficialRedfoxConfig": WechatOfficialRedfoxConfig,
     }
 
 
@@ -77,17 +81,11 @@ def test_wechat_official_models_register_all_tables_in_metadata():
 def test_wechat_official_alembic_migration_creates_all_tables_and_encrypted_fields():
     versions_dir = PROJECT_ROOT / "backend" / "alembic" / "versions"
     migration_texts = [path.read_text(encoding="utf-8") for path in versions_dir.glob("*.py")]
-    matching_migrations = [
-        text
-        for text in migration_texts
-        if EXPECTED_TABLES.issubset({table_name for table_name in EXPECTED_TABLES if table_name in text})
-    ]
+    migration_text = "\n".join(migration_texts)
 
-    assert len(matching_migrations) == 1
-    migration_text = matching_migrations[0]
     for table_name in EXPECTED_TABLES:
         assert f"'{table_name}'" in migration_text
-    for encrypted_column in {"encrypted_cookie", "encrypted_token", "encrypted_key"}:
+    for encrypted_column in {"encrypted_cookie", "encrypted_token", "encrypted_key", "encrypted_api_key"}:
         assert f"'{encrypted_column}'" in migration_text
     for plaintext_sensitive_column in {"'cookie'", "'token'", "'key'"}:
         assert plaintext_sensitive_column not in migration_text
@@ -126,7 +124,7 @@ def test_wechat_official_alembic_revision_is_single_head():
             referenced_revisions.add(down_revision)
 
     heads = set(revisions) - referenced_revisions
-    assert heads == {"c4e1a2b3d5f6"}
+    assert heads == {"d5a6f7b8c9e0"}
 
 
 def test_wechat_official_models_insert_related_crawl_data_and_defaults():
@@ -219,7 +217,11 @@ def test_wechat_official_models_insert_related_crawl_data_and_defaults():
             article_id=article.id,
             source_type="rewrite",
         )
-        session.add_all([snapshot, metric, comment, ingest_error, draft_source])
+        redfox_config = models["WechatOfficialRedfoxConfig"](
+            user_id=user.id,
+            encrypted_api_key="encrypted-redfox-key-value",
+        )
+        session.add_all([snapshot, metric, comment, ingest_error, draft_source, redfox_config])
         session.flush()
 
         reply = models["WechatOfficialArticleCommentReply"](

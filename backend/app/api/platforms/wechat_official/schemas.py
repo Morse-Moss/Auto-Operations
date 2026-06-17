@@ -53,6 +53,37 @@ class WechatOfficialProxyTestRequest(BaseModel):
     error_message: str = ""
 
 
+class WechatOfficialRedfoxConfigRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
+    base_url: str | None = None
+    api_key: str | None = None
+
+
+class WechatOfficialRedfoxKeywordCollectRequest(BaseModel):
+    keyword: str = Field(min_length=1)
+    pages: int = Field(default=1, ge=1, le=3)
+    sort_type: str = "_4"
+    min_read_count: int = Field(default=100000, ge=0)
+    save_snapshot: bool = True
+
+
+class WechatOfficialRedfoxAccountCollectRequest(BaseModel):
+    account: str = Field(min_length=1)
+    account_name: str = ""
+    pages: int = Field(default=1, ge=1, le=3)
+    sort_type: str = "_4"
+    publish_time_start: str | None = None
+    publish_time_end: str | None = None
+    min_read_count: int = Field(default=100000, ge=0)
+    save_snapshot: bool = True
+
+
+class WechatOfficialRedfoxUrlImportRequest(BaseModel):
+    url: str = Field(min_length=1)
+    min_read_count: int = Field(default=100000, ge=0)
+    save_snapshot: bool = True
+
+
 class WechatOfficialSearchAccountsRequest(BaseModel):
     backend_session_id: int
     keyword: str = Field(min_length=1)

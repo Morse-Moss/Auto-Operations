@@ -179,6 +179,22 @@ class WechatOfficialIngestError(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)
 
 
+class WechatOfficialRedfoxConfig(Base):
+    __tablename__ = "wechat_official_redfox_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128), default="RedFoxHub")
+    base_url: Mapped[str] = mapped_column(Text, default="https://redfox.hk")
+    encrypted_api_key: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), index=True, default="unknown")
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    raw_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now)
+
+
 class WechatOfficialDraftSource(Base):
     __tablename__ = "wechat_official_draft_sources"
 

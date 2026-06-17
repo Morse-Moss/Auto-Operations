@@ -19,7 +19,7 @@ router = APIRouter(prefix="/wechat-official/content-library", tags=["wechat-offi
 def list_content_library(
     viral_only: bool = False,
     min_read_count: Optional[int] = Query(default=None, ge=0),
-    low_follower_evidence: Optional[bool] = None,
+    low_follower_evidence: Optional[str] = None,
     recommendation_status: Optional[str] = None,
     keyword: Optional[str] = None,
     current_user: User = Depends(get_current_user),

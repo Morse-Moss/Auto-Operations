@@ -190,7 +190,7 @@ export type WechatOfficialArticleMetric = {
 
 export type WechatOfficialArticleAnalysis = {
   recommendation_status?: string;
-  low_follower_evidence?: boolean;
+  low_follower_evidence?: boolean | "unknown" | "manual" | "inferred" | string;
   low_follower_note?: string;
   business_direction?: string;
   title_type?: string;
@@ -278,7 +278,7 @@ export type WechatOfficialArticleComment = {
 
 export type WechatOfficialRecommendationUpdatePayload = {
   recommendation_status?: string | null;
-  low_follower_evidence?: boolean | null;
+  low_follower_evidence?: boolean | "unknown" | "manual" | "inferred" | string | null;
   low_follower_note?: string | null;
   business_direction?: string | null;
   title_type?: string | null;
@@ -310,6 +310,71 @@ export type WechatOfficialDraftDryRun = {
   publish_blocked: boolean;
   sendall_blocked: boolean;
   checks: Record<string, "ok" | "missing" | "blocked" | "warning" | string>;
+};
+
+export type WechatOfficialRedfoxConfig = {
+  id: number;
+  name: string;
+  base_url: string;
+  has_api_key: boolean;
+  masked_api_key?: string;
+  status: "unknown" | "valid" | "invalid" | string;
+  last_checked_at?: string | null;
+  last_error?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type WechatOfficialRedfoxConfigResponse = {
+  configured: boolean;
+  config: WechatOfficialRedfoxConfig | null;
+};
+
+export type WechatOfficialRedfoxConfigPayload = {
+  name?: string;
+  base_url?: string;
+  api_key?: string;
+};
+
+export type WechatOfficialRedfoxKeywordCollectPayload = {
+  keyword: string;
+  pages?: number;
+  sort_type?: "_0" | "_2" | "_4" | string;
+  min_read_count?: number;
+  save_snapshot?: boolean;
+};
+
+export type WechatOfficialRedfoxAccountCollectPayload = {
+  account: string;
+  account_name?: string;
+  pages?: number;
+  sort_type?: "_0" | "_2" | "_4" | string;
+  publish_time_start?: string | null;
+  publish_time_end?: string | null;
+  min_read_count?: number;
+  save_snapshot?: boolean;
+};
+
+export type WechatOfficialRedfoxUrlImportPayload = {
+  url: string;
+  min_read_count?: number;
+  save_snapshot?: boolean;
+};
+
+export type WechatOfficialRedfoxCollectSummary = {
+  fetched: number;
+  saved: number;
+  deduped: number;
+  viral_candidates: number;
+  failed: number;
+  api_calls: number;
+  estimated_credit_cost?: number | null;
+};
+
+export type WechatOfficialRedfoxCollectResponse = {
+  summary: WechatOfficialRedfoxCollectSummary;
+  job: WechatOfficialCrawlJob & { source?: string };
+  items: WechatOfficialContentLibraryItem[];
 };
 
 export type Paginated<T> = {

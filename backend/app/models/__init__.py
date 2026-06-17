@@ -25,6 +25,7 @@ from backend.app.models.wechat_official import (
     WechatOfficialDraftSource,
     WechatOfficialIngestError,
     WechatOfficialProxyNode,
+    WechatOfficialRedfoxConfig,
 )
 
 __all__ = [
@@ -65,5 +66,6 @@ __all__ = [
     "WechatOfficialDraftSource",
     "WechatOfficialIngestError",
     "WechatOfficialProxyNode",
+    "WechatOfficialRedfoxConfig",
     "note_tags",
 ]

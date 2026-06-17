@@ -100,6 +100,12 @@ import type {
   WechatOfficialProxyTestPayload,
   WechatOfficialQrLoginSession,
   WechatOfficialRecommendationUpdatePayload,
+  WechatOfficialRedfoxAccountCollectPayload,
+  WechatOfficialRedfoxCollectResponse,
+  WechatOfficialRedfoxConfigPayload,
+  WechatOfficialRedfoxConfigResponse,
+  WechatOfficialRedfoxKeywordCollectPayload,
+  WechatOfficialRedfoxUrlImportPayload,
   WechatOfficialSearchAccountsPayload,
   XhsNoteSearchResponse,
   XhsDataCrawlItem,
@@ -119,6 +125,8 @@ const http = axios.create({
 
 const REFRESH_TOKEN_KEY = "spider_xhs_refresh_token";
 let accessToken: string | null = null;
+let refreshPromise: Promise<string> | null = null;
+let authExpiredMessageShown = false;
 
 export type AuthCredentials = {
   username: string;
@@ -181,7 +189,10 @@ http.interceptors.response.use(
       return http(originalRequest);
     } catch (refreshError) {
       clearAuthTokens();
-      message.error("登录已过期，请重新登录");
+      if (!authExpiredMessageShown) {
+        authExpiredMessageShown = true;
+        message.error("登录已过期，请重新登录");
+      }
       return Promise.reject(refreshError);
     }
   }
@@ -198,16 +209,27 @@ export async function register(credentials: AuthCredentials): Promise<AuthPayloa
 }
 
 export async function refreshAccessToken(): Promise<string> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) {
-    throw new Error("Missing refresh token");
+  if (refreshPromise) {
+    return refreshPromise;
   }
 
-  const response = await http.post<{ access_token: string; token_type: "bearer" }>("/auth/refresh", {
-    refresh_token: refreshToken
+  refreshPromise = (async () => {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) {
+      throw new Error("Missing refresh token");
+    }
+
+    const response = await axios.post<{ access_token: string; token_type: "bearer" }>("/api/auth/refresh", {
+      refresh_token: refreshToken
+    });
+    setAccessToken(response.data.access_token);
+    authExpiredMessageShown = false;
+    return response.data.access_token;
+  })().finally(() => {
+    refreshPromise = null;
   });
-  setAccessToken(response.data.access_token);
-  return response.data.access_token;
+
+  return refreshPromise;
 }
 
 export async function fetchMe(): Promise<PlatformUser> {
@@ -304,6 +326,44 @@ export async function fetchWechatOfficialProxies(): Promise<WechatOfficialListRe
   return response.data;
 }
 
+export async function fetchWechatOfficialRedfoxConfig(): Promise<WechatOfficialRedfoxConfigResponse> {
+  const response = await http.get<WechatOfficialRedfoxConfigResponse>("/wechat-official/redfox/config");
+  return response.data;
+}
+
+export async function saveWechatOfficialRedfoxConfig(
+  payload: WechatOfficialRedfoxConfigPayload
+): Promise<WechatOfficialRedfoxConfigResponse> {
+  const response = await http.post<WechatOfficialRedfoxConfigResponse>("/wechat-official/redfox/config", payload);
+  return response.data;
+}
+
+export async function validateWechatOfficialRedfoxConfig(): Promise<{ ok: boolean; config: WechatOfficialRedfoxConfigResponse["config"]; message: string }> {
+  const response = await http.post<{ ok: boolean; config: WechatOfficialRedfoxConfigResponse["config"]; message: string }>("/wechat-official/redfox/config/validate");
+  return response.data;
+}
+
+export async function collectWechatOfficialRedfoxArticles(
+  payload: WechatOfficialRedfoxKeywordCollectPayload
+): Promise<WechatOfficialRedfoxCollectResponse> {
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/articles", payload);
+  return response.data;
+}
+
+export async function collectWechatOfficialRedfoxAccount(
+  payload: WechatOfficialRedfoxAccountCollectPayload
+): Promise<WechatOfficialRedfoxCollectResponse> {
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/account", payload);
+  return response.data;
+}
+
+export async function importWechatOfficialRedfoxUrl(
+  payload: WechatOfficialRedfoxUrlImportPayload
+): Promise<WechatOfficialRedfoxCollectResponse> {
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/import-url", payload);
+  return response.data;
+}
+
 export async function testWechatOfficialProxy(
   proxyId: number,
   payload: WechatOfficialProxyTestPayload
@@ -365,7 +425,7 @@ export async function captureWechatOfficialArticleComments(
 export async function fetchWechatOfficialContentLibrary(params?: {
   viral_only?: boolean;
   min_read_count?: number;
-  low_follower_evidence?: boolean;
+  low_follower_evidence?: boolean | string;
   recommendation_status?: string;
   keyword?: string;
 }): Promise<WechatOfficialListResponse<WechatOfficialContentLibraryItem>> {

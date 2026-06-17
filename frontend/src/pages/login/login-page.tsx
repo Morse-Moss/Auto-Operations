@@ -142,7 +142,7 @@ export function LoginPage() {
                   display: "block",
                 }}
               >
-                Spider_XHS
+                Operations Center
               </Text>
               <Text strong style={{ fontSize: 14 }}>
                 Operations OS
@@ -158,15 +158,15 @@ export function LoginPage() {
               lineHeight: 1.4,
             }}
           >
-            小红书运营，从抓取到发布一屏推进。
+            运营中台，从爆文发现到草稿 dry-run 一屏推进。
           </Title>
           <Paragraph
             type="secondary"
             style={{ fontSize: 15, marginBottom: 40 }}
           >
-            数据发现、内容库、AI
-            改写、账号矩阵和 Creator
-            发布统一在一个工作区里完成。
+            小红书与公众号爆文收集、内容库、AI
+            改写、账号矩阵和 dry-run
+            检查统一在一个工作区里完成。
           </Paragraph>
 
           <Row gutter={24}>
