@@ -143,7 +143,11 @@ http.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config as typeof error.config & { _authRetry?: boolean; _silent?: boolean };
-    if (error.response?.status !== 401 || originalRequest?._authRetry || !getRefreshToken()) {
+    const isRefreshRequest = originalRequest?.url === "/auth/refresh";
+    if (isRefreshRequest) {
+      clearAuthTokens();
+    }
+    if (error.response?.status !== 401 || originalRequest?._authRetry || isRefreshRequest || !getRefreshToken()) {
       if (!originalRequest?._silent) {
         const detail = error.response?.data?.detail;
         const msg = typeof detail === "string" ? detail : "请求失败，请稍后重试";
