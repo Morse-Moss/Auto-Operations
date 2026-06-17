@@ -1,7 +1,10 @@
 import os
 import re
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
+import pytest
+import requests
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import sessionmaker
@@ -5234,6 +5237,52 @@ def test_model_configs_create_list_filter_and_encrypt_api_key(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_model_config_test_uses_runninghub_default_base_url_when_blank(tmp_path, monkeypatch):
+    db_dependency = _override_database(tmp_path)
+    token = _register_and_get_access_token("runninghub-default-base-url-owner")
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"code":0,"msg":"success","data":{"webappName":"test","nodeInfoList":[]}}'
+
+        def json(self):
+            return {"code": 0, "msg": "success", "data": {"webappName": "test", "nodeInfoList": []}}
+
+    def fake_get(url, **kwargs):
+        assert url == "https://www.runninghub.cn/api/webapp/apiCallDemo"
+        assert kwargs["headers"] == {"Authorization": "Bearer sk-runninghub-default-base", "Host": "www.runninghub.cn"}
+        assert kwargs["params"] == {"apiKey": "sk-runninghub-default-base", "webappId": "2046760522573418497"}
+        return FakeResponse()
+
+    import backend.app.api.model_configs as model_configs_api
+
+    monkeypatch.setattr(model_configs_api.http_requests, "get", fake_get, raising=False)
+
+    try:
+        response = client.post(
+            "/api/model-configs",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "RunningHub Default Base URL",
+                "model_type": "image",
+                "provider": "runninghub-ai-app",
+                "model_name": "runninghub-image-g",
+                "base_url": "",
+                "api_key": "sk-runninghub-default-base",
+                "is_default": True,
+            },
+        )
+        assert response.status_code == 200
+        config_id = response.json()["id"]
+
+        test_response = client.post(f"/api/model-configs/{config_id}/test", headers={"Authorization": f"Bearer {token}"})
+
+        assert test_response.status_code == 200
+        assert test_response.json()["status"] == "ok"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_text_model_config_defaults_to_gpt_54_when_model_name_omitted(tmp_path):
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("model-default-owner")
@@ -5566,6 +5615,73 @@ def test_ai_text_generation_endpoints_use_default_model_and_create_tasks(tmp_pat
     finally:
         app.dependency_overrides.pop(get_text_ai_client, None)
         app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_runninghub_rejects_too_many_reference_images_before_upload(tmp_path, monkeypatch):
+    from backend.app.core import config as config_module
+    from backend.app.models import ModelConfig
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    media_dir = tmp_path / "storage" / "media"
+    media_dir.mkdir(parents=True)
+    refs = [f"xhs-upload-u1-ref-{index}.png" for index in range(3)]
+    for ref in refs:
+        (media_dir / ref).write_bytes(b"fake-image")
+    monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"))
+
+    class FakeSession:
+        def post(self, url, **kwargs):
+            raise AssertionError("RunningHub upload should not be called when reference images exceed the workflow limit")
+
+    config = ModelConfig(provider="runninghub-ai-app", model_name="runninghub-image-g", base_url="https://www.runninghub.cn")
+    client_instance = RunningHubImageClient(session=FakeSession(), poll_interval_seconds=0, max_poll_attempts=1)
+
+    with pytest.raises(ValueError, match="最多支持 2 张参考图"):
+        client_instance.generate_image(
+            model_config=config,
+            api_key="sk-test",
+            prompt="测试",
+            reference_images=[f"/api/files/media/{ref}" for ref in refs],
+            owner_user_id=1,
+        )
+
+
+def test_image_client_for_model_uses_runninghub_client_for_any_fallback():
+    from backend.app.api.ai import _image_client_for_model
+    from backend.app.models import ModelConfig
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    class FakeImageClient:
+        pass
+
+    model_config = ModelConfig(provider="runninghub-ai-app", model_name="runninghub-image-g")
+
+    image_client = _image_client_for_model(model_config, FakeImageClient())
+
+    assert isinstance(image_client, RunningHubImageClient)
+
+
+def test_runninghub_resolve_local_image_path_enforces_owner_upload_prefix(tmp_path, monkeypatch):
+    from backend.app.core import config as config_module
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    media_dir = tmp_path / "storage" / "media"
+    media_dir.mkdir(parents=True)
+    owned_file = media_dir / "xhs-upload-u1-owned.png"
+    other_file = media_dir / "xhs-upload-u2-other.png"
+    owned_file.write_bytes(b"owned")
+    other_file.write_bytes(b"other")
+    monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"))
+
+    assert RunningHubImageClient._resolve_local_image_path(
+        "/api/files/media/xhs-upload-u1-owned.png",
+        owner_user_id=1,
+    ) == owned_file.resolve()
+    with pytest.raises(ValueError, match="参考图文件不存在或无权访问"):
+        RunningHubImageClient._resolve_local_image_path(
+            "/api/files/media/xhs-upload-u2-other.png",
+            owner_user_id=1,
+        )
 
 
 def test_ai_image_routes_require_authentication(tmp_path):
