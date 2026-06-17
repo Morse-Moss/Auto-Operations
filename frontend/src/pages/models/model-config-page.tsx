@@ -54,7 +54,25 @@ const emptyForm: ModelConfigPayload = {
 };
 
 function defaultModelName(type: ModelType): string {
-  return type === "text" ? "gpt-5.4" : "";
+  return type === "text" ? "gpt-5.4" : "runninghub-image-g";
+}
+
+function defaultProvider(type: ModelType): string {
+  return type === "text" ? "openai-compatible" : "runninghub-ai-app";
+}
+
+function defaultBaseUrl(type: ModelType): string {
+  return type === "text" ? "" : "https://www.runninghub.cn";
+}
+
+function defaultFormForType(type: ModelType): ModelConfigPayload {
+  return {
+    ...emptyForm,
+    model_type: type,
+    provider: defaultProvider(type),
+    model_name: defaultModelName(type),
+    base_url: defaultBaseUrl(type),
+  };
 }
 
 function typeLabel(type: ModelType): string {
@@ -133,7 +151,7 @@ export function ModelConfigPage() {
         });
         setMessage(`${typeLabel(created.model_type)}配置已保存。`);
       }
-      setForm({ ...emptyForm, model_type: form.model_type });
+      setForm(defaultFormForType(form.model_type));
     } catch {
       setError("模型配置保存失败。");
     } finally {
@@ -158,7 +176,7 @@ export function ModelConfigPage() {
 
   function handleCancelEdit() {
     setEditingId(null);
-    setForm({ ...emptyForm, model_type: form.model_type });
+    setForm(defaultFormForType(form.model_type));
   }
 
   async function handleDelete(configId: number) {
@@ -167,7 +185,10 @@ export function ModelConfigPage() {
     try {
       await deleteModelConfig(configId);
       setConfigs((current) => current.filter((c) => c.id !== configId));
-      if (editingId === configId) { setEditingId(null); setForm({ ...emptyForm, model_type: form.model_type }); }
+      if (editingId === configId) {
+        setEditingId(null);
+        setForm(defaultFormForType(form.model_type));
+      }
       setMessage("配置已删除。");
     } catch {
       setError("配置删除失败。");
@@ -231,11 +252,10 @@ export function ModelConfigPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="推荐的 OpenAI 兼容 API 服务"
+        message="模型配置建议"
         description={<>
-          <Typography.Link href="https://api.openai-next.com/" target="_blank" rel="noreferrer">api.openai-next.com</Typography.Link> — OpenAI 中转，Base URL: <Typography.Text code>https://api.openai-next.com/v1</Typography.Text><br />
-          <Typography.Link href="https://www.volcengine.com/product/doubao" target="_blank" rel="noreferrer">火山引擎（豆包）</Typography.Link> — 字节跳动大模型平台，Base URL: <Typography.Text code>https://ark.cn-beijing.volces.com/api/v3</Typography.Text><br />
-          <Typography.Link href="https://bailian.console.aliyun.com/" target="_blank" rel="noreferrer">阿里云百炼</Typography.Link> — 通义千问系列，Base URL: <Typography.Text code>https://dashscope.aliyuncs.com/compatible-mode/v1</Typography.Text>
+          图片工坊默认推荐 RunningHub：Provider <Typography.Text code>runninghub-ai-app</Typography.Text>，Base URL <Typography.Text code>https://www.runninghub.cn</Typography.Text>，模型名称可填 <Typography.Text code>runninghub-image-g</Typography.Text>。<br />
+          文本模型仍使用 OpenAI 兼容接口：例如 <Typography.Text code>https://api.openai-next.com/v1</Typography.Text>、火山方舟或阿里云百炼兼容模式。
         </>}
       />
 
@@ -277,11 +297,16 @@ export function ModelConfigPage() {
                 { label: "图片模型", value: "image" },
               ]}
               onChange={(val) =>
-                setForm((current) => ({
-                  ...current,
-                  model_type: val as ModelType,
-                  model_name: defaultModelName(val as ModelType),
-                }))
+                setForm((current) => {
+                  const nextType = val as ModelType;
+                  return {
+                    ...current,
+                    model_type: nextType,
+                    provider: defaultProvider(nextType),
+                    model_name: defaultModelName(nextType),
+                    base_url: defaultBaseUrl(nextType),
+                  };
+                })
               }
               block
               style={{ marginBottom: 20 }}
@@ -301,7 +326,21 @@ export function ModelConfigPage() {
                     placeholder="例如：默认文本模型"
                   />
                 </Form.Item>
-                <Alert message="所有模型需兼容 OpenAI 接口规范" type="info" style={{ marginBottom: 16, fontSize: 12 }} />
+                <Form.Item label="Provider">
+                  <Input
+                    value={form.provider}
+                    onChange={(e) =>
+                      setForm((current) => ({
+                        ...current,
+                        provider: e.target.value,
+                      }))
+                    }
+                    placeholder={form.model_type === "image" ? "runninghub-ai-app" : "openai-compatible"}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    图片工坊推荐 runninghub-ai-app；OpenAI 兼容服务使用 openai-compatible。
+                  </Text>
+                </Form.Item>
                 <Form.Item label="模型名称">
                   <Input
                     value={form.model_name}
@@ -311,9 +350,7 @@ export function ModelConfigPage() {
                         model_name: e.target.value,
                       }))
                     }
-                    placeholder={
-                      form.model_type === "text" ? "gpt-4o-mini" : "gpt-image-1"
-                    }
+                    placeholder={form.model_type === "text" ? "gpt-5.4" : "runninghub-image-g"}
                   />
                 </Form.Item>
                 <Form.Item label="Base URL">
@@ -325,7 +362,7 @@ export function ModelConfigPage() {
                         base_url: e.target.value,
                       }))
                     }
-                    placeholder="https://api.example.com/v1"
+                    placeholder={form.model_type === "image" && form.provider === "runninghub-ai-app" ? "https://www.runninghub.cn" : "https://api.example.com/v1"}
                   />
                 </Form.Item>
                 <Form.Item label="API Key">

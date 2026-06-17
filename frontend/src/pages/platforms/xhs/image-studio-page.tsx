@@ -45,6 +45,7 @@ import type { GeneratedImageAsset, UserImageFile } from "../../../types";
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
+const RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT = 2;
 
 function isRenderableImage(value: string): boolean {
   return (
@@ -115,8 +116,22 @@ export function XhsImageStudioPage() {
         setAssets((prev) => [result.asset!, ...prev]);
       }
       setMessage("图片生成成功。");
-    } catch {
-      setError("AI 图片生成失败，请确认已配置图片生成模型。");
+    } catch (err) {
+      const responseDetail =
+        typeof err === "object" &&
+        err !== null &&
+        "response" in err &&
+        typeof err.response === "object" &&
+        err.response !== null &&
+        "data" in err.response &&
+        typeof err.response.data === "object" &&
+        err.response.data !== null &&
+        "detail" in err.response.data &&
+        typeof err.response.data.detail === "string"
+          ? err.response.data.detail
+          : "";
+      const detail = responseDetail || (err instanceof Error ? err.message : "");
+      setError(detail || "AI 图片生成失败，请确认已配置图片生成模型。");
     } finally {
       setIsGenerating(false);
     }
@@ -152,9 +167,16 @@ export function XhsImageStudioPage() {
 
   function handlePickerSelect(url: string) {
     if (pickerMode === "reference") {
-      setReferenceImages((prev) =>
-        prev.includes(url) ? prev : [...prev, url],
-      );
+      setReferenceImages((prev) => {
+        if (prev.includes(url)) return prev;
+        if (prev.length >= RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT) {
+          setError(
+            `当前 RunningHub 图生图工作流最多支持 ${RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT} 张参考图。`,
+          );
+          return prev;
+        }
+        return [...prev, url];
+      });
     } else {
       setImageUrl(url);
     }
@@ -255,7 +277,7 @@ export function XhsImageStudioPage() {
                 type="secondary"
                 style={{ fontSize: 12, marginBottom: 6, display: "block" }}
               >
-                参考图
+                参考图（当前 RunningHub 图生图工作流最多支持 2 张）
               </Text>
               <Space size={8} wrap>
                 {referenceImages.map((url, idx) => (
@@ -719,80 +741,84 @@ export function XhsImageStudioPage() {
                   </Row>
                 ),
             },
-            {
-              key: "ai_assets",
-              label: (
-                <Space>
-                  <StarOutlined /> AI 图片资产
-                </Space>
-              ),
-              children:
-                assets.length === 0 ? (
-                  <Empty
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                    description="暂无 AI 图片资产。"
-                    style={{ padding: 24 }}
-                  />
-                ) : (
-                  <Row gutter={[8, 8]}>
-                    {assets.map((asset) => (
-                      <Col span={6} key={asset.id}>
-                        <div
-                          onClick={() => handlePickerSelect(asset.file_path)}
-                          style={{
-                            cursor: "pointer",
-                            borderRadius: 4,
-                            overflow: "hidden",
-                            border: "1px solid #333",
-                            height: 80,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            background: "#1a1a1a",
-                          }}
-                        >
-                          {isRenderableImage(asset.file_path) ? (
-                            <img
-                              src={asset.file_path}
-                              alt={asset.prompt}
-                              style={{
-                                maxHeight: 80,
-                                maxWidth: "100%",
-                                objectFit: "contain",
-                              }}
-                            />
-                          ) : (
-                            <PictureOutlined
-                              style={{ fontSize: 24, color: "#555" }}
-                            />
-                          )}
-                        </div>
-                      </Col>
-                    ))}
-                  </Row>
-                ),
-            },
-            {
-              key: "url",
-              label: (
-                <Space>
-                  <LinkOutlined /> URL
-                </Space>
-              ),
-              children: (
-                <Space.Compact style={{ width: "100%" }}>
-                  <Input
-                    value={pickerUrlInput}
-                    onChange={(e) => setPickerUrlInput(e.target.value)}
-                    placeholder="输入图片 URL"
-                    onPressEnter={handlePickerUrlAdd}
-                  />
-                  <Button type="primary" onClick={handlePickerUrlAdd}>
-                    添加
-                  </Button>
-                </Space.Compact>
-              ),
-            },
+            ...(pickerMode === "describe"
+              ? [
+                  {
+                    key: "ai_assets",
+                    label: (
+                      <Space>
+                        <StarOutlined /> AI 图片资产
+                      </Space>
+                    ),
+                    children:
+                      assets.length === 0 ? (
+                        <Empty
+                          image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          description="暂无 AI 图片资产。"
+                          style={{ padding: 24 }}
+                        />
+                      ) : (
+                        <Row gutter={[8, 8]}>
+                          {assets.map((asset) => (
+                            <Col span={6} key={asset.id}>
+                              <div
+                                onClick={() => handlePickerSelect(asset.file_path)}
+                                style={{
+                                  cursor: "pointer",
+                                  borderRadius: 4,
+                                  overflow: "hidden",
+                                  border: "1px solid #333",
+                                  height: 80,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  background: "#1a1a1a",
+                                }}
+                              >
+                                {isRenderableImage(asset.file_path) ? (
+                                  <img
+                                    src={asset.file_path}
+                                    alt={asset.prompt}
+                                    style={{
+                                      maxHeight: 80,
+                                      maxWidth: "100%",
+                                      objectFit: "contain",
+                                    }}
+                                  />
+                                ) : (
+                                  <PictureOutlined
+                                    style={{ fontSize: 24, color: "#555" }}
+                                  />
+                                )}
+                              </div>
+                            </Col>
+                          ))}
+                        </Row>
+                      ),
+                  },
+                  {
+                    key: "url",
+                    label: (
+                      <Space>
+                        <LinkOutlined /> URL
+                      </Space>
+                    ),
+                    children: (
+                      <Space.Compact style={{ width: "100%" }}>
+                        <Input
+                          value={pickerUrlInput}
+                          onChange={(e) => setPickerUrlInput(e.target.value)}
+                          placeholder="输入图片 URL"
+                          onPressEnter={handlePickerUrlAdd}
+                        />
+                        <Button type="primary" onClick={handlePickerUrlAdd}>
+                          添加
+                        </Button>
+                      </Space.Compact>
+                    ),
+                  },
+                ]
+              : []),
           ]}
         />
       </Modal>

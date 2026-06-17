@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Protocol
 
 import requests
@@ -290,6 +291,249 @@ class OpenAICompatibleTextClient:
         )
 
 
+RUNNINGHUB_TEXT_TO_IMAGE_WEBAPP_ID = "2046760522573418497"
+RUNNINGHUB_IMAGE_TO_IMAGE_WEBAPP_ID = "2046794946094571522"
+RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
+RUNNINGHUB_DEFAULT_ASPECT_RATIO = "3:4"
+RUNNINGHUB_DEFAULT_RESOLUTION = "1k"
+RUNNINGHUB_TEXT_PROMPT_NODE_ID = "136"
+RUNNINGHUB_IMAGE_PROMPT_NODE_ID = "4"
+RUNNINGHUB_IMAGE_INPUT_NODES = ["3", "2"]
+
+
+class RunningHubImageClient:
+    def __init__(self, *, session: Any | None = None, poll_interval_seconds: float = 2.0, max_poll_attempts: int = 90) -> None:
+        self.session = session or requests
+        self.poll_interval_seconds = poll_interval_seconds
+        self.max_poll_attempts = max_poll_attempts
+
+    def _validate(self, *, model_config: ModelConfig, api_key: str) -> str:
+        if not api_key:
+            raise ValueError("RunningHub API Key 未配置")
+        return (model_config.base_url or RUNNINGHUB_DEFAULT_BASE_URL).rstrip("/")
+
+    @staticmethod
+    def build_text_to_image_node_info_list(prompt: str) -> list[dict[str, Any]]:
+        return [
+            {"nodeId": RUNNINGHUB_TEXT_PROMPT_NODE_ID, "fieldName": "prompt", "fieldValue": prompt},
+            {"nodeId": RUNNINGHUB_TEXT_PROMPT_NODE_ID, "fieldName": "aspectRatio", "fieldValue": RUNNINGHUB_DEFAULT_ASPECT_RATIO},
+        ]
+
+    @staticmethod
+    def build_image_to_image_node_info_list(*, prompt: str, uploaded_filenames: list[str]) -> list[dict[str, Any]]:
+        max_images = len(RUNNINGHUB_IMAGE_INPUT_NODES)
+        if not uploaded_filenames:
+            raise ValueError("参考图生图至少需要 1 张参考图")
+        if len(uploaded_filenames) > max_images:
+            raise ValueError(f"当前 RunningHub 图生图工作流最多支持 {max_images} 张参考图")
+
+        node_info: list[dict[str, Any]] = []
+        for node_id, filename in zip(RUNNINGHUB_IMAGE_INPUT_NODES, uploaded_filenames):
+            node_info.append({"nodeId": node_id, "fieldName": "image", "fieldValue": filename})
+        node_info.extend([
+            {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "prompt", "fieldValue": prompt},
+            {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "aspectRatio", "fieldValue": RUNNINGHUB_DEFAULT_ASPECT_RATIO},
+            {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "resolution", "fieldValue": RUNNINGHUB_DEFAULT_RESOLUTION},
+        ])
+        return node_info
+
+    def generate_cover(
+        self,
+        *,
+        model_config: ModelConfig,
+        api_key: str,
+        prompt: str,
+        size: str,
+        style: str,
+    ) -> dict[str, Any]:
+        return self.generate_image(
+            model_config=model_config,
+            api_key=api_key,
+            prompt=f"{prompt}\nStyle: {style or 'clean XHS cover'}",
+        )
+
+    def generate_image(
+        self,
+        *,
+        model_config: ModelConfig,
+        api_key: str,
+        prompt: str,
+        reference_images: list[str] | None = None,
+        owner_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        base_url = self._validate(model_config=model_config, api_key=api_key)
+        refs = [item for item in (reference_images or []) if str(item).strip()]
+        if refs:
+            max_images = len(RUNNINGHUB_IMAGE_INPUT_NODES)
+            if len(refs) > max_images:
+                raise ValueError(f"当前 RunningHub 图生图工作流最多支持 {max_images} 张参考图")
+            filenames = [self._upload_reference_image(base_url=base_url, api_key=api_key, image_ref=ref, owner_user_id=owner_user_id) for ref in refs]
+            webapp_id = RUNNINGHUB_IMAGE_TO_IMAGE_WEBAPP_ID
+            node_info = self.build_image_to_image_node_info_list(prompt=prompt, uploaded_filenames=filenames)
+        else:
+            webapp_id = RUNNINGHUB_TEXT_TO_IMAGE_WEBAPP_ID
+            node_info = self.build_text_to_image_node_info_list(prompt)
+
+        task_payload = self._run_ai_app(base_url=base_url, api_key=api_key, webapp_id=webapp_id, node_info_list=node_info)
+        task_id = ((task_payload.get("data") or {}).get("taskId") if isinstance(task_payload, dict) else None)
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("RunningHub response missing taskId")
+        status_value = self._wait_for_success(base_url=base_url, api_key=api_key, task_id=task_id)
+        outputs_payload = self._get_outputs(base_url=base_url, api_key=api_key, task_id=task_id)
+        file_url = self._first_output_url(outputs_payload)
+        return {
+            "url": file_url,
+            "raw": {
+                "provider": "runninghub-ai-app",
+                "webapp_id": webapp_id,
+                "task_id": task_id,
+                "status": status_value,
+                "outputs": outputs_payload.get("data"),
+            },
+        }
+
+    def describe_image(
+        self,
+        *,
+        model_config: ModelConfig,
+        api_key: str,
+        image_url: str,
+        instruction: str,
+    ) -> str:
+        raise ValueError("RunningHub 图片上游当前不支持图片描述，请配置支持视觉理解的 OpenAI-compatible 图片模型。")
+
+    def _headers(self, api_key: str, *, content_type: str | None = "application/json") -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {api_key}", "Host": "www.runninghub.cn"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
+
+    def _upload_reference_image(self, *, base_url: str, api_key: str, image_ref: str, owner_user_id: int | None = None) -> str:
+        path = self._resolve_local_image_path(image_ref, owner_user_id=owner_user_id)
+        endpoint = f"{base_url}/openapi/v2/media/upload/binary"
+        with path.open("rb") as file_obj:
+            response = self.session.post(
+                endpoint,
+                headers=self._headers(api_key, content_type=None),
+                files={"file": (path.name, file_obj, self._mime_for_path(path))},
+                timeout=120,
+            )
+        response.raise_for_status()
+        payload = _load_json_response(response)
+        if not isinstance(payload, dict) or payload.get("code") != 200:
+            message = payload.get("message") if isinstance(payload, dict) else "unknown"
+            raise ValueError(f"RunningHub 参考图上传失败: {message}")
+        data = payload.get("data") or {}
+        filename = data.get("filename") if isinstance(data, dict) else None
+        if not isinstance(filename, str) or not filename:
+            raise ValueError("RunningHub upload response missing filename")
+        return filename
+
+    @staticmethod
+    def _resolve_local_image_path(image_ref: str, *, owner_user_id: int | None = None) -> Path:
+        from backend.app.core.config import get_settings
+
+        media_dir = (Path(get_settings().storage_dir) / "media").resolve()
+        ref = image_ref.strip()
+        if ref.startswith("/api/files/media/"):
+            candidate = media_dir / ref.removeprefix("/api/files/media/")
+        else:
+            ref_path = Path(ref)
+            candidate = ref_path if ref_path.is_absolute() else media_dir / ref_path
+
+        try:
+            resolved = candidate.resolve(strict=False)
+            resolved.relative_to(media_dir)
+        except ValueError as exc:
+            raise ValueError("参考图必须来自媒体资产目录") from exc
+
+        if owner_user_id is not None and not resolved.name.startswith(f"xhs-upload-u{owner_user_id}-"):
+            raise ValueError("参考图文件不存在或无权访问")
+        if not resolved.is_file():
+            if owner_user_id is not None:
+                raise ValueError("参考图文件不存在或无权访问")
+            raise ValueError(f"参考图文件不存在: {image_ref}")
+        return resolved
+
+    @staticmethod
+    def _mime_for_path(path: Path) -> str:
+        ext = path.suffix.lower().lstrip(".")
+        return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext, "application/octet-stream")
+
+    def _run_ai_app(self, *, base_url: str, api_key: str, webapp_id: str, node_info_list: list[dict[str, Any]]) -> dict[str, Any]:
+        # RunningHub requires apiKey both in the JSON body and Authorization header.
+        # This payload contains credentials; never persist/log it or include it in returned raw.
+        payload = {"apiKey": api_key, "webappId": webapp_id, "nodeInfoList": node_info_list}
+        response = self.session.post(
+            f"{base_url}/task/openapi/ai-app/run",
+            headers=self._headers(api_key),
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+        result = _load_json_response(response)
+        if not isinstance(result, dict) or result.get("code") != 0:
+            raise ValueError(f"RunningHub 任务启动失败: {self._message_from_payload(result)}")
+        return result
+
+    def _wait_for_success(self, *, base_url: str, api_key: str, task_id: str) -> str:
+        import time
+
+        for _ in range(self.max_poll_attempts):
+            # RunningHub requires apiKey both in the JSON body and Authorization header.
+            # This payload contains credentials; never persist/log it or include it in returned raw.
+            response = self.session.post(
+                f"{base_url}/task/openapi/status",
+                headers=self._headers(api_key),
+                json={"apiKey": api_key, "taskId": task_id},
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = _load_json_response(response)
+            if not isinstance(payload, dict) or payload.get("code") != 0:
+                raise ValueError(f"RunningHub 状态查询失败: {self._message_from_payload(payload)}")
+            status_value = payload.get("data")
+            if status_value == "SUCCESS":
+                return "SUCCESS"
+            if status_value == "FAILED":
+                raise ValueError("RunningHub 生成任务失败")
+            time.sleep(self.poll_interval_seconds)
+        raise TimeoutError("RunningHub 生成超时")
+
+    def _get_outputs(self, *, base_url: str, api_key: str, task_id: str) -> dict[str, Any]:
+        # RunningHub requires apiKey both in the JSON body and Authorization header.
+        # This payload contains credentials; never persist/log it or include it in returned raw.
+        response = self.session.post(
+            f"{base_url}/task/openapi/outputs",
+            headers=self._headers(api_key),
+            json={"apiKey": api_key, "taskId": task_id},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = _load_json_response(response)
+        if not isinstance(payload, dict) or payload.get("code") != 0:
+            raise ValueError(f"RunningHub 输出查询失败: {self._message_from_payload(payload)}")
+        return payload
+
+    @staticmethod
+    def _first_output_url(payload: dict[str, Any]) -> str:
+        outputs = payload.get("data")
+        if not isinstance(outputs, list):
+            raise ValueError("RunningHub output response missing data")
+        for item in outputs:
+            if isinstance(item, dict) and isinstance(item.get("fileUrl"), str) and item["fileUrl"]:
+                return item["fileUrl"]
+        raise ValueError("RunningHub output response missing fileUrl")
+
+    @staticmethod
+    def _message_from_payload(payload: Any) -> str:
+        if isinstance(payload, dict):
+            message = payload.get("msg") or payload.get("message") or payload.get("error")
+            if message:
+                return str(message)
+        return "unknown error"
+
+
 class OpenAICompatibleImageClient:
     def _validate(self, *, model_config: ModelConfig, api_key: str) -> None:
         if not model_config.base_url:
@@ -319,6 +563,7 @@ class OpenAICompatibleImageClient:
         api_key: str,
         prompt: str,
         reference_images: list[str] | None = None,
+        owner_user_id: int | None = None,
     ) -> dict[str, Any]:
         self._validate(model_config=model_config, api_key=api_key)
         endpoint = f"{model_config.base_url.rstrip('/')}/images/generations"

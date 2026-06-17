@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Optional
 
+import requests as http_requests
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -12,6 +14,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.core.security import encrypt_text
 from backend.app.models import DEFAULT_TEXT_MODEL_NAME, ModelConfig, User
 from backend.app.schemas.common import paginated
+from backend.app.services.ai_service import RUNNINGHUB_DEFAULT_BASE_URL
 
 router = APIRouter(prefix="/model-configs", tags=["model-configs"])
 
@@ -74,6 +77,14 @@ def _clear_default_for_type(db: Session, user_id: int, model_type: str) -> None:
         config.is_default = False
 
 
+def _redact_api_key(message: object, api_key: str) -> str:
+    redacted = str(message)
+    if api_key:
+        redacted = redacted.replace(api_key, "[REDACTED]")
+    redacted = re.sub(r"(?i)(api[_-]?key=)[^&\s\"'}]+", r"\1[REDACTED]", redacted)
+    return redacted
+
+
 @router.get("")
 def get_model_configs(
     model_type: Optional[str] = Query(default=None, pattern="^(text|image)$"),
@@ -125,16 +136,31 @@ def test_model_config(
     config = _get_owned_config(db, current_user, config_id)
     if not config.encrypted_api_key:
         return {"id": config.id, "status": "error", "message": "未配置 API Key"}
-    if not config.base_url:
-        return {"id": config.id, "status": "error", "message": "未配置 Base URL"}
+
+    if config.provider == "runninghub-ai-app" and config.model_type != "image":
+        return {
+            "id": config.id,
+            "status": "error",
+            "message": "RunningHub provider only supports image model configs",
+        }
 
     api_key = decrypt_text(config.encrypted_api_key)
-    base_url = config.base_url.rstrip("/")
+    if config.provider == "runninghub-ai-app":
+        base_url = (config.base_url or RUNNINGHUB_DEFAULT_BASE_URL).rstrip("/")
+    elif not config.base_url:
+        return {"id": config.id, "status": "error", "message": "未配置 Base URL"}
+    else:
+        base_url = config.base_url.rstrip("/")
 
     try:
-        import requests as http_requests
-
-        if config.model_type == "image":
+        if config.provider == "runninghub-ai-app":
+            resp = http_requests.get(
+                f"{base_url}/api/webapp/apiCallDemo",
+                headers={"Authorization": f"Bearer {api_key}", "Host": "www.runninghub.cn"},
+                params={"apiKey": api_key, "webappId": "2046760522573418497"},
+                timeout=15,
+            )
+        elif config.model_type == "image":
             resp = http_requests.post(
                 f"{base_url}/images/generations",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -152,15 +178,36 @@ def test_model_config(
         if resp.status_code < 400:
             try:
                 body = resp.json()
+                if config.provider == "runninghub-ai-app":
+                    if body.get("code") != 0 or not isinstance(body.get("data"), dict):
+                        message = body.get("msg") or body.get("message") or body
+                        return {
+                            "id": config.id,
+                            "status": "error",
+                            "message": _redact_api_key(f"RunningHub 连接失败: {message}", api_key)[:200],
+                        }
+                    return {"id": config.id, "status": "ok", "message": f"连接成功 ({resp.status_code})"}
                 if body.get("choices") or body.get("data") or body.get("object"):
                     return {"id": config.id, "status": "ok", "message": f"连接成功 ({resp.status_code})"}
-                return {"id": config.id, "status": "error", "message": f"响应格式异常: {resp.text[:150]}"}
+                return {
+                    "id": config.id,
+                    "status": "error",
+                    "message": _redact_api_key(f"响应格式异常: {resp.text[:150]}", api_key),
+                }
             except Exception:
-                return {"id": config.id, "status": "error", "message": f"响应非 JSON: {resp.text[:150]}"}
+                return {
+                    "id": config.id,
+                    "status": "error",
+                    "message": _redact_api_key(f"响应非 JSON: {resp.text[:150]}", api_key),
+                }
         else:
-            return {"id": config.id, "status": "error", "message": f"HTTP {resp.status_code}: {resp.text[:150]}"}
+            return {
+                "id": config.id,
+                "status": "error",
+                "message": _redact_api_key(f"HTTP {resp.status_code}: {resp.text[:150]}", api_key),
+            }
     except Exception as exc:
-        return {"id": config.id, "status": "error", "message": str(exc)[:200]}
+        return {"id": config.id, "status": "error", "message": _redact_api_key(exc, api_key)[:200]}
 
 
 @router.patch("/{config_id}")

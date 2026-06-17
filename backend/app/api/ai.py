@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any, Literal, Optional
 
@@ -13,7 +14,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
 from backend.app.models import AiDraft, AiGeneratedAsset, ModelConfig, Task, User
 from backend.app.schemas.common import paginated
-from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, TextAiClient
+from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -122,6 +123,22 @@ def _image_model_context(db: Session, current_user: User) -> tuple[ModelConfig, 
     return model_config, api_key
 
 
+def _image_client_for_model(model_config: ModelConfig, fallback_client: ImageAiClient) -> ImageAiClient:
+    if model_config.provider == "runninghub-ai-app":
+        return RunningHubImageClient()
+    return fallback_client
+
+
+def _redact_sensitive_text(message: str, sensitive_values: list[str] | None = None) -> str:
+    redacted = str(message)
+    for value in sensitive_values or []:
+        if value:
+            redacted = redacted.replace(value, "[REDACTED]")
+    redacted = re.sub(r"(?i)\b(apiKey|api_key)=([^&\s]+)", r"\1=[REDACTED]", redacted)
+    redacted = re.sub(r"(?i)(Authorization:\s*Bearer\s+)([^\s,;]+)", r"\1[REDACTED]", redacted)
+    return redacted
+
+
 def _serialize_generated_asset(asset: AiGeneratedAsset) -> dict[str, Any]:
     return {
         "id": asset.id,
@@ -180,6 +197,7 @@ def _recorded_image_task(
     task_type: str,
     payload: dict[str, Any],
     action: Callable[[], Any],
+    sensitive_values: list[str] | None = None,
 ):
     task = Task(
         user_id=current_user.id,
@@ -194,17 +212,19 @@ def _recorded_image_task(
     try:
         result = action()
     except ValueError as exc:
+        redacted_error = _redact_sensitive_text(str(exc), sensitive_values)
         task.status = "failed"
         task.progress = 100
-        task.payload = {**(task.payload or {}), "error": str(exc)}
+        task.payload = {**(task.payload or {}), "error": redacted_error}
         db.commit()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
     except Exception as exc:
+        redacted_error = _redact_sensitive_text(str(exc), sensitive_values)
         task.status = "failed"
         task.progress = 100
-        task.payload = {**(task.payload or {}), "error": str(exc)}
+        task.payload = {**(task.payload or {}), "error": redacted_error}
         db.commit()
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI image generation failed: {exc}") from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI image generation failed: {redacted_error}") from exc
 
     task.status = "completed"
     task.progress = 100
@@ -402,25 +422,27 @@ def generate_cover(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
 
     model_config, api_key = _image_model_context(db, current_user)
+    image_client = _image_client_for_model(model_config, image_ai_client)
     task, result = _recorded_image_task(
         db=db,
         current_user=current_user,
         task_type="ai_image_generate_cover",
         payload={"model_config_id": model_config.id, "prompt": payload.prompt, "size": payload.size, "style": payload.style},
-        action=lambda: image_ai_client.generate_cover(
+        action=lambda: image_client.generate_cover(
             model_config=model_config,
             api_key=api_key,
             prompt=payload.prompt,
             size=payload.size,
             style=payload.style,
         ),
+        sensitive_values=[api_key],
     )
     asset = AiGeneratedAsset(
         user_id=current_user.id,
         draft_id=payload.draft_id,
         prompt=payload.prompt,
         model_name=model_config.model_name,
-        params={"size": payload.size, "style": payload.style, "raw": result.get("raw")},
+        params={"provider": model_config.provider, "size": payload.size, "style": payload.style, "raw": result.get("raw")},
         file_path=result.get("url") or "",
     )
     db.add(asset)
@@ -439,17 +461,36 @@ def generate_image(
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
 ):
     model_config, api_key = _image_model_context(db, current_user)
+    image_client = _image_client_for_model(model_config, image_ai_client)
+
+    def run_generate_image():
+        reference_images = payload.reference_images or None
+        if model_config.provider == "runninghub-ai-app":
+            from backend.app.services.ai_service import RunningHubImageClient as RealRunningHubImageClient
+
+            for image_ref in reference_images or []:
+                RealRunningHubImageClient._resolve_local_image_path(image_ref, owner_user_id=current_user.id)
+            return image_client.generate_image(
+                model_config=model_config,
+                api_key=api_key,
+                prompt=payload.prompt,
+                reference_images=reference_images,
+                owner_user_id=current_user.id,
+            )
+        return image_client.generate_image(
+            model_config=model_config,
+            api_key=api_key,
+            prompt=payload.prompt,
+            reference_images=reference_images,
+        )
+
     task, result = _recorded_image_task(
         db=db,
         current_user=current_user,
         task_type="ai_image_generate",
         payload={"model_config_id": model_config.id, "prompt": payload.prompt, "reference_images": payload.reference_images},
-        action=lambda: image_ai_client.generate_image(
-            model_config=model_config,
-            api_key=api_key,
-            prompt=payload.prompt,
-            reference_images=payload.reference_images or None,
-        ),
+        action=run_generate_image,
+        sensitive_values=[api_key],
     )
     response_data: dict = {"url": result.get("url") or "", "raw": result.get("raw")}
     if payload.save_to_assets:
@@ -457,7 +498,11 @@ def generate_image(
             user_id=current_user.id,
             prompt=payload.prompt,
             model_name=model_config.model_name,
-            params={"reference_images": payload.reference_images, "raw": result.get("raw")},
+            params={
+                "provider": model_config.provider,
+                "reference_images": payload.reference_images,
+                "raw": result.get("raw"),
+            },
             file_path=result.get("url") or "",
         )
         db.add(asset)
@@ -479,17 +524,19 @@ def describe_image(
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
 ):
     model_config, api_key = _image_model_context(db, current_user)
+    image_client = _image_client_for_model(model_config, image_ai_client)
     task, text = _recorded_image_task(
         db=db,
         current_user=current_user,
         task_type="ai_image_describe",
         payload={"model_config_id": model_config.id, "image_url": payload.image_url, "instruction": payload.instruction},
-        action=lambda: image_ai_client.describe_image(
+        action=lambda: image_client.describe_image(
             model_config=model_config,
             api_key=api_key,
             image_url=payload.image_url,
             instruction=payload.instruction,
         ),
+        sensitive_values=[api_key],
     )
     task.payload = {**(task.payload or {}), "result_length": len(text)}
     db.commit()
