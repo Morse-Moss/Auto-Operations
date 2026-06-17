@@ -100,3 +100,13 @@ legacy 能力只在能提升主系统时接入。接入前必须先写设计，�
 - 密钥、token、密码不进代码。
 - 不自动 git push。
 - commit 只有在用户明确要求时执行，commit message 用英文，简洁描述变更意图。
+
+## Worktree 与分支管理
+
+- 根目录 `E:\小红书` 是主工作区；用户语境里的 `master` 默认指根目录主工作区，而不是 `.claude/worktrees/` 下的隔离副本。
+- `.claude/worktrees/<task-name>` 下的目录必须视为开发分支工作区，不得在汇报中称为“master 已完成”或暗示已合入根目录。
+- 新建或使用 worktree 时，分支名必须显式表达任务意图，格式建议为 `worktree-<task-name>`、`feature/<topic>` 或 `fix/<topic>`；禁止让多个 worktree 都停留在 `master` 这种不可区分状态。
+- 开始开发前必须先汇报当前工作区路径与当前分支；如果当前路径位于 `.claude/worktrees/`，同时说明“这是隔离 worktree，改动不会自动进入根目录 master”。
+- 交付前必须区分三种状态：`worktree 已验证`、`已合回根目录 master`、`根目录服务已重启验证`；未完成哪一步就明确说未完成。
+- 标准端口 `18080/18081` 默认代表根目录主工作区服务。若在 worktree 中临时启动服务，优先使用非标准端口，或明确说明端口当前指向哪个工作区。
+- 合并、覆盖根目录、停止根目录服务、删除 worktree 或删除分支前，必须获得用户明确授权。
