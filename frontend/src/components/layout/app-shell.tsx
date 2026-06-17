@@ -52,19 +52,22 @@ const { Sider, Header, Content } = Layout;
 const { Title, Text } = Typography;
 
 const mainNavItems: MenuProps["items"] = [
-  { key: "/platforms/xhs/dashboard", icon: <DashboardOutlined />, label: "总览" },
-  { key: "/platforms/xhs/accounts", icon: <SafetyCertificateOutlined />, label: "账号矩阵" },
-  { key: "/platforms/xhs/discovery", icon: <SearchOutlined />, label: "笔记发现" },
-  { key: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "数据抓取" },
-  { key: "/platforms/xhs/keywords", icon: <KeyOutlined />, label: "关键词组" },
-  { key: "/platforms/xhs/library", icon: <DatabaseOutlined />, label: "内容库" },
-  { key: "/platforms/xhs/drafts", icon: <FileTextOutlined />, label: "草稿工坊" },
-  { key: "/platforms/xhs/image-studio", icon: <StarOutlined />, label: "图片工坊" },
-  { key: "/platforms/xhs/video-studio", icon: <VideoCameraOutlined />, label: "视频工坊" },
-  { key: "/platforms/xhs/publish", icon: <SendOutlined />, label: "发布中心" },
-  { key: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "自动运营" },
-  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "分析中心" },
-  { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "竞品监控" },
+  { key: "/platform-select", icon: <DashboardOutlined />, label: "平台中心" },
+  { key: "/platforms/wechat-official/dashboard", icon: <DatabaseOutlined />, label: "公众号爆文" },
+  { type: "divider" },
+  { key: "/platforms/xhs/dashboard", icon: <DashboardOutlined />, label: "小红书总览" },
+  { key: "/platforms/xhs/accounts", icon: <SafetyCertificateOutlined />, label: "小红书账号矩阵" },
+  { key: "/platforms/xhs/discovery", icon: <SearchOutlined />, label: "小红书笔记发现" },
+  { key: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "小红书数据抓取" },
+  { key: "/platforms/xhs/keywords", icon: <KeyOutlined />, label: "小红书关键词组" },
+  { key: "/platforms/xhs/library", icon: <DatabaseOutlined />, label: "小红书内容库" },
+  { key: "/platforms/xhs/drafts", icon: <FileTextOutlined />, label: "小红书草稿工坊" },
+  { key: "/platforms/xhs/image-studio", icon: <StarOutlined />, label: "小红书图片工坊" },
+  { key: "/platforms/xhs/video-studio", icon: <VideoCameraOutlined />, label: "小红书视频工坊" },
+  { key: "/platforms/xhs/publish", icon: <SendOutlined />, label: "小红书发布中心" },
+  { key: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "小红书自动运营" },
+  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "小红书分析中心" },
+  { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "小红书竞品监控" },
 ];
 
 const footerNavItems: MenuProps["items"] = [
@@ -162,7 +165,7 @@ export function AppShell() {
           >
             <Space align="center" size={collapsed ? 0 : 8}>
               <img src="/logo.jpg" alt="Logo" style={{ width: 28, height: 28, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
-              {!collapsed && <span style={{ fontWeight: 600, fontSize: 14, color: "rgba(255,255,255,.85)" }}>Spider XHS</span>}
+              {!collapsed && <span style={{ fontWeight: 600, fontSize: 14, color: "rgba(255,255,255,.85)" }}>运营中台</span>}
             </Space>
             {!collapsed && <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={(e) => { e.stopPropagation(); setCollapsed(true); }} style={{ color: "rgba(255,255,255,.35)" }} />}
           </div>
