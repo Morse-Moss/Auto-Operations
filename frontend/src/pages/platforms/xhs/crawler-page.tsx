@@ -177,6 +177,7 @@ function qualityStatusLabel(status?: string): string {
   if (status === "invalid_source_url") return "链接缺参数";
   if (status === "empty_detail_payload") return "详情为空";
   if (status === "rate_limited") return "访问频繁";
+  if (status === "account_expired") return "登录过期";
   return status || "待确认";
 }
 
@@ -184,7 +185,7 @@ function qualityStatusTag(item: XhsDataCrawlItem) {
   const label = qualityStatusLabel(item.quality_status);
   if (item.quality_status === "valid_detail") return <Tag color="success">{label}</Tag>;
   if (item.quality_status === "search_card_only") return <Tag color="warning">{label}</Tag>;
-  if (item.quality_status === "rate_limited") return <Tag color="error">{label}</Tag>;
+  if (item.quality_status === "rate_limited" || item.quality_status === "account_expired") return <Tag color="error">{label}</Tag>;
   if (item.quality_status === "invalid_source_url" || item.quality_status === "empty_detail_payload") return <Tag color="warning">{label}</Tag>;
   return <Text type="secondary">{label}</Text>;
 }
@@ -192,6 +193,8 @@ function qualityStatusTag(item: XhsDataCrawlItem) {
 function diagnosticKindLabel(kind?: string | null): string {
   if (kind === "missing_xsec_token_short_explore") return "缺 xsec_token";
   if (kind === "xhs_rate_limited") return "访问频繁";
+  if (kind === "xhs_account_expired") return "登录过期";
+  if (kind === "search_api_failed") return "搜索接口失败";
   if (kind === "empty_detail_payload") return "详情为空";
   if (kind === "detail_api_failed") return "详情接口失败";
   if (kind === "invalid_note_identity") return "笔记 ID 异常";
@@ -201,7 +204,7 @@ function diagnosticKindLabel(kind?: string | null): string {
 function diagnosticKindTag(item: XhsDataCrawlItem) {
   const kind = item.diagnostic_kind || item.save_diagnostic_kind;
   if (!kind) return <Text type="secondary">-</Text>;
-  if (kind === "missing_xsec_token_short_explore") return <Tag color="error">{diagnosticKindLabel(kind)}</Tag>;
+  if (kind === "missing_xsec_token_short_explore" || kind === "xhs_account_expired" || kind === "search_api_failed") return <Tag color="error">{diagnosticKindLabel(kind)}</Tag>;
   if (kind === "xhs_rate_limited") return <Tag color="warning">{diagnosticKindLabel(kind)}</Tag>;
   return <Tag color="default">{diagnosticKindLabel(kind)}</Tag>;
 }
@@ -296,6 +299,8 @@ export function XhsCrawlerPage() {
   const [error, setError] = useState<string | null>(null);
 
   const pcAccounts = useMemo(() => accounts.filter((a) => a.platform === "xhs" && a.sub_type === "pc"), [accounts]);
+  const activePcAccounts = useMemo(() => pcAccounts.filter((a) => a.status === "active"), [pcAccounts]);
+  const selectedAccount = useMemo(() => pcAccounts.find((account) => account.id === selectedAccountId) || null, [pcAccounts, selectedAccountId]);
   const selectedKeywordGroup = useMemo(() => keywordGroups.find((group) => group.id === selectedKeywordGroupId) || null, [keywordGroups, selectedKeywordGroupId]);
   const isKeywordGroupMode = crawlChannel === "keyword_group";
   const commentRateLimitedCount = useMemo(() => items.filter((item) => item.comment_status === "rate_limited").length, [items]);
@@ -309,8 +314,12 @@ export function XhsCrawlerPage() {
     try {
       const loaded = await fetchAccounts("xhs");
       setAccounts(loaded);
-      const first = loaded.find((a) => a.sub_type === "pc");
-      setSelectedAccountId((c) => c ?? first?.id ?? null);
+      const pc = loaded.filter((a) => a.sub_type === "pc");
+      const active = pc.filter((a) => a.status === "active");
+      setSelectedAccountId((current) => {
+        if (current && active.some((account) => account.id === current)) return current;
+        return active[0]?.id ?? pc[0]?.id ?? null;
+      });
     } catch { setError("账号列表加载失败。"); }
     finally { setIsLoadingAccounts(false); }
   }
@@ -337,7 +346,8 @@ export function XhsCrawlerPage() {
     setError(null);
     setSummaryMessage(null);
     setKeywordGroupSummary(null);
-    if (!selectedAccountId) { setError("请先选择一个 PC 账号。"); return; }
+    if (!selectedAccountId) { setError("请先选择一个可用的 PC 账号。"); return; }
+    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到 active 账号或重新登录。"); return; }
     if (!selectedKeywordGroupId) { setError("请先选择一个关键词组。"); return; }
     setIsRunning(true);
     setItems([]);
@@ -380,7 +390,8 @@ export function XhsCrawlerPage() {
     setSummaryMessage(null);
     setKeywordGroupSummary(null);
     if (isKeywordGroupMode) { await handleSimpleRun(); return; }
-    if (!selectedAccountId) { setError("请先选择一个 PC 账号。"); return; }
+    if (!selectedAccountId) { setError("请先选择一个可用的 PC 账号。"); return; }
+    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到 active 账号或重新登录。"); return; }
     const parsedUrls = splitUrls(urls);
     if (mode !== "search" && parsedUrls.length === 0) { setError("请至少输入一个笔记链接。"); return; }
     if (mode === "search" && !keyword.trim()) { setError("请填写搜索关键词。"); return; }
@@ -469,7 +480,12 @@ export function XhsCrawlerPage() {
                   value={selectedAccountId}
                   onChange={setSelectedAccountId}
                   placeholder="选择 PC 账号"
-                  options={pcAccounts.map((a) => ({ value: a.id, label: `${a.nickname || `PC 账号 ${a.id}`} · ${a.status}` }))}
+                  status={selectedAccount?.status === "expired" ? "error" : undefined}
+                  options={[...activePcAccounts, ...pcAccounts.filter((a) => a.status !== "active")].map((a) => ({
+                    value: a.id,
+                    label: `${a.nickname || `PC 账号 ${a.id}`} · ${a.status}`,
+                    disabled: a.status === "expired",
+                  }))}
                 />
               </Form.Item>
             </Col>

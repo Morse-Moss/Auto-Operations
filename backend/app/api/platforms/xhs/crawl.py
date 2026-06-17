@@ -195,11 +195,33 @@ def _quality_item_fields(quality: dict[str, Any], *, saved: bool = False, save_d
 
 
 def _diagnostic_severity(kind: str | None) -> str:
-    if kind == "xhs_rate_limited":
+    if kind in {"xhs_rate_limited", "xhs_account_expired"}:
         return "blocked"
-    if kind in {"missing_xsec_token_short_explore", "detail_api_failed", "invalid_note_identity"}:
+    if kind in {"missing_xsec_token_short_explore", "detail_api_failed", "invalid_note_identity", "search_api_failed"}:
         return "error"
     return "warning"
+
+
+def _search_failure_kind(message: str, raw_payload: object | None) -> str:
+    raw_message = ""
+    raw_code: object | None = None
+    if isinstance(raw_payload, dict):
+        raw_message = str(raw_payload.get("msg") or raw_payload.get("message") or "")
+        raw_code = raw_payload.get("code")
+    combined = f"{message} {raw_message}"
+    if raw_code == -100 or "登录已过期" in combined or "��¼�ѹ���" in combined:
+        return "xhs_account_expired"
+    if is_xhs_rate_limit_signal(message=combined):
+        return "xhs_rate_limited"
+    return "search_api_failed"
+
+
+def _search_failure_user_message(kind: str) -> str:
+    if kind == "xhs_account_expired":
+        return "小红书账号登录已过期。请到账号矩阵重新登录或更新 PC Cookie 后再采集。"
+    if kind == "xhs_rate_limited":
+        return build_user_message("xhs_rate_limited", "rate_limited")
+    return "搜索接口返回失败，请稍后重试；如果连续失败，请到账号矩阵检查账号登录状态。"
 
 
 def _record_crawl_diagnostic(
@@ -424,6 +446,8 @@ def _owned_pc_account(db: Session, current_user: User, account_id: int) -> Platf
         or account.sub_type != "pc"
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    if account.status == "expired":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="小红书 PC 账号登录已过期，请重新登录或更新 Cookie 后再采集")
     return account
 
 
@@ -717,20 +741,35 @@ def crawl_keyword_group(
                     geo="",
                 )
                 if not success:
-                    kind = "xhs_rate_limited" if is_xhs_rate_limit_signal(message=message) else "search_api_failed"
+                    kind = _search_failure_kind(message or "", raw_payload)
                     skipped_count += 1
                     if kind == "xhs_rate_limited":
                         rate_limited_count += 1
                         should_stop = True
+                    user_message = _search_failure_user_message(kind)
+                    _record_crawl_diagnostic(
+                        db,
+                        current_user=current_user,
+                        task=task,
+                        account=account,
+                        source=keyword,
+                        note=None,
+                        stage="search",
+                        kind=kind,
+                        message=message or "search failed",
+                        user_message=user_message,
+                        recoverable=kind != "xhs_account_expired",
+                        raw_payload=raw_payload or {},
+                    )
                     item = _crawl_data_item(
                         source=keyword,
                         status="failed",
-                        error=message or "search failed",
+                        error=user_message,
                         keyword=keyword,
-                        quality_status="rate_limited" if kind == "xhs_rate_limited" else "unknown",
+                        quality_status="rate_limited" if kind == "xhs_rate_limited" else "account_expired" if kind == "xhs_account_expired" else "unknown",
                         diagnostic_kind=kind,
-                        recoverable=True,
-                        user_message=build_user_message("xhs_rate_limited", "rate_limited") if kind == "xhs_rate_limited" else "搜索接口返回失败，请稍后重试。",
+                        recoverable=kind != "xhs_account_expired",
+                        user_message=user_message,
                     )
                     items.append(item)
                     yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})

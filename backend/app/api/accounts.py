@@ -99,7 +99,10 @@ def get_accounts(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    statement = select(PlatformAccount).where(PlatformAccount.user_id == current_user.id)
+    statement = select(PlatformAccount).where(
+        PlatformAccount.user_id == current_user.id,
+        PlatformAccount.status != "deleted",
+    )
     if platform:
         statement = statement.where(PlatformAccount.platform == platform)
     accounts = db.scalars(statement.order_by(PlatformAccount.created_at.desc())).all()
@@ -170,7 +173,7 @@ def check_account(
     self_profile_adapter: XhsSelfProfileAdapter = Depends(get_xhs_self_profile_adapter),
 ):
     account = db.get(PlatformAccount, account_id)
-    if account is None or account.user_id != current_user.id:
+    if account is None or account.user_id != current_user.id or account.status == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
 
     cookie_version = db.scalars(
@@ -239,12 +242,14 @@ def delete_account(
     db: Session = Depends(get_db),
 ):
     account = db.get(PlatformAccount, account_id)
-    if account is None or account.user_id != current_user.id:
+    if account is None or account.user_id != current_user.id or account.status == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     for cookie_version in db.scalars(
         select(AccountCookieVersion).where(AccountCookieVersion.platform_account_id == account.id)
     ).all():
         db.delete(cookie_version)
-    db.delete(account)
+    account.status = "deleted"
+    account.status_message = "Account credentials deleted by user"
+    account.updated_at = shanghai_now()
     db.commit()
     return {"id": account_id, "status": "deleted"}

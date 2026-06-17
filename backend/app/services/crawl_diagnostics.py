@@ -111,9 +111,13 @@ def _top_level_error_code(value: object) -> object | None:
         return None
     if value.get("error_code") is not None:
         return value.get("error_code")
+    if value.get("code") is not None:
+        return value.get("code")
     data = value.get("data")
     if isinstance(data, dict):
-        return data.get("error_code")
+        if data.get("error_code") is not None:
+            return data.get("error_code")
+        return data.get("code")
     return None
 
 
