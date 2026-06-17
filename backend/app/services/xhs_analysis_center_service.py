@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -23,6 +24,10 @@ STANDARD_THRESHOLDS = {
     "keyword_coverage": 5,
     "high_engagement_notes": 3,
 }
+
+PROMPT_NOTE_LIMIT = 8
+PROMPT_COMMENT_LIMIT = 16
+PROMPT_COMMENT_PER_NOTE_LIMIT = 4
 
 
 @dataclass(frozen=True)
@@ -296,8 +301,18 @@ class XhsAnalysisCenterService:
             self._require_evidence(item, known_ids, "summary recommendations")
         for card in insight_cards:
             self._validate_insight_card(card, known_ids, confidence_cap)
+        topic_to_insight: dict[Any, Any] = {}
+        insight_evidence_by_id: dict[Any, list[Any]] = {}
+        for card in insight_cards:
+            insight_evidence_by_id[card.get("id")] = card.get("evidence_ids", [])
+            for topic_id in card.get("topic_card_ids", []):
+                topic_to_insight.setdefault(topic_id, card.get("id"))
         topic_ids = {card.get("id") for card in topic_cards if isinstance(card, dict)}
         for card in topic_cards:
+            if isinstance(card, dict) and not card.get("insight_id") and card.get("id") in topic_to_insight:
+                card["insight_id"] = topic_to_insight[card.get("id")]
+            if isinstance(card, dict) and not card.get("evidence_ids") and card.get("insight_id") in insight_evidence_by_id:
+                card["evidence_ids"] = insight_evidence_by_id[card.get("insight_id")]
             self._validate_topic_card(card, known_ids)
         for card in insight_cards:
             for topic_id in card.get("topic_card_ids", []):
@@ -326,9 +341,25 @@ class XhsAnalysisCenterService:
             if evidence_id not in known_ids:
                 raise AnalysisValidationError(f"Unknown evidence_id: {evidence_id}")
 
-    def _validate_score(self, value: Any, label: str) -> None:
-        if not isinstance(value, int) or value < 0 or value > 100:
+    def _normalize_score(self, value: Any, label: str, fallback: int | None = None) -> int:
+        if value is None and fallback is not None:
+            return fallback
+        if isinstance(value, bool):
             raise AnalysisValidationError(f"{label} must be an integer from 0 to 100")
+        if isinstance(value, int):
+            score = value
+        elif isinstance(value, float):
+            score = round(value)
+        elif isinstance(value, str):
+            match = re.search(r"\d+(?:\.\d+)?", value.strip())
+            if not match:
+                raise AnalysisValidationError(f"{label} must be an integer from 0 to 100")
+            score = round(float(match.group(0)))
+        else:
+            raise AnalysisValidationError(f"{label} must be an integer from 0 to 100")
+        if score < 0 or score > 100:
+            raise AnalysisValidationError(f"{label} must be an integer from 0 to 100")
+        return score
 
     def _validate_insight_card(self, card: dict[str, Any], known_ids: set[str], confidence_cap: str) -> None:
         if not isinstance(card, dict):
@@ -336,12 +367,13 @@ class XhsAnalysisCenterService:
         for key in ["id", "title", "confidence", "confidence_reason", "evidence_ids", "topic_card_ids"]:
             if key not in card:
                 raise AnalysisValidationError(f"Missing insight card field: {key}")
-        self._validate_score(card.get("score"), "insight score")
+        card["score"] = self._normalize_score(card.get("score"), "insight score")
         sub_scores = card.get("sub_scores")
         if not isinstance(sub_scores, dict):
-            raise AnalysisValidationError("sub_scores must be an object")
+            sub_scores = {}
+            card["sub_scores"] = sub_scores
         for key in ["traffic_potential", "demand_strength", "competition_pressure", "actionability"]:
-            self._validate_score(sub_scores.get(key), f"sub_scores.{key}")
+            sub_scores[key] = self._normalize_score(sub_scores.get(key), f"sub_scores.{key}", fallback=card["score"])
         confidence = card.get("confidence")
         if confidence not in ["low", "medium", "high"]:
             raise AnalysisValidationError("Invalid confidence")
@@ -352,9 +384,40 @@ class XhsAnalysisCenterService:
             raise AnalysisValidationError("topic_card_ids must be a list")
         self._require_evidence(card, known_ids, "insight card")
 
+    def _first_text(self, source: dict[str, Any], keys: list[str], default: str = "") -> str:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return default
+
+    def _as_text_list(self, value: Any, default: list[str]) -> list[str]:
+        if isinstance(value, list):
+            items = [str(item).strip() for item in value if str(item).strip()]
+            return items or default
+        if isinstance(value, str) and value.strip():
+            parts = [item.strip() for item in re.split(r"[\n；;]", value) if item.strip()]
+            return parts or [value.strip()]
+        return default
+
+    def _normalize_topic_card_shape(self, card: dict[str, Any]) -> None:
+        card["title_direction"] = self._first_text(card, ["title_direction", "title", "direction", "topic", "content_angle"], "基于证据的选题方向")
+        card["target_pain"] = self._first_text(card, ["target_pain", "pain", "pain_point", "user_pain", "demand"], card["title_direction"])
+        card["content_angle"] = self._first_text(card, ["content_angle", "angle", "content_topic"], card["title_direction"])
+        card["recommended_structure"] = self._as_text_list(
+            card.get("recommended_structure"),
+            ["痛点开场", "结合证据拆解原因", "给出可执行步骤", "收束到适用人群"],
+        )
+        card["recommended_content_form"] = self._as_text_list(card.get("recommended_content_form"), ["图文笔记"])
+        card["tags"] = self._as_text_list(card.get("tags"), [])
+        card["cover_suggestion"] = self._first_text(card, ["cover_suggestion", "cover", "cover_title"], card["title_direction"])
+        card["expected_advantage"] = self._first_text(card, ["expected_advantage", "advantage", "expected_value", "value"], "基于已有高互动证据切入，降低选题试错成本。")
+        card["risk_warning"] = self._first_text(card, ["risk_warning", "risk", "warning"], "样本置信度受数据范围限制，发布前复核最新评论。")
+
     def _validate_topic_card(self, card: dict[str, Any], known_ids: set[str]) -> None:
         if not isinstance(card, dict):
             raise AnalysisValidationError("topic card must be an object")
+        self._normalize_topic_card_shape(card)
         required = [
             "id",
             "insight_id",
@@ -537,19 +600,79 @@ class XhsAnalysisCenterService:
                 "如果证据不足，少输出或降低置信度，不要补全。",
                 "输出必须是符合 JSON Schema 的 JSON，不要 Markdown。",
                 "必须区分 facts、inferences、recommendations。",
+                "保持精简：summary 每类最多 3 条，insight_cards 最多 3 个，topic_cards 总数最多 6 个。每个字段用短句，不要长篇解释。",
             ]
         )
+
+    def _prompt_evidence_pool(self, evidence_pool: dict[str, Any]) -> dict[str, Any]:
+        notes = evidence_pool.get("notes") if isinstance(evidence_pool.get("notes"), list) else []
+        comments = evidence_pool.get("comments") if isinstance(evidence_pool.get("comments"), list) else []
+        keywords = evidence_pool.get("keywords") if isinstance(evidence_pool.get("keywords"), list) else []
+        metrics = evidence_pool.get("metrics") if isinstance(evidence_pool.get("metrics"), list) else []
+        benchmarks = evidence_pool.get("benchmarks") if isinstance(evidence_pool.get("benchmarks"), list) else []
+
+        prompt_notes = sorted(
+            [item for item in notes if isinstance(item, dict)],
+            key=lambda item: int(item.get("engagement") or 0),
+            reverse=True,
+        )[:PROMPT_NOTE_LIMIT]
+        prompt_note_ids = {item.get("note_id") for item in prompt_notes}
+
+        comment_candidates = [item for item in comments if isinstance(item, dict)]
+        preferred_comments = [item for item in comment_candidates if item.get("signals")]
+        fallback_comments = [item for item in comment_candidates if not item.get("signals")]
+        ranked_comments = sorted(
+            preferred_comments,
+            key=lambda item: (int(item.get("like_count") or 0), str(item.get("evidence_id") or "")),
+            reverse=True,
+        ) + sorted(
+            fallback_comments,
+            key=lambda item: (int(item.get("like_count") or 0), str(item.get("evidence_id") or "")),
+            reverse=True,
+        )
+        prompt_comments: list[dict[str, Any]] = []
+        comment_counts_by_note: dict[Any, int] = {}
+        for comment in ranked_comments:
+            note_id = comment.get("note_id")
+            if prompt_note_ids and note_id not in prompt_note_ids and len(prompt_comments) >= PROMPT_COMMENT_LIMIT // 2:
+                continue
+            if comment_counts_by_note.get(note_id, 0) >= PROMPT_COMMENT_PER_NOTE_LIMIT:
+                continue
+            prompt_comments.append(comment)
+            comment_counts_by_note[note_id] = comment_counts_by_note.get(note_id, 0) + 1
+            if len(prompt_comments) >= PROMPT_COMMENT_LIMIT:
+                break
+
+        return {
+            "notes": prompt_notes,
+            "comments": prompt_comments,
+            "keywords": keywords,
+            "metrics": metrics,
+            "benchmarks": benchmarks,
+            "prompt_sampling": {
+                "notes_in_prompt": len(prompt_notes),
+                "total_notes": len(notes),
+                "comments_in_prompt": len(prompt_comments),
+                "total_comments": len(comments),
+                "rule": "Prompt uses high-engagement notes and representative comments only; full evidence_pool is stored in the report and all evidence_id references are validated against the full pool.",
+            },
+        }
 
     def _analysis_user_prompt(self, *, health: dict[str, Any], evidence_pool: dict[str, Any], input_config: dict[str, Any]) -> str:
         import json
 
         schema_hint = {
-            "summary": {"facts": [], "inferences": [], "recommendations": []},
-            "insight_cards": "最多 5 个，每个包含 score/sub_scores/confidence/evidence_ids/topic_card_ids",
-            "topic_cards": "每个洞察最多 3 个，总数最多 15 个",
+            "summary": {"facts": "最多 3 条", "inferences": "最多 3 条", "recommendations": "最多 3 条"},
+            "insight_cards": "最多 3 个，每个包含 id/title/score/sub_scores/confidence/confidence_reason/evidence_ids/topic_card_ids",
+            "topic_cards": "总数最多 6 个，字段完整但内容精简",
             "report_warnings": [],
         }
-        payload = {"data_health": health, "input_config": input_config, "evidence_pool": evidence_pool, "required_shape": schema_hint}
+        payload = {
+            "data_health": health,
+            "input_config": input_config,
+            "evidence_pool": self._prompt_evidence_pool(evidence_pool),
+            "required_shape": schema_hint,
+        }
         return json.dumps(payload, ensure_ascii=False)
 
     def create_collection_plan(self, *, metrics: dict[str, int], keywords: list[str]) -> dict[str, Any]:
