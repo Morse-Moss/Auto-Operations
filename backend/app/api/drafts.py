@@ -188,6 +188,11 @@ def send_draft_to_publish(
     draft = db.get(AiDraft, draft_id)
     if draft is None or draft.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
+    if draft.platform == "wechat_official":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="微信公众号发布/群发本阶段保持阻断，请使用 dry-run/草稿工作台",
+        )
 
     account_id: Optional[int] = None
     if payload.platform_account_id is not None:

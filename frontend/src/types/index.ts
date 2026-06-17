@@ -59,6 +59,259 @@ export type WechatOfficialOverview = {
   blocked_actions: string[];
 };
 
+export type WechatOfficialListResponse<T> = {
+  total: number;
+  items: T[];
+  page?: number;
+  page_size?: number;
+};
+
+export type WechatOfficialBackendSession = {
+  id: number;
+  account_id: number;
+  biz?: string;
+  nickname?: string;
+  status: "pending" | "valid" | "expired" | "invalid" | string;
+  expires_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type WechatOfficialQrLoginSession = {
+  login_session_id: number;
+  qrcode_url: string;
+  status: "pending" | "valid" | "expired" | string;
+};
+
+export type WechatOfficialBackendLoginCompletePayload = {
+  cookie: string;
+  token: string;
+  auth_key: string;
+  biz?: string;
+  nickname?: string;
+  user_agent?: string;
+  expires_at?: string | null;
+};
+
+export type WechatOfficialCredentialGuide = {
+  title: string;
+  expected_fields: string[];
+  steps: string[];
+  risk_warnings: string[];
+};
+
+export type WechatOfficialCredentialImportPayload = {
+  biz: string;
+  uin: string;
+  key: string;
+  pass_ticket: string;
+  wap_sid2: string;
+  appmsg_token: string;
+  cookie: string;
+  timestamp: number | string;
+  nickname?: string;
+  article_url?: string;
+  captured_at?: string | null;
+};
+
+export type WechatOfficialCredentialValidatePayload = Partial<WechatOfficialCredentialImportPayload>;
+
+export type WechatOfficialCredentialValidation = {
+  valid: boolean;
+  missing_fields: string[];
+  expected_fields: string[];
+};
+
+export type WechatOfficialCredential = {
+  id: number;
+  account_id: number;
+  biz?: string;
+  nickname?: string;
+  status: "valid" | "expired" | "invalid" | string;
+  valid: boolean;
+  expires_at?: string | null;
+  capabilities: string[];
+  article_url?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type WechatOfficialProxy = {
+  id: number;
+  name: string;
+  endpoint: string;
+  enabled: boolean;
+  status: "active" | "cooldown" | "disabled" | string;
+  last_error?: string;
+  type: "direct" | "public_reference" | "custom" | string;
+  supports_sensitive_requests: boolean;
+  success_count: number;
+  failure_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type WechatOfficialProxyTestPayload = {
+  request_type?: "public" | "sensitive" | string;
+  success?: boolean;
+  error_message?: string;
+};
+
+export type WechatOfficialCrawlAccount = {
+  id: number;
+  name: string;
+  biz?: string;
+  fake_id?: string;
+  alias?: string;
+  status: "active" | "login_pending" | "expired" | string;
+  raw?: Record<string, unknown>;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type WechatOfficialCrawlJob = {
+  id: number;
+  status: "running" | "succeeded" | "failed" | string;
+  requested_limit: number;
+  fetched_count: number;
+  saved_count: number;
+};
+
+export type WechatOfficialArticleMetric = {
+  id: number;
+  article_id: number;
+  read_count: number;
+  like_count: number;
+  wow_count: number;
+  share_count: number;
+  comment_count: number;
+  captured_at?: string | null;
+};
+
+export type WechatOfficialArticleAnalysis = {
+  recommendation_status?: string;
+  low_follower_evidence?: boolean;
+  low_follower_note?: string;
+  business_direction?: string;
+  title_type?: string;
+  article_type_label?: string;
+  viral_factors?: string[];
+  core_insight?: string;
+  case_info?: Record<string, unknown>;
+  customer_conversion_method?: string;
+  [key: string]: unknown;
+};
+
+export type WechatOfficialArticle = {
+  id: number;
+  account_id?: number | null;
+  job_id?: number | null;
+  article_url: string;
+  title: string;
+  digest: string;
+  author_name?: string;
+  cover_url?: string;
+  content_url?: string;
+  publish_time_remote?: string | null;
+  latest_metric?: WechatOfficialArticleMetric | null;
+  analysis?: WechatOfficialArticleAnalysis;
+  is_candidate: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type WechatOfficialContentLibraryItem = WechatOfficialArticle;
+
+export type WechatOfficialSearchAccountsPayload = {
+  backend_session_id: number;
+  keyword: string;
+  upstream_payload?: Record<string, unknown>;
+};
+
+export type WechatOfficialArticleSyncPayload = {
+  backend_session_id: number;
+  account_id?: number | null;
+  keyword?: string;
+  limit?: number;
+  upstream_payload?: Record<string, unknown>;
+};
+
+export type WechatOfficialArticleSyncResponse = {
+  job: WechatOfficialCrawlJob;
+  items: WechatOfficialArticle[];
+};
+
+export type WechatOfficialArticleSnapshotPayload = {
+  html: string;
+};
+
+export type WechatOfficialArticleSnapshot = {
+  id: number;
+  article_id: number;
+  status: "captured" | "empty" | "failed" | string;
+  text: string;
+  comment_id?: string;
+};
+
+export type WechatOfficialArticleMetricsPayload = {
+  credential_id: number;
+  html?: string | null;
+  cgi_data?: Record<string, unknown> | null;
+};
+
+export type WechatOfficialArticleCommentsPayload = {
+  comments_payload?: Record<string, unknown>;
+  limit?: number;
+};
+
+export type WechatOfficialArticleComment = {
+  comment_id: string;
+  db_id?: number;
+  user_name?: string;
+  user_id?: string;
+  content: string;
+  like_count?: number;
+  created_at_remote?: string;
+  replies?: Array<Record<string, unknown>>;
+  raw?: Record<string, unknown>;
+};
+
+export type WechatOfficialRecommendationUpdatePayload = {
+  recommendation_status?: string | null;
+  low_follower_evidence?: boolean | null;
+  low_follower_note?: string | null;
+  business_direction?: string | null;
+  title_type?: string | null;
+  article_type_label?: string | null;
+  viral_factors?: string[] | null;
+  core_insight?: string | null;
+  case_info?: Record<string, unknown> | null;
+  customer_conversion_method?: string | null;
+};
+
+export type WechatOfficialCreateDraftPayload = {
+  rewrite_style?: string;
+  target_audience?: string;
+  call_to_action?: string;
+};
+
+export type WechatOfficialDraft = Draft & {
+  platform: "wechat_official";
+};
+
+export type WechatOfficialDraftDryRunPayload = {
+  title?: string | null;
+  body?: string | null;
+};
+
+export type WechatOfficialDraftDryRun = {
+  draft_id: number;
+  ok: boolean;
+  publish_blocked: boolean;
+  sendall_blocked: boolean;
+  checks: Record<string, "ok" | "missing" | "blocked" | "warning" | string>;
+};
+
 export type Paginated<T> = {
   total: number;
   page: number;

@@ -73,7 +73,34 @@ import type {
   UserImageFile,
   TagPayload,
   TaskRecord,
+  WechatOfficialArticleComment,
+  WechatOfficialArticleCommentsPayload,
+  WechatOfficialArticleMetric,
+  WechatOfficialArticleMetricsPayload,
+  WechatOfficialArticleSnapshot,
+  WechatOfficialArticleSnapshotPayload,
+  WechatOfficialArticleSyncPayload,
+  WechatOfficialArticleSyncResponse,
+  WechatOfficialBackendLoginCompletePayload,
+  WechatOfficialBackendSession,
+  WechatOfficialContentLibraryItem,
+  WechatOfficialCreateDraftPayload,
+  WechatOfficialCrawlAccount,
+  WechatOfficialCredential,
+  WechatOfficialCredentialGuide,
+  WechatOfficialCredentialImportPayload,
+  WechatOfficialCredentialValidatePayload,
+  WechatOfficialCredentialValidation,
+  WechatOfficialDraft,
+  WechatOfficialDraftDryRun,
+  WechatOfficialDraftDryRunPayload,
+  WechatOfficialListResponse,
   WechatOfficialOverview,
+  WechatOfficialProxy,
+  WechatOfficialProxyTestPayload,
+  WechatOfficialQrLoginSession,
+  WechatOfficialRecommendationUpdatePayload,
+  WechatOfficialSearchAccountsPayload,
   XhsNoteSearchResponse,
   XhsDataCrawlItem,
   XhsDataCrawlPayload,
@@ -222,6 +249,160 @@ export async function fetchXhsOverview(): Promise<DashboardOverview> {
 
 export async function fetchWechatOfficialOverview(): Promise<WechatOfficialOverview> {
   const response = await http.get<WechatOfficialOverview>("/wechat-official/overview");
+  return response.data;
+}
+
+export async function startWechatOfficialQrLogin(): Promise<WechatOfficialQrLoginSession> {
+  const response = await http.post<WechatOfficialQrLoginSession>("/wechat-official/accounts/login/qrcode");
+  return response.data;
+}
+
+export async function completeWechatOfficialQrLogin(
+  loginSessionId: number,
+  payload: WechatOfficialBackendLoginCompletePayload
+): Promise<WechatOfficialBackendSession> {
+  const response = await http.post<WechatOfficialBackendSession>(
+    `/wechat-official/accounts/login/${loginSessionId}/complete`,
+    payload
+  );
+  return response.data;
+}
+
+export async function fetchWechatOfficialSessions(): Promise<WechatOfficialListResponse<WechatOfficialBackendSession>> {
+  const response = await http.get<WechatOfficialListResponse<WechatOfficialBackendSession>>(
+    "/wechat-official/accounts/sessions"
+  );
+  return response.data;
+}
+
+export async function fetchWechatOfficialCredentialGuide(): Promise<WechatOfficialCredentialGuide> {
+  const response = await http.get<WechatOfficialCredentialGuide>("/wechat-official/credentials/guide");
+  return response.data;
+}
+
+export async function importWechatOfficialCredential(
+  payload: WechatOfficialCredentialImportPayload
+): Promise<WechatOfficialCredential> {
+  const response = await http.post<WechatOfficialCredential>("/wechat-official/credentials/import", payload);
+  return response.data;
+}
+
+export async function validateWechatOfficialCredential(
+  payload: WechatOfficialCredentialValidatePayload
+): Promise<WechatOfficialCredentialValidation> {
+  const response = await http.post<WechatOfficialCredentialValidation>("/wechat-official/credentials/validate", payload);
+  return response.data;
+}
+
+export async function fetchWechatOfficialCredentials(): Promise<WechatOfficialListResponse<WechatOfficialCredential>> {
+  const response = await http.get<WechatOfficialListResponse<WechatOfficialCredential>>("/wechat-official/credentials");
+  return response.data;
+}
+
+export async function fetchWechatOfficialProxies(): Promise<WechatOfficialListResponse<WechatOfficialProxy>> {
+  const response = await http.get<WechatOfficialListResponse<WechatOfficialProxy>>("/wechat-official/proxies");
+  return response.data;
+}
+
+export async function testWechatOfficialProxy(
+  proxyId: number,
+  payload: WechatOfficialProxyTestPayload
+): Promise<WechatOfficialProxy> {
+  const response = await http.post<WechatOfficialProxy>(`/wechat-official/proxies/${proxyId}/test`, payload);
+  return response.data;
+}
+
+export async function searchWechatOfficialAccounts(
+  payload: WechatOfficialSearchAccountsPayload
+): Promise<WechatOfficialListResponse<WechatOfficialCrawlAccount>> {
+  const response = await http.post<WechatOfficialListResponse<WechatOfficialCrawlAccount>>(
+    "/wechat-official/crawl/accounts/search",
+    payload
+  );
+  return response.data;
+}
+
+export async function syncWechatOfficialArticles(
+  payload: WechatOfficialArticleSyncPayload
+): Promise<WechatOfficialArticleSyncResponse> {
+  const response = await http.post<WechatOfficialArticleSyncResponse>("/wechat-official/crawl/articles/sync", payload);
+  return response.data;
+}
+
+export async function captureWechatOfficialArticleSnapshot(
+  articleId: number,
+  payload: WechatOfficialArticleSnapshotPayload
+): Promise<WechatOfficialArticleSnapshot> {
+  const response = await http.post<WechatOfficialArticleSnapshot>(
+    `/wechat-official/crawl/articles/${articleId}/snapshot`,
+    payload
+  );
+  return response.data;
+}
+
+export async function captureWechatOfficialArticleMetrics(
+  articleId: number,
+  payload: WechatOfficialArticleMetricsPayload
+): Promise<WechatOfficialArticleMetric> {
+  const response = await http.post<WechatOfficialArticleMetric>(
+    `/wechat-official/crawl/articles/${articleId}/metrics`,
+    payload
+  );
+  return response.data;
+}
+
+export async function captureWechatOfficialArticleComments(
+  articleId: number,
+  payload: WechatOfficialArticleCommentsPayload
+): Promise<WechatOfficialListResponse<WechatOfficialArticleComment>> {
+  const response = await http.post<WechatOfficialListResponse<WechatOfficialArticleComment>>(
+    `/wechat-official/crawl/articles/${articleId}/comments`,
+    payload
+  );
+  return response.data;
+}
+
+export async function fetchWechatOfficialContentLibrary(params?: {
+  viral_only?: boolean;
+  min_read_count?: number;
+  low_follower_evidence?: boolean;
+  recommendation_status?: string;
+  keyword?: string;
+}): Promise<WechatOfficialListResponse<WechatOfficialContentLibraryItem>> {
+  const response = await http.get<WechatOfficialListResponse<WechatOfficialContentLibraryItem>>(
+    "/wechat-official/content-library",
+    { params }
+  );
+  return response.data;
+}
+
+export async function updateWechatOfficialRecommendation(
+  articleId: number,
+  payload: WechatOfficialRecommendationUpdatePayload
+): Promise<WechatOfficialContentLibraryItem> {
+  const response = await http.patch<WechatOfficialContentLibraryItem>(
+    `/wechat-official/content-library/${articleId}/recommendation`,
+    payload
+  );
+  return response.data;
+}
+
+export async function createWechatOfficialDraft(
+  articleId: number,
+  payload: WechatOfficialCreateDraftPayload
+): Promise<WechatOfficialDraft> {
+  const response = await http.post<WechatOfficialDraft>(
+    `/wechat-official/content-library/${articleId}/create-draft`,
+    payload
+  );
+  return response.data;
+}
+
+export async function dryRunWechatOfficialDraft(
+  draftId: number,
+  payload: WechatOfficialDraftDryRunPayload = {}
+): Promise<WechatOfficialDraftDryRun> {
+  const response = await http.post<WechatOfficialDraftDryRun>(`/wechat-official/drafts/${draftId}/dry-run`, payload);
   return response.data;
 }
 
