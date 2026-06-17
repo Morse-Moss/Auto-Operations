@@ -3667,6 +3667,301 @@ def test_xhs_data_crawl_marks_partial_failures_and_fetches_comments(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_xhs_data_crawl_note_urls_saves_notes_and_fetched_comments(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import Note, NoteComment
+
+    class FakeDataCrawlSaveAdapter:
+        comment_calls = []
+
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def get_note_info(self, url):
+            return True, "ok", {
+                "data": {
+                    "items": [
+                        {
+                            "note_card": {
+                                "note_id": "data-save-url-001",
+                                "display_title": "saved data crawl detail",
+                                "desc": "saved detail body",
+                                "user": {"nickname": "saved detail author"},
+                                "interact_info": {"liked_count": 8, "comment_count": 1},
+                                "image_list": [{"url": "https://img.example/data-save-url.png"}],
+                            }
+                        }
+                    ]
+                }
+            }
+
+        def get_note_comments(self, url):
+            self.__class__.comment_calls.append(url)
+            return True, "ok", {
+                "data": {
+                    "comments": [
+                        {
+                            "id": "data-save-comment-001",
+                            "content": "保存后的评论",
+                            "user_info": {"nickname": "comment author", "user_id": "comment-user"},
+                            "like_count": "3",
+                        }
+                    ]
+                }
+            }
+
+    db_dependency, owner_token, owner_account_id = _create_pc_account_with_cookie(tmp_path, "data-crawl-save-url-owner")
+    FakeDataCrawlSaveAdapter.comment_calls = []
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeDataCrawlSaveAdapter
+    try:
+        response = client.post(
+            "/api/xhs/crawl/data",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "account_id": owner_account_id,
+                "mode": "note_urls",
+                "urls": ["https://www.xiaohongshu.com/explore/data-save-url-001?xsec_token=data-token"],
+                "fetch_comments": True,
+                "comment_sleep": 0,
+                "save_to_library": True,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = _parse_sse_response(response)
+        assert payload["success_count"] == 1
+        assert payload["saved_count"] == 1
+        assert payload["skipped_count"] == 0
+        assert payload["items"][0]["saved"] is True
+        assert payload["items"][0]["comment_count"] == 1
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            note = db.query(Note).filter(Note.note_id == "data-save-url-001").one()
+            assert note.title == "saved data crawl detail"
+            assert note.content == "saved detail body"
+            comments = db.query(NoteComment).filter(NoteComment.note_id == note.id).all()
+            assert len(comments) == 1
+            assert comments[0].comment_id == "data-save-comment-001"
+            assert comments[0].content == "保存后的评论"
+        finally:
+            db.close()
+        assert FakeDataCrawlSaveAdapter.comment_calls == ["https://www.xiaohongshu.com/explore/data-save-url-001?xsec_token=data-token"]
+    finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+
+def test_xhs_data_crawl_search_saves_valid_detail_note(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import Note
+
+    class FakeSearchSaveAdapter:
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def search_note(self, keyword, page=1, **kwargs):
+            return True, "ok", {
+                "data": {
+                    "has_more": False,
+                    "items": [
+                        {
+                            "xsec_token": "xsec-data-save-search",
+                            "note_card": {
+                                "note_id": "data-save-search-001",
+                                "display_title": "search source title",
+                                "desc": "search source body",
+                                "user": {"nickname": "search author"},
+                            },
+                        }
+                    ],
+                }
+            }
+
+        def get_note_info(self, url):
+            return True, "ok", {
+                "data": {
+                    "items": [
+                        {
+                            "note_card": {
+                                "note_id": "data-save-search-001",
+                                "display_title": "saved search detail",
+                                "desc": "saved search detail body",
+                                "user": {"nickname": "saved search author"},
+                                "image_list": [{"url": "https://img.example/data-save-search.png"}],
+                            }
+                        }
+                    ]
+                }
+            }
+
+    db_dependency, owner_token, owner_account_id = _create_pc_account_with_cookie(tmp_path, "data-crawl-save-search-owner")
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeSearchSaveAdapter
+    try:
+        response = client.post(
+            "/api/xhs/crawl/data",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "account_id": owner_account_id,
+                "mode": "search",
+                "keyword": "保存测试",
+                "pages": 1,
+                "max_notes": 1,
+                "save_to_library": True,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = _parse_sse_response(response)
+        assert payload["success_count"] == 1
+        assert payload["saved_count"] == 1
+        assert payload["items"][0]["saved"] is True
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            note = db.query(Note).filter(Note.note_id == "data-save-search-001").one()
+            assert note.title == "saved search detail"
+            assert note.author_name == "saved search author"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+
+def test_xhs_data_crawl_does_not_save_when_save_to_library_is_false(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import Note
+
+    class FakeNoSaveAdapter:
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def get_note_info(self, url):
+            return True, "ok", {
+                "data": {
+                    "items": [
+                        {
+                            "note_card": {
+                                "note_id": "data-no-save-001",
+                                "display_title": "not saved title",
+                                "desc": "not saved body",
+                                "user": {"nickname": "not saved author"},
+                                "image_list": [{"url": "https://img.example/no-save.png"}],
+                            }
+                        }
+                    ]
+                }
+            }
+
+        def get_note_comments(self, url):
+            return True, "ok", {"data": {"comments": [{"id": "no-save-comment", "content": "not saved"}]}}
+
+    db_dependency, owner_token, owner_account_id = _create_pc_account_with_cookie(tmp_path, "data-crawl-no-save-owner")
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeNoSaveAdapter
+    try:
+        response = client.post(
+            "/api/xhs/crawl/data",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "account_id": owner_account_id,
+                "mode": "note_urls",
+                "urls": ["https://www.xiaohongshu.com/explore/data-no-save-001?xsec_token=data-token"],
+                "fetch_comments": True,
+                "comment_sleep": 0,
+                "save_to_library": False,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = _parse_sse_response(response)
+        assert payload["success_count"] == 1
+        assert payload["saved_count"] == 0
+        assert payload["items"][0]["saved"] is False
+        assert payload["items"][0]["comment_count"] == 1
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            assert db.query(Note).filter(Note.note_id == "data-no-save-001").count() == 0
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+
+def test_xhs_data_crawl_search_detail_rate_limit_stops_following_pages(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+
+    class FakeDetailRateLimitedSearchAdapter:
+        search_calls = []
+        detail_calls = []
+
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def search_note(self, keyword, page=1, **kwargs):
+            self.__class__.search_calls.append({"keyword": keyword, "page": page, **kwargs})
+            return True, "ok", {
+                "data": {
+                    "has_more": page == 1,
+                    "items": [
+                        {
+                            "xsec_token": "xsec-detail-rate-001",
+                            "note_card": {
+                                "note_id": "detail-rate-note-001",
+                                "display_title": "detail rate source",
+                                "desc": "detail rate source body",
+                                "user": {"nickname": "detail rate author"},
+                            },
+                        }
+                    ] if page == 1 else [],
+                }
+            }
+
+        def get_note_info(self, url):
+            self.__class__.detail_calls.append(url)
+            return False, "300013 访问频繁，请稍后再试", {}
+
+    db_dependency, owner_token, owner_account_id = _create_pc_account_with_cookie(tmp_path, "data-crawl-detail-rate-owner")
+    FakeDetailRateLimitedSearchAdapter.search_calls = []
+    FakeDetailRateLimitedSearchAdapter.detail_calls = []
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeDetailRateLimitedSearchAdapter
+    try:
+        response = client.post(
+            "/api/xhs/crawl/data",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "account_id": owner_account_id,
+                "mode": "search",
+                "keyword": "浴室",
+                "pages": 2,
+                "max_notes": 5,
+                "save_to_library": True,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = _parse_sse_response(response)
+        assert payload["total"] == 1
+        assert payload["items"][0]["status"] == "failed"
+        assert (
+            payload["items"][0].get("quality_status") == "rate_limited"
+            or payload["items"][0].get("diagnostic_kind") == "xhs_rate_limited"
+        )
+        assert [call["page"] for call in FakeDetailRateLimitedSearchAdapter.search_calls] == [1]
+    finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+
 def test_xhs_data_crawl_search_comment_rate_limit_keeps_notes_successful(tmp_path):
     from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
 

@@ -64,6 +64,7 @@ class DataCrawlRequest(BaseModel):
     time_sleep: float = Field(default=0, ge=0, le=60)
     comment_sleep: float = Field(default=5, ge=0, le=120)
     fetch_comments: bool = False
+    save_to_library: bool = True
     sort_type_choice: int = Field(default=0, ge=0, le=4)
     note_type: int = Field(default=0, ge=0, le=2)
     note_time: int = Field(default=0, ge=0, le=3)
@@ -986,6 +987,8 @@ def crawl_data(
     def generate() -> Generator[str, None, None]:
         items: list[dict[str, Any]] = []
         normalized_for_save: list[dict[str, Any]] = []
+        saved_count = 0
+        skipped_count = 0
         error_occurred = False
         comments_rate_limited = False
 
@@ -1009,6 +1012,8 @@ def crawl_data(
                             raw_payload={},
                             note_url=url,
                         )
+                        if payload.save_to_library:
+                            skipped_count += 1
                         item = _crawl_data_item(source=url, status="failed", error=quality["user_message"], **_quality_item_fields(quality))
                         items.append(item)
                         yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
@@ -1057,14 +1062,26 @@ def crawl_data(
                                 raw_payload=raw_payload or {},
                                 note_url=url,
                             )
+                        saved = False
+                        if payload.save_to_library and quality["can_save"]:
+                            saved_notes = _save_normalized_notes(db, account, [note])
+                            saved = bool(saved_notes)
+                            if saved and comments_list:
+                                _save_note_comments(db, saved_notes[0], comments_list)
+                            if saved:
+                                saved_count += 1
+                            else:
+                                skipped_count += 1
+                        elif payload.save_to_library and not quality["can_save"]:
+                            skipped_count += 1
                         item = _crawl_data_item(
                             source=url,
-                            status="success" if quality["can_save"] else "partial",
+                            status="success" if saved or (quality["can_save"] and not payload.save_to_library) else "partial",
                             note=note,
                             comments=comments_list,
                             comment_status=comment_status,
                             comment_error=comment_error,
-                            **_quality_item_fields(quality),
+                            **_quality_item_fields(quality, saved=saved),
                         )
                     else:
                         kind = "xhs_rate_limited" if is_xhs_rate_limit_signal(url=url, message=message) else "detail_api_failed"
@@ -1090,6 +1107,8 @@ def crawl_data(
                             raw_payload=raw_payload or {},
                             note_url=url,
                         )
+                        if payload.save_to_library:
+                            skipped_count += 1
                         item = _crawl_data_item(source=url, status="failed", error=message or "detail crawl failed", **_quality_item_fields(quality))
                         if kind == "xhs_rate_limited":
                             items.append(item)
@@ -1127,6 +1146,7 @@ def crawl_data(
                     yield _sse_event({"type": "error", "message": "Keyword is required"})
                     return
                 seen_urls: list[str] = []
+                stop_search_pages = False
                 for page in range(1, payload.pages + 1):
                     success, message, raw_payload = adapter.search_note(
                         payload.keyword, page=page,
@@ -1138,6 +1158,8 @@ def crawl_data(
                         geo=payload.geo,
                     )
                     if not success:
+                        if payload.save_to_library:
+                            skipped_count += 1
                         item = _crawl_data_item(source=f"page:{page}", status="failed", error=message or "search failed")
                         items.append(item)
                         yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
@@ -1182,11 +1204,14 @@ def crawl_data(
                                     raw_payload=dp or {},
                                     note_url=note_url,
                                 )
+                                if payload.save_to_library:
+                                    skipped_count += 1
                                 item = _crawl_data_item(source=source, status="failed", note=search_note, error=dm or "detail failed", **_quality_item_fields(quality))
                                 items.append(item)
                                 yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
                                 _sleep_between_requests(payload.time_sleep)
                                 if kind == "xhs_rate_limited":
+                                    stop_search_pages = True
                                     break
                                 continue
                         quality = evaluate_detail_quality(detail_note, detail_note.get("raw") if isinstance(detail_note.get("raw"), dict) else None)
@@ -1227,19 +1252,31 @@ def crawl_data(
                                 note_url=note_url,
                             )
                         normalized_for_save.append(detail_note)
+                        saved = False
+                        if payload.save_to_library and quality["can_save"]:
+                            saved_notes = _save_normalized_notes(db, account, [detail_note])
+                            saved = bool(saved_notes)
+                            if saved and comments_list:
+                                _save_note_comments(db, saved_notes[0], comments_list)
+                            if saved:
+                                saved_count += 1
+                            else:
+                                skipped_count += 1
+                        elif payload.save_to_library and not quality["can_save"]:
+                            skipped_count += 1
                         item = _crawl_data_item(
                             source=source,
-                            status="success" if quality["can_save"] else "partial",
+                            status="success" if saved or (quality["can_save"] and not payload.save_to_library) else "partial",
                             note=detail_note,
                             comments=comments_list,
                             comment_status=comment_status,
                             comment_error=comment_error,
-                            **_quality_item_fields(quality),
+                            **_quality_item_fields(quality, saved=saved),
                         )
                         items.append(item)
                         yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
                         _sleep_between_requests(payload.time_sleep)
-                    if len(items) >= payload.max_notes:
+                    if stop_search_pages or len(items) >= payload.max_notes:
                         break
                     data = (raw_payload or {}).get("data") or {}
                     if not data.get("has_more", False):
@@ -1253,6 +1290,7 @@ def crawl_data(
         failed_count = len(items) - success_count
         comment_rate_limited_count = len([i for i in items if i.get("comment_status") == "rate_limited"])
         comment_skipped_count = len([i for i in items if i.get("comment_status") == "skipped_rate_limited"])
+        summary_message = f"采集完成：保存 {saved_count} 条，跳过 {skipped_count} 条。"
         try:
             if error_occurred:
                 _fail_task(db, task, "partial failure")
@@ -1263,8 +1301,11 @@ def crawl_data(
                     {
                         "result_count": success_count,
                         "failed_count": failed_count,
+                        "saved_count": saved_count,
+                        "skipped_count": skipped_count,
                         "comment_rate_limited_count": comment_rate_limited_count,
                         "comment_skipped_count": comment_skipped_count,
+                        "summary_message": summary_message,
                     },
                 )
         except Exception:
@@ -1276,8 +1317,11 @@ def crawl_data(
             "total": len(items),
             "success_count": success_count,
             "failed_count": failed_count,
+            "saved_count": saved_count,
+            "skipped_count": skipped_count,
             "comment_rate_limited_count": comment_rate_limited_count,
             "comment_skipped_count": comment_skipped_count,
+            "summary_message": summary_message,
         })
 
     return StreamingResponse(generate(), media_type="text/event-stream")

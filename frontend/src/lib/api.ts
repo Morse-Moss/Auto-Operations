@@ -505,11 +505,20 @@ export async function crawlXhsDataStream(
   onItem: (index: number, item: XhsDataCrawlItem) => void,
   onProgress?: (message: string) => void,
   onError?: (message: string) => void,
-): Promise<{ total: number; success_count: number; failed_count: number; comment_rate_limited_count?: number; comment_skipped_count?: number }> {
+): Promise<{
+  total: number;
+  success_count: number;
+  failed_count: number;
+  saved_count: number;
+  skipped_count: number;
+  comment_rate_limited_count?: number;
+  comment_skipped_count?: number;
+  summary_message?: string;
+}> {
   return streamXhsCrawl(
     "/api/xhs/crawl/data",
     payload as Record<string, unknown>,
-    { total: 0, success_count: 0, failed_count: 0, comment_rate_limited_count: 0, comment_skipped_count: 0 },
+    { total: 0, success_count: 0, failed_count: 0, saved_count: 0, skipped_count: 0, comment_rate_limited_count: 0, comment_skipped_count: 0, summary_message: "" },
     onItem,
     onProgress,
     onError,
@@ -517,8 +526,11 @@ export async function crawlXhsDataStream(
       total: Number(event.total || 0),
       success_count: Number(event.success_count || 0),
       failed_count: Number(event.failed_count || 0),
+      saved_count: Number(event.saved_count || 0),
+      skipped_count: Number(event.skipped_count || 0),
       comment_rate_limited_count: Number(event.comment_rate_limited_count || 0),
       comment_skipped_count: Number(event.comment_skipped_count || 0),
+      summary_message: String(event.summary_message || ""),
     }),
   );
 }

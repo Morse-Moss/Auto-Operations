@@ -289,6 +289,9 @@ export function XhsCrawlerPage() {
   const [timeSleep, setTimeSleep] = useState(1);
   const [commentSleep, setCommentSleep] = useState(5);
   const [fetchCommentsChecked, setFetchCommentsChecked] = useState(queryFetchComments);
+  const [saveToLibraryChecked, setSaveToLibraryChecked] = useState(true);
+  const [dataSavedCount, setDataSavedCount] = useState(0);
+  const [dataSkippedCount, setDataSkippedCount] = useState(0);
   const [filters, setFilters] = useState({ sort_type_choice: 0, note_type: 0, note_time: 0, note_range: 0, pos_distance: 0, geo: "" });
   const [items, setItems] = useState<XhsDataCrawlItem[]>([]);
   const [successCount, setSuccessCount] = useState(0);
@@ -305,8 +308,6 @@ export function XhsCrawlerPage() {
   const isKeywordGroupMode = crawlChannel === "keyword_group";
   const commentRateLimitedCount = useMemo(() => items.filter((item) => item.comment_status === "rate_limited").length, [items]);
   const commentSkippedCount = useMemo(() => items.filter((item) => item.comment_status === "skipped_rate_limited").length, [items]);
-  const lowQualityCount = useMemo(() => items.filter((item) => item.quality_status && item.quality_status !== "valid_detail").length, [items]);
-  const savedCount = useMemo(() => items.filter((item) => item.saved).length, [items]);
 
   async function loadAccounts() {
     setIsLoadingAccounts(true);
@@ -353,6 +354,8 @@ export function XhsCrawlerPage() {
     setItems([]);
     setSuccessCount(0);
     setFailedCount(0);
+    setDataSavedCount(0);
+    setDataSkippedCount(0);
     setProgressMsg(null);
     try {
       const summary = await crawlXhsKeywordGroupStream(
@@ -399,16 +402,21 @@ export function XhsCrawlerPage() {
     setItems([]);
     setSuccessCount(0);
     setFailedCount(0);
+    setDataSavedCount(0);
+    setDataSkippedCount(0);
     setProgressMsg(null);
     try {
       const summary = await crawlXhsDataStream(
-        { account_id: selectedAccountId, mode, urls: parsedUrls, keyword: keyword.trim(), pages, max_notes: maxNotes, time_sleep: timeSleep, comment_sleep: commentSleep, fetch_comments: mode === "comments" ? false : fetchCommentsChecked, ...filters, geo: filters.geo.trim() },
+        { account_id: selectedAccountId, mode, urls: parsedUrls, keyword: keyword.trim(), pages, max_notes: maxNotes, time_sleep: timeSleep, comment_sleep: commentSleep, fetch_comments: mode === "comments" ? false : fetchCommentsChecked, save_to_library: mode === "comments" ? false : saveToLibraryChecked, ...filters, geo: filters.geo.trim() },
         (index, item) => { setItems((prev) => [...prev, item]); },
         (msg) => { setProgressMsg(msg); },
         (msg) => { setError(msg); },
       );
       setSuccessCount(summary.success_count);
       setFailedCount(summary.failed_count);
+      setDataSavedCount(summary.saved_count);
+      setDataSkippedCount(summary.skipped_count);
+      setSummaryMessage(summary.summary_message || `采集完成：保存 ${summary.saved_count} 条，跳过 ${summary.skipped_count} 条。`);
       setProgressMsg(null);
     } catch (err: unknown) {
       const axiosErr = err as { message?: string };
@@ -631,7 +639,32 @@ export function XhsCrawlerPage() {
             <Col span={8} style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
               <Checkbox checked={fetchCommentsChecked} onChange={(e) => setFetchCommentsChecked(e.target.checked)} disabled={!isKeywordGroupMode && mode === "comments"}>同时抓取评论</Checkbox>
             </Col>
+            <Col span={8} style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
+              <Checkbox
+                checked={saveToLibraryChecked}
+                onChange={(e) => setSaveToLibraryChecked(e.target.checked)}
+                disabled={isKeywordGroupMode || mode === "comments"}
+              >
+                保存到系统内容库
+              </Checkbox>
+            </Col>
           </Row>
+
+          {isKeywordGroupMode ? (
+            <Text type="secondary" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
+              关键词组采集会按既有规则自动保存有效内容；此手动开关不影响关键词组模式。
+            </Text>
+          ) : null}
+          {!isKeywordGroupMode && mode !== "comments" && saveToLibraryChecked ? (
+            <Text type="secondary" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
+              有效详情会自动入库；同时抓取评论时，评论会随笔记一起保存。
+            </Text>
+          ) : null}
+          {!isKeywordGroupMode && mode === "comments" ? (
+            <Text type="secondary" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
+              只爬评论模式不会创建新笔记，结果可在本页查看或导出 Excel。
+            </Text>
+          ) : null}
 
           {isKeywordGroupMode ? (
             <Collapse
@@ -670,7 +703,7 @@ export function XhsCrawlerPage() {
         )}
       </Card>
 
-      <Card title={<Space><Title level={5} style={{ margin: 0 }}>抓取结果</Title><Text type="secondary">成功 {successCount} · 失败 {failedCount}{commentRateLimitedCount ? ` · 评论限流 ${commentRateLimitedCount}` : ""}{commentSkippedCount ? ` · 评论跳过 ${commentSkippedCount}` : ""}{isRunning && progressMsg ? ` · ${progressMsg}` : ""}{isRunning ? " · 抓取中..." : ""}</Text></Space>}>
+      <Card title={<Space><Title level={5} style={{ margin: 0 }}>抓取结果</Title><Text type="secondary">成功 {successCount} · 失败 {failedCount}{dataSavedCount ? ` · 已保存 ${dataSavedCount}` : ""}{dataSkippedCount ? ` · 跳过入库 ${dataSkippedCount}` : ""}{commentRateLimitedCount ? ` · 评论限流 ${commentRateLimitedCount}` : ""}{commentSkippedCount ? ` · 评论跳过 ${commentSkippedCount}` : ""}{isRunning && progressMsg ? ` · ${progressMsg}` : ""}{isRunning ? " · 抓取中..." : ""}</Text></Space>}>
         {items.length === 0 && !isRunning ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="执行抓取后，结果会显示在这里" />
         ) : (

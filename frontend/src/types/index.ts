@@ -178,6 +178,7 @@ export type XhsDataCrawlPayload = {
   time_sleep?: number;
   comment_sleep?: number;
   fetch_comments?: boolean;
+  save_to_library?: boolean;
   sort_type_choice?: number;
   note_type?: number;
   note_time?: number;
