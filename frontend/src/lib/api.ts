@@ -454,6 +454,11 @@ export async function fetchWechatOfficialContentDetail(articleId: number): Promi
   return response.data;
 }
 
+export async function deleteWechatOfficialContentLibraryItem(articleId: number): Promise<{ id: number; status: string }> {
+  const response = await http.delete<{ id: number; status: string }>(`/wechat-official/content-library/${articleId}`);
+  return response.data;
+}
+
 export async function refreshWechatOfficialContentDetail(articleId: number): Promise<WechatOfficialContentDetail> {
   const response = await http.post<WechatOfficialContentDetail>(`/wechat-official/content-library/${articleId}/refresh-detail`);
   return response.data;

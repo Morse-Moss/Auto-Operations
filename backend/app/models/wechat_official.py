@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -204,3 +204,16 @@ class WechatOfficialDraftSource(Base):
     source_type: Mapped[str] = mapped_column(String(32), default="rewrite")
     raw_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)
+
+
+class WechatOfficialContentLibraryTombstone(Base):
+    __tablename__ = "wechat_official_content_library_tombstones"
+    __table_args__ = (
+        UniqueConstraint("user_id", "article_url", name="uq_wechat_official_content_library_tombstones_user_url"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    article_url: Mapped[str] = mapped_column(Text, index=True)
+    article_title: Mapped[str] = mapped_column(String(512), default="")
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)

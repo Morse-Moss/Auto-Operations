@@ -21,6 +21,7 @@ from backend.app.models import (
     WechatOfficialCrawlJob,
     WechatOfficialRedfoxConfig,
 )
+from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
 from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_metric
 from backend.app.services.wechat_official_redfox_client import RedfoxApiError, WechatOfficialRedfoxClient
 
@@ -248,10 +249,14 @@ class WechatOfficialRedfoxService:
         self.db.add(job)
         self.db.flush()
 
+        tombstones = WechatOfficialContentTombstoneService(self.db)
         saved_articles: list[WechatOfficialArticle] = []
         deduped = 0
         viral_candidates = 0
         for item in articles_payload:
+            article_url = str(item.get("article_url") or item.get("content_url") or "").strip()
+            if article_url and tombstones.is_tombstoned(user_id, article_url):
+                continue
             account = self._upsert_redfox_account(user_id, item)
             article, created = self._upsert_redfox_article(account.id, job.id, item, min_read_count=min_read_count)
             if not created:

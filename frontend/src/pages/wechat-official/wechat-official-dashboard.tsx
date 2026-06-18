@@ -22,6 +22,7 @@ import {
   InputNumber,
   List,
   message,
+  Modal,
   Row,
   Segmented,
   Select,
@@ -39,6 +40,7 @@ import {
   collectWechatOfficialRedfoxAccount,
   collectWechatOfficialRedfoxArticles,
   createWechatOfficialDraft,
+  deleteWechatOfficialContentLibraryItem,
   dryRunWechatOfficialDraft,
   fetchWechatOfficialContentDetail,
   fetchWechatOfficialContentLibrary,
@@ -510,7 +512,23 @@ export function WechatOfficialDashboard() {
     if (contentDetail?.article.id === article.id) await reloadDetail();
   });
 
-  const handleArchiveArticle = (article: WechatOfficialContentLibraryItem) => handleUpdatePoolStatus(article, "candidate");
+  const handleDeleteArticle = (article: WechatOfficialContentLibraryItem) => {
+    Modal.confirm({
+      title: "删除这篇爆文？",
+      content: "删除后会清空内容库数据并记录删除黑名单，同 URL 后续采集会被跳过；草稿不受影响。",
+      okText: "删除",
+      okType: "danger",
+      cancelText: "取消",
+      onOk: () => runAction('delete-' + article.id, "爆文已删除并加入黑名单", async () => {
+        await deleteWechatOfficialContentLibraryItem(article.id);
+        await refreshWorkspace();
+        if (contentDetail?.article.id === article.id) {
+          setDetailOpen(false);
+          setContentDetail(null);
+        }
+      }),
+    });
+  };
 
   const handleAnalyze = (article: WechatOfficialContentLibraryItem) => runAction(`analyze-${article.id}`, "爆点拆解已生成", async () => {
     await analyzeWechatOfficialHotspots(article.id, {});
@@ -767,7 +785,7 @@ export function WechatOfficialDashboard() {
                           <Space wrap onClick={(event) => event.stopPropagation()}>
                             <Button size="small" onClick={() => void openDetail(article.id)}>详情</Button>
                             <Button size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入库</Button>
-                            <Button size="small" loading={busyAction === `status-${article.id}-candidate`} onClick={() => handleArchiveArticle(article)}>移出内容库</Button>
+                            <Button size="small" danger loading={busyAction === `delete-${article.id}`} onClick={() => handleDeleteArticle(article)}>删除</Button>
                             <Button size="small" loading={busyAction === `analyze-${article.id}`} onClick={() => handleAnalyze(article)}>拆解</Button>
                             <Button size="small" type="primary" loading={busyAction === `draft-${article.id}`} onClick={() => handleCreateDraft(article)}>草稿</Button>
                             {article.article_url ? <Button size="small" href={article.article_url} target="_blank" rel="noreferrer">原文</Button> : null}
@@ -825,6 +843,7 @@ export function WechatOfficialDashboard() {
               <Button loading={busyAction === `analyze-${contentDetail.article.id}`} onClick={() => handleAnalyze(contentDetail.article)}>拆解爆点</Button>
               <Button type="primary" loading={busyAction === `draft-${contentDetail.article.id}`} onClick={() => handleCreateDraft(contentDetail.article)}>按「{selectedTemplate.name}」生成草稿</Button>
               <Button loading={busyAction === `dry-${contentDetail.article.id}`} onClick={() => handleDryRun(contentDetail.article)}>Dry-run</Button>
+              <Button danger loading={busyAction === `delete-${contentDetail.article.id}`} onClick={() => handleDeleteArticle(contentDetail.article)}>删除</Button>
             </Space>
 
             <Alert

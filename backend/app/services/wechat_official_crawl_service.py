@@ -18,6 +18,7 @@ from backend.app.models import (
     WechatOfficialCrawlJob,
 )
 from backend.app.services.wechat_official_backend_session_service import get_valid_session
+from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
 from backend.app.services.wechat_official_credential_service import serialize_credential
 
 
@@ -52,8 +53,12 @@ class WechatOfficialCrawlService:
         )
         self.db.add(job)
         self.db.flush()
+        tombstones = WechatOfficialContentTombstoneService(self.db)
         saved: list[WechatOfficialArticle] = []
         for article_payload in selected:
+            article_url = str(article_payload.get("article_url") or article_payload.get("content_url") or "").strip()
+            if article_url and tombstones.is_tombstoned(user_id, article_url):
+                continue
             article = self._upsert_article(account.id if account else None, job.id, article_payload)
             saved.append(article)
         job.status = "succeeded"

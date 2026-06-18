@@ -6,9 +6,18 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
 from backend.app.core.security import encrypt_text
-from backend.app.models import ModelConfig, WechatOfficialArticle, WechatOfficialArticleSnapshot, WechatOfficialCrawlAccount
+from backend.app.models import (
+    ModelConfig,
+    WechatOfficialArticle,
+    WechatOfficialArticleComment,
+    WechatOfficialArticleCommentReply,
+    WechatOfficialArticleMetric,
+    WechatOfficialArticleSnapshot,
+    WechatOfficialCrawlAccount,
+)
 from backend.app.services import wechat_official_content_service
 from backend.app.services import wechat_official_redfox_service as redfox_service
+from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
 
 client = TestClient(app)
 
@@ -228,7 +237,15 @@ class FakeRedfoxDetailClient:
                 "content": "补全后的正文内容",
                 "html": '<p>补全后的正文内容</p><img src="https://example.com/refresh-html.jpg" />',
                 "contentImages": ["https://example.com/refresh-body.jpg"],
-                "comments": [{"commentId": "refresh-c1", "nickName": "读者", "content": "补全评论", "likeCount": 7}],
+                "comments": [
+                    {
+                        "commentId": "refresh-c1",
+                        "nickName": "读者",
+                        "content": "补全评论",
+                        "likeCount": 7,
+                        "replies": [{"replyId": "reply-1", "nickName": "作者", "content": "谢谢", "likeCount": 2}],
+                    }
+                ],
                 "readCount": 88888,
                 "commentCount": 1,
                 "api_key": "refresh-leak",
@@ -255,6 +272,94 @@ class FakeRedfoxNoCoverDetailClient:
                 "readCount": 77777,
             },
         }
+
+
+def test_content_library_delete_removes_article_descendants_and_blocks_resave(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeRedfoxDetailClient, raising=False)
+    try:
+        headers = _register("delete-owner")
+        article_id = _create_article(headers, title="删除案例", url="https://mp.weixin.qq.com/s/delete-target", read_count=120000)
+        config = client.post("/api/wechat-official/redfox/config", headers=headers, json={"api_key": "refresh-secret"})
+        assert config.status_code == 200
+        refreshed = client.post(f"/api/wechat-official/content-library/{article_id}/refresh-detail", headers=headers)
+        assert refreshed.status_code == 200
+
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            account = db.get(WechatOfficialCrawlAccount, article.account_id)
+            assert account is not None
+            owner_user_id = account.user_id
+            assert db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article_id)) is not None
+            assert db.scalar(select(WechatOfficialArticleComment).where(WechatOfficialArticleComment.article_id == article_id)) is not None
+            assert db.scalar(
+                select(WechatOfficialArticleCommentReply)
+                .join(WechatOfficialArticleComment, WechatOfficialArticleCommentReply.comment_id == WechatOfficialArticleComment.id)
+                .where(WechatOfficialArticleComment.article_id == article_id)
+            ) is not None
+
+        deleted = client.delete(f"/api/wechat-official/content-library/{article_id}", headers=headers)
+        assert deleted.status_code == 200
+        assert deleted.json() == {"id": article_id, "status": "deleted"}
+
+        detail = client.get(f"/api/wechat-official/content-library/{article_id}", headers=headers)
+        assert detail.status_code == 404
+
+        with TestingSessionLocal() as db:
+            assert db.get(WechatOfficialArticle, article_id) is None
+            assert db.scalar(select(WechatOfficialArticleMetric).where(WechatOfficialArticleMetric.article_id == article_id)) is None
+            assert db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article_id)) is None
+            assert db.scalar(select(WechatOfficialArticleComment).where(WechatOfficialArticleComment.article_id == article_id)) is None
+            assert db.scalars(
+                select(WechatOfficialArticleCommentReply)
+                .join(WechatOfficialArticleComment, WechatOfficialArticleCommentReply.comment_id == WechatOfficialArticleComment.id)
+                .where(WechatOfficialArticleComment.article_id == article_id)
+            ).all() == []
+            assert db.scalar(select(WechatOfficialArticleCommentReply).where(WechatOfficialArticleCommentReply.reply_id == "reply-1")) is None
+            tombstone_model = db.get_bind().metadata.tables.get("wechat_official_content_library_tombstones")
+            assert tombstone_model is not None
+            assert (
+                db.execute(
+                    select(tombstone_model).where(
+                        tombstone_model.c.user_id == owner_user_id,
+                        tombstone_model.c.article_url == "https://mp.weixin.qq.com/s/delete-target",
+                    )
+                ).first()
+                is not None
+            )
+
+        with TestingSessionLocal() as db:
+            tombstone_model = db.get_bind().metadata.tables.get("wechat_official_content_library_tombstones")
+            assert tombstone_model is not None
+            tombstones = WechatOfficialContentTombstoneService(db)
+            tombstones.tombstone(owner_user_id, "https://mp.weixin.qq.com/s/duplicate-delete-target", "重复删除标题")
+            tombstones.tombstone(owner_user_id, "https://mp.weixin.qq.com/s/duplicate-delete-target", "重复删除标题 2")
+            db.commit()
+            repeated_rows = db.execute(
+                select(tombstone_model).where(
+                    tombstone_model.c.user_id == owner_user_id,
+                    tombstone_model.c.article_url == "https://mp.weixin.qq.com/s/duplicate-delete-target",
+                )
+            ).all()
+            assert len(repeated_rows) == 1
+            assert repeated_rows[0]._mapping["article_title"] == "重复删除标题 2"
+
+        session_id = _create_session(headers)
+        relaunch = client.post(
+            "/api/wechat-official/crawl/articles/sync",
+            headers=headers,
+            json={
+                "backend_session_id": session_id,
+                "upstream_payload": {
+                    "publish_page": '{"publish_list":[{"publish_info":{"appmsgex":[{"title":"删除案例","digest":"摘要删除案例","link":"https://mp.weixin.qq.com/s/delete-target"}]}}]}'
+                },
+            },
+        )
+        assert relaunch.status_code == 200
+        assert relaunch.json()["items"] == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 def test_content_library_detail_returns_snapshot_and_sanitized_raw_json(tmp_path):

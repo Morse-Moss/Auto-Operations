@@ -4,14 +4,25 @@ import json
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app.core.database import Base
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import ModelConfig, WechatOfficialArticle, WechatOfficialArticleComment, WechatOfficialArticleCommentReply, WechatOfficialArticleMetric, WechatOfficialArticleSnapshot
+from backend.app.models import (
+    ModelConfig,
+    WechatOfficialArticle,
+    WechatOfficialArticleComment,
+    WechatOfficialArticleCommentReply,
+    WechatOfficialArticleMetric,
+    WechatOfficialArticleSnapshot,
+    WechatOfficialDraftSource,
+    WechatOfficialIngestError,
+)
 from backend.app.services.ai_service import OpenAICompatibleTextClient
+from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
 from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_metric
 
 POOL_STATUSES = {"candidate", "shortlisted", "analyzing", "draft_ready", "rejected", "archived"}
@@ -98,6 +109,26 @@ class WechatOfficialContentService:
             "detail_status": _detail_status(article, latest_snapshot, _detail_images(article, latest_snapshot), _comments(self.db, article.id)),
             "raw_json": _safe_raw_json(article.raw_json or {}),
         }
+
+    def delete_article(self, user_id: int, article_id: int) -> dict[str, Any]:
+        bind = self.db.get_bind()
+        if not hasattr(bind, "metadata"):
+            bind.metadata = Base.metadata
+        article = get_owned_content_article(self.db, user_id, article_id)
+        article_url = str(article.article_url or article.content_url or "").strip()
+        if article_url:
+            WechatOfficialContentTombstoneService(self.db).tombstone(user_id, article_url, article.title)
+
+        comment_ids = select(WechatOfficialArticleComment.id).where(WechatOfficialArticleComment.article_id == article.id)
+        self.db.execute(delete(WechatOfficialArticleCommentReply).where(WechatOfficialArticleCommentReply.comment_id.in_(comment_ids)))
+        self.db.execute(delete(WechatOfficialArticleComment).where(WechatOfficialArticleComment.article_id == article.id))
+        self.db.execute(delete(WechatOfficialArticleMetric).where(WechatOfficialArticleMetric.article_id == article.id))
+        self.db.execute(delete(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article.id))
+        self.db.execute(delete(WechatOfficialIngestError).where(WechatOfficialIngestError.article_id == article.id))
+        self.db.execute(delete(WechatOfficialDraftSource).where(WechatOfficialDraftSource.article_id == article.id))
+        self.db.delete(article)
+        self.db.commit()
+        return {"id": article_id, "status": "deleted"}
 
     def analyze_hotspots(self, user_id: int, article_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         article = get_owned_content_article(self.db, user_id, article_id)

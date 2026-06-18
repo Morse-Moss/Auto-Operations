@@ -45,6 +45,11 @@ def get_content_detail(article_id: int, current_user: User = Depends(get_current
     return WechatOfficialContentService(db).get_detail(current_user.id, article_id)
 
 
+@router.delete("/{article_id}")
+def delete_content_library_article(article_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WechatOfficialContentService(db).delete_article(current_user.id, article_id)
+
+
 @router.patch("/{article_id}/recommendation")
 def update_recommendation(article_id: int, payload: WechatOfficialRecommendationUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return WechatOfficialContentService(db).update_recommendation(current_user.id, article_id, payload.model_dump(exclude_unset=True))
