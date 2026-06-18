@@ -178,7 +178,7 @@ class WechatOfficialRedfoxService:
         payload["title"] = payload.get("title") or article.title
         payload["digest"] = payload.get("digest") or article.digest
         payload["author_name"] = payload.get("author_name") or article.author_name
-        payload["cover_url"] = payload.get("cover_url") or article.cover_url
+        payload["cover_url"] = payload.get("cover_url") or article.cover_url or _first_image_url(payload.get("images"))
 
         job = WechatOfficialCrawlJob(
             account_id=article.account_id,
@@ -319,7 +319,7 @@ class WechatOfficialRedfoxService:
         article.author_name = str(payload.get("author_name") or article.author_name)
         article.source = "redfox"
         article.publish_time_remote = str(payload.get("publish_time_remote") or "") or article.publish_time_remote
-        article.cover_url = str(payload.get("cover_url") or article.cover_url)
+        article.cover_url = str(payload.get("cover_url") or article.cover_url or _first_image_url(payload.get("images")))
         article.content_url = str(payload.get("content_url") or article.article_url)
         raw = dict(article.raw_json or {})
         analysis = dict(raw.get("analysis") or {})
@@ -457,6 +457,27 @@ def _mask_api_key(encrypted_api_key: str) -> str:
         return "****"
     suffix = api_key[-4:] if len(api_key) >= 4 else api_key
     return f"****{suffix}"
+
+
+def _first_image_url(images: Any) -> str:
+    if not isinstance(images, list):
+        return ""
+
+    fallback = ""
+    for item in images:
+        if isinstance(item, dict):
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            source = str(item.get("source") or "").strip().lower()
+            if source.endswith("html"):
+                return url
+            if not fallback:
+                fallback = url
+            continue
+        if isinstance(item, str) and item.strip() and not fallback:
+            fallback = item.strip()
+    return fallback
 
 
 def serialize_redfox_config(config: WechatOfficialRedfoxConfig | None) -> dict[str, Any] | None:

@@ -165,7 +165,7 @@ function sectionFromPath(pathname: string): WechatOfficialSection {
 
 const POOL_STATUS_OPTIONS: Array<{ value: WechatOfficialPoolStatus; label: string; color: string }> = [
   { value: "candidate", label: "候选", color: "blue" },
-  { value: "shortlisted", label: "已入选", color: "green" },
+  { value: "shortlisted", label: "已入库", color: "green" },
   { value: "analyzing", label: "拆解中", color: "gold" },
   { value: "draft_ready", label: "草稿已生成", color: "purple" },
   { value: "rejected", label: "已拒绝", color: "red" },
@@ -320,8 +320,19 @@ export function WechatOfficialDashboard() {
   const [urlForm] = Form.useForm<UrlForm>();
 
   const selectedTemplate = WECHAT_DRAFT_TEMPLATES.find((item) => item.key === selectedTemplateKey) || WECHAT_DRAFT_TEMPLATES[0];
-  const candidateCount = useMemo(() => contentItems.filter((item) => item.is_candidate).length, [contentItems]);
-  const displayedItems = useMemo(() => contentItems.filter((item) => poolFilter === "all" || poolStatus(item) === poolFilter), [contentItems, poolFilter]);
+  const candidateCount = useMemo(() => contentItems.filter((item) => poolStatus(item) === "candidate" || item.is_candidate).length, [contentItems]);
+  const libraryItems = useMemo(() => contentItems.filter((item) => {
+    const status = poolStatus(item);
+    return status === "shortlisted" || status === "analyzing" || status === "draft_ready";
+  }), [contentItems]);
+  const discoveryItems = useMemo(() => contentItems.filter((item) => {
+    const status = poolStatus(item);
+    return status === "candidate" || status === "shortlisted" || status === "analyzing" || status === "draft_ready";
+  }), [contentItems]);
+  const displayedItems = useMemo(() => {
+    const baseItems = showLibrary ? libraryItems : showDiscovery || showDrafts ? discoveryItems : contentItems;
+    return baseItems.filter((item) => poolFilter === "all" || poolStatus(item) === poolFilter);
+  }, [contentItems, discoveryItems, libraryItems, poolFilter, showDiscovery, showDrafts, showLibrary]);
   const configuredText = configured ? `已配置 ${redfoxConfig?.masked_api_key || "****"}` : "未配置";
   const batchKeywords = splitKeywords(String(Form.useWatch("keywords", batchForm) || ""));
   const batchPages = Number(Form.useWatch("pages", batchForm) || 1);
@@ -499,6 +510,8 @@ export function WechatOfficialDashboard() {
     if (contentDetail?.article.id === article.id) await reloadDetail();
   });
 
+  const handleArchiveArticle = (article: WechatOfficialContentLibraryItem) => handleUpdatePoolStatus(article, "candidate");
+
   const handleAnalyze = (article: WechatOfficialContentLibraryItem) => runAction(`analyze-${article.id}`, "爆点拆解已生成", async () => {
     await analyzeWechatOfficialHotspots(article.id, {});
     await refreshWorkspace();
@@ -533,7 +546,8 @@ export function WechatOfficialDashboard() {
 
   const renderArticleActions = (article: WechatOfficialContentLibraryItem) => [
     <Button key="detail" size="small" onClick={() => void openDetail(article.id)}>详情</Button>,
-    <Button key="shortlist" size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入选</Button>,
+    <Button key="shortlist" size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入库</Button>,
+    <Button key="archive" size="small" loading={busyAction === `status-${article.id}-candidate`} onClick={() => handleArchiveArticle(article)}>移出内容库</Button>,
     <Button key="analyze" size="small" loading={busyAction === `analyze-${article.id}`} onClick={() => handleAnalyze(article)}>拆解爆点</Button>,
     <Button key="draft" size="small" loading={busyAction === `draft-${article.id}`} onClick={() => handleCreateDraft(article)}>生成草稿</Button>,
     <Button key="dry" size="small" loading={busyAction === `dry-${article.id}`} onClick={() => handleDryRun(article)}>Dry-run</Button>,
@@ -711,7 +725,7 @@ export function WechatOfficialDashboard() {
             </Row>
             {showDrafts ? <Alert showIcon type="info" message="草稿工坊只生成本地二创草稿" description="真实草稿同步、预览发送和群发发布保持 blocked；Dry-run 只校验安全契约。" style={{ marginBottom: 16 }} /> : null}
             {displayedItems.length === 0 ? (
-              <Alert showIcon type="info" message="暂无候选文章" description={showDiscovery ? "执行爆文收集后，保存入库的文章会直接显示在这里。" : "先到爆文发现执行收集，或调整筛选条件。"} />
+              <Alert showIcon type="info" message={showLibrary ? "暂无已入库文章" : "暂无候选文章"} description={showDiscovery ? "执行爆文收集后，候选文章会显示在这里；点击入库后才会进入内容库。" : showLibrary ? "先把候选文章入库，或调整筛选条件。" : "先到爆文发现执行收集，或调整筛选条件。"} />
             ) : (
               <Row gutter={[16, 16]}>
                 {displayedItems.map((article) => {
@@ -752,7 +766,8 @@ export function WechatOfficialDashboard() {
                           <Text type="secondary" ellipsis title={article.digest || article.article_url || ""}>{article.digest || article.article_url || "暂无摘要"}</Text>
                           <Space wrap onClick={(event) => event.stopPropagation()}>
                             <Button size="small" onClick={() => void openDetail(article.id)}>详情</Button>
-                            <Button size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入选</Button>
+                            <Button size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入库</Button>
+                            <Button size="small" loading={busyAction === `status-${article.id}-candidate`} onClick={() => handleArchiveArticle(article)}>移出内容库</Button>
                             <Button size="small" loading={busyAction === `analyze-${article.id}`} onClick={() => handleAnalyze(article)}>拆解</Button>
                             <Button size="small" type="primary" loading={busyAction === `draft-${article.id}`} onClick={() => handleCreateDraft(article)}>草稿</Button>
                             {article.article_url ? <Button size="small" href={article.article_url} target="_blank" rel="noreferrer">原文</Button> : null}

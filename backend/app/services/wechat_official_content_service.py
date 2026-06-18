@@ -58,6 +58,8 @@ class WechatOfficialContentService:
                 continue
             if filters.get("recommendation_status") and analysis.get("recommendation_status") != filters["recommendation_status"]:
                 continue
+            if filters.get("pool_status") and _pool_status(analysis) != filters["pool_status"]:
+                continue
             keyword = str(filters.get("keyword") or "").strip()
             if keyword and keyword not in article.title and keyword not in article.digest:
                 continue
@@ -190,6 +192,10 @@ def _validate_analysis_payload(payload: dict[str, Any]) -> None:
     pool_status = payload.get("pool_status")
     if pool_status is not None and pool_status not in POOL_STATUSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pool_status")
+
+
+def _pool_status(analysis: dict[str, Any]) -> str:
+    return str(analysis.get("pool_status") or analysis.get("recommendation_status") or "candidate")
 
 
 def _serialize_snapshot_detail(snapshot: WechatOfficialArticleSnapshot) -> dict[str, Any]:
