@@ -186,6 +186,31 @@ def test_content_library_rejects_invalid_pool_status_without_mutating_analysis(t
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_content_library_pool_status_filter_keeps_candidates_out_of_library_view(tmp_path):
+    get_db, _ = _override_database(tmp_path)
+    try:
+        headers = _register("pool-filter-user")
+        candidate_id = _create_article(headers, title="候选文章", url="https://mp.weixin.qq.com/s/candidate", read_count=120000)
+        library_id = _create_article(headers, title="入库文章", url="https://mp.weixin.qq.com/s/library", read_count=90000)
+
+        update = client.patch(
+            f"/api/wechat-official/content-library/{library_id}/recommendation",
+            headers=headers,
+            json={"pool_status": "shortlisted"},
+        )
+        assert update.status_code == 200
+
+        candidate_response = client.get("/api/wechat-official/content-library?pool_status=candidate", headers=headers)
+        assert candidate_response.status_code == 200
+        assert {item["id"] for item in candidate_response.json()["items"]} == {candidate_id}
+
+        library_response = client.get("/api/wechat-official/content-library?pool_status=shortlisted", headers=headers)
+        assert library_response.status_code == 200
+        assert {item["id"] for item in library_response.json()["items"]} == {library_id}
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 class FakeRedfoxDetailClient:
     def __init__(self, *, base_url: str, api_key: str) -> None:
         assert api_key == "refresh-secret"
@@ -207,6 +232,27 @@ class FakeRedfoxDetailClient:
                 "readCount": 88888,
                 "commentCount": 1,
                 "api_key": "refresh-leak",
+            },
+        }
+
+
+class FakeRedfoxNoCoverDetailClient:
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        assert api_key == "refresh-secret"
+
+    def query_article_detail(self, *, url: str) -> dict:
+        return {
+            "code": 2000,
+            "data": {
+                "workUuid": "refresh-no-cover-1",
+                "title": "无封面补全标题",
+                "summary": "无封面补全摘要",
+                "workUrl": url,
+                "author": "补全公众号",
+                "content": "无封面时正文内容",
+                "html": '<p>无封面时正文内容</p><img src="https://example.com/no-cover-html.jpg" />',
+                "contentImages": ["https://example.com/no-cover-body.jpg"],
+                "readCount": 77777,
             },
         }
 
@@ -309,6 +355,30 @@ def test_refresh_detail_requires_redfox_config_but_plain_detail_still_works(tmp_
 
         refresh = client.post(f"/api/wechat-official/content-library/{article_id}/refresh-detail", headers=headers)
         assert refresh.status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_refresh_detail_uses_first_detail_image_as_cover_when_redfox_has_no_cover(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeRedfoxNoCoverDetailClient, raising=False)
+    try:
+        headers = _register("refresh-no-cover-owner")
+        article_id = _create_article(headers, title="无封面文章", url="https://mp.weixin.qq.com/s/no-cover", read_count=0)
+        config = client.post("/api/wechat-official/redfox/config", headers=headers, json={"api_key": "refresh-secret"})
+        assert config.status_code == 200
+
+        response = client.post(f"/api/wechat-official/content-library/{article_id}/refresh-detail", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["article"]["cover_url"] == "https://example.com/no-cover-html.jpg"
+        assert payload["detail_status"]["has_cover"] is True
+        assert payload["images"][0]["url"] == "https://example.com/no-cover-html.jpg"
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            assert article.cover_url == "https://example.com/no-cover-html.jpg"
     finally:
         app.dependency_overrides.pop(get_db, None)
 

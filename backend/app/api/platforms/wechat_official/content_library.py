@@ -22,6 +22,7 @@ def list_content_library(
     min_read_count: Optional[int] = Query(default=None, ge=0),
     low_follower_evidence: Optional[str] = None,
     recommendation_status: Optional[str] = None,
+    pool_status: Optional[str] = None,
     keyword: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -33,6 +34,7 @@ def list_content_library(
             "min_read_count": min_read_count,
             "low_follower_evidence": low_follower_evidence,
             "recommendation_status": recommendation_status,
+            "pool_status": pool_status,
             "keyword": keyword,
         },
     )
