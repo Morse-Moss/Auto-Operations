@@ -12,13 +12,15 @@ from backend.app.core.security import decrypt_text, encrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import (
     WechatOfficialArticle,
+    WechatOfficialArticleComment,
+    WechatOfficialArticleCommentReply,
     WechatOfficialArticleMetric,
     WechatOfficialArticleSnapshot,
     WechatOfficialCrawlAccount,
     WechatOfficialCrawlJob,
     WechatOfficialRedfoxConfig,
 )
-from backend.app.services.wechat_official_crawl_service import serialize_article, serialize_metric
+from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_metric
 from backend.app.services.wechat_official_redfox_client import WechatOfficialRedfoxClient
 
 DEFAULT_REDFOX_BASE_URL = "https://redfox.hk"
@@ -161,6 +163,49 @@ class WechatOfficialRedfoxService:
             params={"url": url},
         )
 
+    def refresh_article_detail(self, user_id: int, article_id: int) -> dict[str, Any]:
+        article = WechatOfficialCrawlService(self.db)._get_owned_article(user_id, article_id)
+        url = str(article.article_url or article.content_url or "").strip()
+        if not url:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Article URL is required to refresh detail")
+
+        client = self._client(user_id)
+        response = client.query_article_detail(url=url)
+        payload = self.adapter.normalize_article_detail(response)
+        payload["article_url"] = payload.get("article_url") or article.article_url or article.content_url
+        payload["content_url"] = payload.get("content_url") or article.content_url or article.article_url
+        payload["title"] = payload.get("title") or article.title
+        payload["digest"] = payload.get("digest") or article.digest
+        payload["author_name"] = payload.get("author_name") or article.author_name
+        payload["cover_url"] = payload.get("cover_url") or article.cover_url
+
+        job = WechatOfficialCrawlJob(
+            account_id=article.account_id,
+            keyword=url,
+            status="running",
+            source="redfox",
+            requested_limit=1,
+            fetched_count=1,
+            params_json={"source": "redfox_detail_refresh", "api_calls": 1, "article_id": article.id, **sanitize_payload({"url": url})},
+            started_at=shanghai_now(),
+        )
+        self.db.add(job)
+        self.db.flush()
+
+        self._upsert_redfox_article(article.account_id, job.id, payload, min_read_count=0)
+        self._create_metric(article.id, payload)
+        if payload.get("content_text") or payload.get("content_html") or payload.get("images"):
+            self._create_snapshot(article.id, payload)
+        self._store_redfox_comments(article.id, payload)
+        job.status = "succeeded"
+        job.saved_count = 1
+        job.finished_at = shanghai_now()
+        self.db.commit()
+
+        from backend.app.services.wechat_official_content_service import WechatOfficialContentService
+
+        return WechatOfficialContentService(self.db).get_detail(user_id, article_id)
+
     def _save_collection(
         self,
         user_id: int,
@@ -195,8 +240,9 @@ class WechatOfficialRedfoxService:
             if not created:
                 deduped += 1
             metric = self._create_metric(article.id, item)
-            if save_snapshot and (item.get("content_text") or item.get("content_html")):
+            if save_snapshot and (item.get("content_text") or item.get("content_html") or item.get("images")):
                 self._create_snapshot(article.id, item)
+            self._store_redfox_comments(article.id, item)
             if metric.read_count >= min_read_count:
                 viral_candidates += 1
             saved_articles.append(article)
@@ -297,12 +343,57 @@ class WechatOfficialRedfoxService:
             status="captured",
             html=str(payload.get("content_html") or ""),
             text=str(payload.get("content_text") or payload.get("digest") or ""),
-            images_json=[],
-            raw_json={"source": "redfox", "external_id": payload.get("external_id")},
+            images_json=sanitize_payload(payload.get("images") or []),
+            raw_json={"source": "redfox", "external_id": payload.get("external_id"), "detail_completeness": payload.get("detail_completeness") or {}},
         )
         self.db.add(snapshot)
         self.db.flush()
         return snapshot
+
+    def _store_redfox_comments(self, article_id: int, payload: dict[str, Any]) -> int:
+        comments = payload.get("comments") or []
+        if not isinstance(comments, list):
+            return 0
+        stored = 0
+        for item in comments:
+            if not isinstance(item, dict):
+                continue
+            comment_id = str(item.get("comment_id") or "").strip()
+            if not comment_id:
+                continue
+            comment = self.db.scalar(select(WechatOfficialArticleComment).where(WechatOfficialArticleComment.article_id == article_id, WechatOfficialArticleComment.comment_id == comment_id))
+            if comment is None:
+                comment = WechatOfficialArticleComment(article_id=article_id, comment_id=comment_id)
+                self.db.add(comment)
+                stored += 1
+            comment.user_name = str(item.get("user_name") or "")
+            comment.user_id = item.get("user_id") or None
+            comment.content = str(item.get("content") or "")
+            comment.like_count = int(item.get("like_count") or 0)
+            comment.created_at_remote = item.get("created_at_remote") or None
+            comment.raw_json = sanitize_payload(item.get("raw") or item)
+            self.db.flush()
+            replies = item.get("replies") or []
+            if not isinstance(replies, list):
+                continue
+            for reply_item in replies:
+                if not isinstance(reply_item, dict):
+                    continue
+                reply_id = str(reply_item.get("reply_id") or "").strip()
+                if not reply_id:
+                    continue
+                reply = self.db.scalar(select(WechatOfficialArticleCommentReply).where(WechatOfficialArticleCommentReply.comment_id == comment.id, WechatOfficialArticleCommentReply.reply_id == reply_id))
+                if reply is None:
+                    reply = WechatOfficialArticleCommentReply(comment_id=comment.id, reply_id=reply_id)
+                    self.db.add(reply)
+                reply.user_name = str(reply_item.get("user_name") or "")
+                reply.user_id = reply_item.get("user_id") or None
+                reply.content = str(reply_item.get("content") or "")
+                reply.like_count = int(reply_item.get("like_count") or 0)
+                reply.created_at_remote = reply_item.get("created_at_remote") or None
+                reply.raw_json = sanitize_payload(reply_item.get("raw") or reply_item)
+                self.db.flush()
+        return stored
 
     def _latest_metric(self, article_id: int) -> WechatOfficialArticleMetric | None:
         return self.db.scalar(

@@ -11,6 +11,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.models import User
 from backend.app.services.wechat_official_content_service import WechatOfficialContentService
 from backend.app.services.wechat_official_draft_service import WechatOfficialDraftService
+from backend.app.services.wechat_official_redfox_service import WechatOfficialRedfoxService
 
 router = APIRouter(prefix="/wechat-official/content-library", tags=["wechat-official"])
 
@@ -45,6 +46,11 @@ def get_content_detail(article_id: int, current_user: User = Depends(get_current
 @router.patch("/{article_id}/recommendation")
 def update_recommendation(article_id: int, payload: WechatOfficialRecommendationUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return WechatOfficialContentService(db).update_recommendation(current_user.id, article_id, payload.model_dump(exclude_unset=True))
+
+
+@router.post("/{article_id}/refresh-detail")
+def refresh_detail(article_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WechatOfficialRedfoxService(db).refresh_article_detail(current_user.id, article_id)
 
 
 @router.post("/{article_id}/analyze-hotspots")

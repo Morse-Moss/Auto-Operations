@@ -262,11 +262,23 @@ export type WechatOfficialArticleSnapshotPayload = {
   html: string;
 };
 
+export type WechatOfficialContentImage = {
+  url: string;
+  type?: "cover" | "content" | "unknown" | string;
+  alt?: string;
+  width?: number | null;
+  height?: number | null;
+  source?: string;
+};
+
 export type WechatOfficialArticleSnapshot = {
   id: number;
   article_id: number;
   status: "captured" | "empty" | "failed" | string;
   text: string;
+  html?: string;
+  images_json?: WechatOfficialContentImage[];
+  captured_at?: string | null;
   comment_id?: string;
 };
 
@@ -310,11 +322,31 @@ export type WechatOfficialRecommendationUpdatePayload = {
   analysis_mode?: string | null;
 };
 
+export type WechatOfficialContentComments = {
+  items: WechatOfficialArticleComment[];
+  total: number;
+  available?: boolean;
+  source?: "stored" | "none" | string;
+};
+
+export type WechatOfficialDetailStatus = {
+  has_cover: boolean;
+  has_snapshot: boolean;
+  has_text: boolean;
+  has_html: boolean;
+  image_count: number;
+  comment_count: number;
+  can_refresh_from_redfox: boolean;
+};
+
 export type WechatOfficialContentDetail = {
   article: WechatOfficialContentLibraryItem;
   latest_metric?: WechatOfficialArticleMetric | null;
   analysis: WechatOfficialArticleAnalysis;
-  latest_snapshot?: (WechatOfficialArticleSnapshot & { html?: string; images_json?: unknown[]; captured_at?: string | null }) | null;
+  latest_snapshot?: WechatOfficialArticleSnapshot | null;
+  images?: WechatOfficialContentImage[];
+  comments?: WechatOfficialContentComments;
+  detail_status?: WechatOfficialDetailStatus;
   raw_json?: Record<string, unknown>;
 };
 
