@@ -95,7 +95,7 @@ export const fallbackPlatforms: PlatformMeta[] = [
     release_stage: "beta",
     region: "cn",
     platform_type: "content",
-    default_route: "/platforms/wechat-official/dashboard",
+    default_route: "/platforms/wechat-official/library",
     adapter_key: "wechat_official",
     risk_level: "medium",
     auth_modes: ["none"],

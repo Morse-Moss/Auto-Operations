@@ -70,7 +70,12 @@ const xhsNavItems: MenuProps["items"] = [
 
 const wechatOfficialNavItems: MenuProps["items"] = [
   { key: "/platform-select", icon: <DashboardOutlined />, label: "平台中心" },
-  { key: "/platforms/wechat-official/dashboard", icon: <DatabaseOutlined />, label: "公众号爆文" },
+  { key: "/platforms/wechat-official/dashboard", icon: <DashboardOutlined />, label: "公众号总览" },
+  { key: "/platforms/wechat-official/accounts", icon: <SafetyCertificateOutlined />, label: "公众号账号矩阵" },
+  { key: "/platforms/wechat-official/discovery", icon: <SearchOutlined />, label: "公众号爆文发现" },
+  { key: "/platforms/wechat-official/library", icon: <DatabaseOutlined />, label: "公众号内容库" },
+  { key: "/platforms/wechat-official/drafts", icon: <FileTextOutlined />, label: "公众号草稿工坊" },
+  { key: "/platforms/wechat-official/settings", icon: <SettingOutlined />, label: "Redfox 设置" },
 ];
 
 const footerNavItems: MenuProps["items"] = [

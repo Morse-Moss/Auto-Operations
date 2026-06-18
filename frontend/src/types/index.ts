@@ -1034,6 +1034,13 @@ export type GenerateImageResult = {
   asset?: GeneratedImageAsset;
 };
 
+export type GenerateImageTaskResult = {
+  task_id: number;
+  status: string;
+  progress: number;
+  payload: Record<string, unknown>;
+};
+
 export type UserImageFile = {
   file_name: string;
   url: string;
