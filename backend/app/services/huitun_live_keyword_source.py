@@ -14,6 +14,31 @@ HUITUN_LIVE_FAILED_MESSAGE = "灰豚候选词获取失败，请先使用手工�
 HUITUN_LOGIN_EXPIRED_MESSAGE = "灰豚登录态已过期，请到账号矩阵重新登录。"
 HUITUN_STRUCTURE_CHANGED_MESSAGE = "灰豚候选词返回结构已变化，请先使用手工导入并等待适配。"
 HUITUN_EMPTY_RESULT_MESSAGE = "灰豚没有返回候选词，请换一个种子词或稍后重试。"
+HUITUN_HOTWORD_MAX_PAGE_SIZE = 20
+
+
+def _safe_huitun_message(payload: dict[str, Any]) -> str:
+    for key in ("message", "msg", "errorMessage", "error_message", "desc"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    ext_data = payload.get("extData")
+    if isinstance(ext_data, dict):
+        for key in ("message", "msg", "errorMessage", "error_message", "desc"):
+            value = ext_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _huitun_failure_message(payload: dict[str, Any]) -> str:
+    status_code = payload.get("status") or payload.get("code")
+    message = _safe_huitun_message(payload)
+    if message:
+        return f"灰豚候选词获取失败：{message}"
+    if status_code is not None:
+        return f"灰豚候选词获取失败：灰豚接口返回状态 {status_code}，请重新登录灰豚或稍后重试。"
+    return HUITUN_LIVE_FAILED_MESSAGE
 
 
 def _now_ms() -> int:
@@ -120,19 +145,31 @@ def fetch_huitun_hotwords(cookie_text: str, seed_keyword: str, limit: int) -> li
         response = session.post(
             HUITUN_HOTWORD_SEARCH_URL,
             params={"_t": _now_ms()},
-            json={"keyword": seed, "page": 1, "pageSize": max(1, min(limit, 100)), "type": 0},
+            json={"keyword": seed, "page": 1, "pageSize": max(1, min(limit, HUITUN_HOTWORD_MAX_PAGE_SIZE)), "type": 0},
             timeout=20,
         )
-        response.raise_for_status()
-        payload = response.json()
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        raise RuntimeError(HUITUN_LIVE_FAILED_MESSAGE) from exc
+    except requests.Timeout as exc:
+        raise RuntimeError("灰豚候选词获取超时，请稍后重试；如果连续失败，请重新登录灰豚。") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError("灰豚候选词网络请求失败，请检查网络或稍后重试。") from exc
 
-    status_code = payload.get("status") if isinstance(payload, dict) else None
+    if response.status_code in {401, 403}:
+        raise RuntimeError(HUITUN_LOGIN_EXPIRED_MESSAGE)
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(f"灰豚候选词获取失败：HTTP {response.status_code}，请稍后重试。") from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("灰豚候选词接口返回非 JSON 内容，请稍后重试或重新登录灰豚。") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(HUITUN_STRUCTURE_CHANGED_MESSAGE)
+    status_code = payload.get("status") or payload.get("code")
     if status_code in {1001, 401, 403}:
         raise RuntimeError(HUITUN_LOGIN_EXPIRED_MESSAGE)
-    if not isinstance(payload, dict) or status_code not in {0, 200}:
-        raise RuntimeError(HUITUN_LIVE_FAILED_MESSAGE)
+    if status_code not in {0, 200, None}:
+        raise RuntimeError(_huitun_failure_message(payload))
     return _rows_from_response(seed, payload, limit)

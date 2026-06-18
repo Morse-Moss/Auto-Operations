@@ -91,13 +91,81 @@ def _asset_display_url(asset: NoteAsset) -> str:
     return asset.url
 
 
-def _serialize_note(db: Session, note: Note) -> dict:
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        cleaned = value.strip().lower().replace(",", "")
+        multiplier = 1
+        if cleaned.endswith("w"):
+            multiplier = 10000
+            cleaned = cleaned[:-1]
+        try:
+            return int(float(cleaned) * multiplier)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _note_engagement_metrics(note: Note) -> dict[str, int]:
+    raw = note.raw_json if isinstance(note.raw_json, dict) else {}
+    likes = _as_int(raw.get("liked_count") or raw.get("likes") or raw.get("like_count"))
+    collects = _as_int(raw.get("collected_count") or raw.get("collects") or raw.get("collect_count"))
+    comments = _as_int(raw.get("comment_count") or raw.get("comments"))
+    shares = _as_int(raw.get("share_count") or raw.get("shares"))
+    if likes or collects or comments or shares:
+        return {"likes": likes, "collects": collects, "comments": comments, "shares": shares}
+
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    item = items[0] if items and isinstance(items[0], dict) else {}
+    card = item.get("note_card") if isinstance(item.get("note_card"), dict) else {}
+    info = card.get("interact_info") if isinstance(card.get("interact_info"), dict) else {}
+    return {
+        "likes": _as_int(info.get("liked_count")),
+        "collects": _as_int(info.get("collected_count")),
+        "comments": _as_int(info.get("comment_count")),
+        "shares": _as_int(info.get("share_count")),
+    }
+
+
+def _note_metric(note: Note, sort_by: str) -> int:
+    metrics = _note_engagement_metrics(note)
+    if sort_by == "likes":
+        return metrics["likes"]
+    if sort_by == "comments":
+        return metrics["comments"]
+    if sort_by == "collects":
+        return metrics["collects"]
+    if sort_by == "engagement":
+        return metrics["likes"] + metrics["collects"] + metrics["comments"] + metrics["shares"]
+    return 0
+
+
+def _top_note_ids(notes: list[Note], sort_by: str, limit: int = 20) -> set[int]:
+    ranked = sorted(notes, key=lambda note: (_note_metric(note, sort_by), note.created_at, note.id), reverse=True)
+    return {note.id for note in ranked[:limit] if _note_metric(note, sort_by) > 0}
+
+
+def _top20_marks(notes: list[Note]) -> dict[int, list[str]]:
+    labels = {"likes": "点赞TOP20", "comments": "评论TOP20", "collects": "收藏TOP20"}
+    marks: dict[int, list[str]] = {note.id: [] for note in notes}
+    for metric, label in labels.items():
+        for note_id in _top_note_ids(notes, metric):
+            marks.setdefault(note_id, []).append(label)
+    return marks
+
+
+def _serialize_note(db: Session, note: Note, top20_marks: dict[int, list[str]] | None = None) -> dict:
     assets = _get_note_assets(db, note)
     image_assets = [asset for asset in assets if asset.asset_type == "image"]
     video_assets = [asset for asset in assets if asset.asset_type == "video"]
     asset_urls = [_asset_display_url(asset) for asset in assets if asset.url or asset.local_path]
     raw = note.raw_json if isinstance(note.raw_json, dict) else {}
     raw_cover = raw.get("cover_url") if isinstance(raw.get("cover_url"), str) else ""
+    marks = (top20_marks or {}).get(note.id, [])
     return {
         "id": note.id,
         "platform": note.platform,
@@ -112,11 +180,14 @@ def _serialize_note(db: Session, note: Note) -> dict:
         "video_url": _asset_display_url(video_assets[0]) if video_assets else "",
         "video_addr": _asset_display_url(video_assets[0]) if video_assets else "",
         "created_at": note.created_at.isoformat(),
+        "engagement_metrics": _note_engagement_metrics(note),
+        "analysis_marks": marks,
+        "is_analysis_focus": len(marks) >= 2,
     }
 
 
-def _serialize_note_with_tags(db: Session, note: Note) -> dict:
-    serialized = _serialize_note(db, note)
+def _serialize_note_with_tags(db: Session, note: Note, top20_marks: dict[int, list[str]] | None = None) -> dict:
+    serialized = _serialize_note(db, note, top20_marks)
     serialized["tags"] = _get_note_tags(db, note.id)
     return serialized
 
@@ -231,6 +302,7 @@ def get_notes(
     tag_id: Optional[int] = None,
     has_assets: Optional[bool] = None,
     has_comments: Optional[bool] = None,
+    sort_by: Literal["latest", "engagement", "likes", "comments", "collects"] = "latest",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -266,7 +338,10 @@ def get_notes(
     elif has_comments is False:
         statement = statement.where(Note.id.not_in(select(NoteComment.note_id)))
     notes = db.scalars(statement.order_by(Note.created_at.desc())).all()
-    return paginated([_serialize_note_with_tags(db, note) for note in notes], page, page_size)
+    top20_marks = _top20_marks(notes)
+    if sort_by != "latest":
+        notes = sorted(notes, key=lambda note: (_note_metric(note, sort_by), note.created_at, note.id), reverse=True)
+    return paginated([_serialize_note_with_tags(db, note, top20_marks) for note in notes], page, page_size)
 
 
 @router.post("/batch-create-drafts")

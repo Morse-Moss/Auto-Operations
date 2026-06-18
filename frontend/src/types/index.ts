@@ -569,6 +569,14 @@ export type SavedNote = {
   video_url?: string;
   video_addr?: string;
   created_at: string;
+  engagement_metrics?: {
+    likes: number;
+    collects: number;
+    comments: number;
+    shares: number;
+  };
+  analysis_marks?: string[];
+  is_analysis_focus?: boolean;
   tags?: Tag[];
 };
 

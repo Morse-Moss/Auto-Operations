@@ -569,6 +569,8 @@ export type SavedNoteFilters = {
   tag_id?: number;
   has_assets?: boolean;
   has_comments?: boolean;
+  sort_by?: "latest" | "engagement" | "likes" | "comments" | "collects";
+  page?: number;
   page_size?: number;
 };
 
@@ -587,6 +589,8 @@ export async function fetchSavedNotes(platformOrFilters: string | SavedNoteFilte
           tag_id: platformOrFilters.tag_id,
           has_assets: platformOrFilters.has_assets,
           has_comments: platformOrFilters.has_comments,
+          sort_by: platformOrFilters.sort_by,
+          page: platformOrFilters.page,
           page_size: platformOrFilters.page_size,
         };
   const response = await http.get<Paginated<SavedNote>>("/notes", { params });

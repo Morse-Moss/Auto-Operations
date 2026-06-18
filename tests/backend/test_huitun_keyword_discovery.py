@@ -67,6 +67,44 @@ def test_huitun_rows_from_response_reports_empty_result_when_list_is_present_but
     assert str(exc_info.value) == HUITUN_EMPTY_RESULT_MESSAGE
 
 
+def test_huitun_failure_message_preserves_safe_upstream_message():
+    from backend.app.services.huitun_live_keyword_source import _huitun_failure_message
+
+    message = _huitun_failure_message({"status": 5001, "message": "关键词不能为空或无权限访问"})
+
+    assert message == "灰豚候选词获取失败：关键词不能为空或无权限访问"
+
+
+def test_fetch_huitun_hotwords_caps_live_page_size(monkeypatch):
+    from backend.app.services import huitun_live_keyword_source as source
+
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"status": 0, "data": {"records": [{"word": "浴缸", "rankIndex": 1}]}}
+
+    class FakeSession:
+        cookies: dict[str, str] = {}
+
+        def post(self, _url, *, params, json, timeout):
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(source, "validate_huitun_login_state", lambda _cookie_text: {"nickname": "灰豚账号"})
+    monkeypatch.setattr(source, "_session_from_cookie_text", lambda _cookie_text: FakeSession())
+
+    rows = source.fetch_huitun_hotwords("session=ok", "浴缸", 50)
+
+    assert captured["json"]["pageSize"] == 20
+    assert rows[0]["keyword"] == "浴缸"
+
+
 def test_huitun_rows_from_response_reports_decrypt_failure_for_invalid_ext_data():
     from backend.app.services.huitun_crypto import HUITUN_EXT_DATA_DECRYPT_FAILED_MESSAGE
     from backend.app.services.huitun_live_keyword_source import _rows_from_response
@@ -170,6 +208,7 @@ def test_live_huitun_batch_discovery_keeps_successful_seed_items_when_one_seed_f
         assert response.status_code == 200
         payload = response.json()
         assert payload["status"] == "partial_failed"
+        assert payload["limit_per_seed"] == 20
         assert payload["summary"] == {
             "success_seed_count": 1,
             "failed_seed_count": 1,
@@ -185,7 +224,7 @@ def test_live_huitun_batch_discovery_keeps_successful_seed_items_when_one_seed_f
             },
         ]
         assert [item["keyword"] for item in payload["items"]] == ["低卡早餐食谱"]
-        assert fake.calls == [("session=ok", "低卡早餐", 50), ("session=ok", "通勤穿搭", 50)]
+        assert fake.calls == [("session=ok", "低卡早餐", 20), ("session=ok", "通勤穿搭", 20)]
 
         db = SessionLocal()
         try:
@@ -243,7 +282,8 @@ def test_live_huitun_batch_discovery_returns_failed_run_instead_of_http_400_when
                 "error_message": "灰豚登录态已过期，请到账号矩阵重新登录。",
             }
         ]
-        assert fake.calls == [("session=ok", "低卡早餐", 50)]
+        assert payload["limit_per_seed"] == 20
+        assert fake.calls == [("session=ok", "低卡早餐", 20)]
     finally:
         app.dependency_overrides.pop(get_huitun_live_keyword_client, None)
         app.dependency_overrides.pop(get_db, None)

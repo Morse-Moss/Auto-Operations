@@ -30,6 +30,7 @@ import {
   Image,
   Input,
   Modal,
+  Pagination,
   Popconfirm,
   Row,
   Segmented,
@@ -63,6 +64,8 @@ import { formatShanghaiTime } from "../../../lib/time";
 import type { NoteAsset, NoteComment, NotesExportResponse, SavedNote, Tag as TagType } from "../../../types";
 
 const { Title, Text, Paragraph } = Typography;
+
+type LibrarySortBy = "latest" | "engagement" | "likes" | "comments" | "collects";
 
 function formatSavedTime(v: string): string { return formatShanghaiTime(v); }
 function getRawNoteType(note: SavedNote): string { const t = note.raw_json?.model_type ?? note.raw_json?.type; return typeof t === "string" ? t : "note"; }
@@ -140,6 +143,7 @@ function getNoteTags(note: SavedNote): string[] {
   return [];
 }
 function getNoteEngagement(note: SavedNote): { likes: number; collects: number; comments: number; shares: number } {
+  if (note.engagement_metrics) return note.engagement_metrics;
   const raw = note.raw_json ?? {};
   // Direct fields (from search results)
   const likes = Number(raw.liked_count ?? raw.likes ?? 0);
@@ -189,6 +193,9 @@ export function XhsLibraryPage() {
   const [selectedTagFilter, setSelectedTagFilter] = useState("");
   const [hasAssetsFilter, setHasAssetsFilter] = useState(false);
   const [hasCommentsFilter, setHasCommentsFilter] = useState(false);
+  const [sortBy, setSortBy] = useState<LibrarySortBy>("latest");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(40);
   const [viewMode, setViewMode] = useState<string>("card");
   const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
   const [batchTagId, setBatchTagId] = useState<string>("");
@@ -199,12 +206,21 @@ export function XhsLibraryPage() {
 
   const selectedNoteIdSet = new Set(selectedNoteIds);
 
-  async function loadNotes(overrideFilters?: { q?: string; tag_id?: number; has_assets?: boolean; has_comments?: boolean }) {
+  async function loadNotes(overrideFilters?: { q?: string; tag_id?: number; has_assets?: boolean; has_comments?: boolean; sort_by?: LibrarySortBy; page?: number; page_size?: number }) {
     setIsLoading(true); setError(null);
-    const f = overrideFilters ?? { q: keywordFilter.trim() || undefined, tag_id: selectedTagFilter ? Number(selectedTagFilter) : undefined, has_assets: hasAssetsFilter || undefined, has_comments: hasCommentsFilter || undefined };
+    const f = {
+      q: keywordFilter.trim() || undefined,
+      tag_id: selectedTagFilter ? Number(selectedTagFilter) : undefined,
+      has_assets: hasAssetsFilter || undefined,
+      has_comments: hasCommentsFilter || undefined,
+      sort_by: sortBy,
+      page,
+      page_size: pageSize,
+      ...overrideFilters,
+    };
     try {
       const r = await fetchSavedNotes({ platform: "xhs", ...f });
-      setNotes(r.items); setTotal(r.total);
+      setNotes(r.items); setTotal(r.total); setPage(r.page); setPageSize(r.page_size);
       const ids = new Set(r.items.map((n) => n.id));
       setSelectedNoteIds((c) => c.filter((id) => ids.has(id)));
     } catch { setError("内容库加载失败。"); } finally { setIsLoading(false); }
@@ -212,7 +228,9 @@ export function XhsLibraryPage() {
 
   useEffect(() => { void loadNotes(); void loadTags(); }, []);
 
-  function clearFilters() { setKeywordFilter(""); setSelectedTagFilter(""); setHasAssetsFilter(false); setHasCommentsFilter(false); void loadNotes({}); }
+  function clearFilters() { setKeywordFilter(""); setSelectedTagFilter(""); setHasAssetsFilter(false); setHasCommentsFilter(false); setPage(1); void loadNotes({ q: undefined, tag_id: undefined, has_assets: undefined, has_comments: undefined, page: 1 }); }
+  function handleSortChange(nextSortBy: LibrarySortBy) { setSortBy(nextSortBy); setPage(1); void loadNotes({ sort_by: nextSortBy, page: 1 }); }
+  function handlePageChange(nextPage: number, nextPageSize: number) { setPage(nextPage); setPageSize(nextPageSize); void loadNotes({ page: nextPage, page_size: nextPageSize }); }
   function toggleNoteSelection(id: number) { setSelectedNoteIds((c) => c.includes(id) ? c.filter((i) => i !== id) : [...c, id]); }
   function toggleVisibleSelection() { if (!notes.length) return; const vis = notes.map((n) => n.id); const allSel = vis.every((id) => selectedNoteIdSet.has(id)); setSelectedNoteIds((c) => allSel ? c.filter((id) => !vis.includes(id)) : Array.from(new Set([...c, ...vis]))); }
   function clearSelection() { setSelectedNoteIds([]); setBatchActionMessage(null); }
@@ -342,6 +360,16 @@ export function XhsLibraryPage() {
   const tableColumns: ColumnsType<SavedNote> = [
     { title: "标题", dataIndex: "title", ellipsis: true, render: (t: string, n) => <a onClick={() => void openDetail(n)}>{t || "未命名"}</a> },
     { title: "作者", dataIndex: "author_name", width: 120 },
+    {
+      title: "互动",
+      key: "engagement",
+      width: 170,
+      render: (_, n) => {
+        const eng = getNoteEngagement(n);
+        return <Space size={6} wrap><span>赞 {eng.likes}</span><span>评 {eng.comments}</span><span>藏 {eng.collects}</span></Space>;
+      },
+    },
+    { title: "重点", key: "analysis_marks", width: 180, render: (_, n) => n.analysis_marks?.length ? <Space size={4} wrap>{n.is_analysis_focus && <Tag color="gold">重点</Tag>}{n.analysis_marks.map((mark) => <Tag key={mark} color="blue">{mark}</Tag>)}</Space> : <Text type="secondary">-</Text> },
     { title: "笔记 ID", dataIndex: "note_id", width: 140, ellipsis: true },
     { title: "保存时间", dataIndex: "created_at", width: 160, render: (v: string) => formatSavedTime(v) },
     { title: "标签", key: "tags", width: 180, render: (_, n) => n.tags?.length ? <Space size={4} wrap>{n.tags.map((t) => <Tag key={t.id} color="blue">{t.name}</Tag>)}</Space> : <Text type="secondary">-</Text> },
@@ -366,11 +394,18 @@ export function XhsLibraryPage() {
         <Row gutter={12} align="middle">
           <Col span={5}><Input placeholder="标题、正文、作者" value={keywordFilter} onChange={(e) => setKeywordFilter(e.target.value)} allowClear /></Col>
           <Col span={4}><Select value={selectedTagFilter || undefined} onChange={(v) => setSelectedTagFilter(v ?? "")} placeholder="全部标签" allowClear style={{ width: "100%" }} options={availableTags.map((t) => ({ value: String(t.id), label: t.name }))} /></Col>
+          <Col span={4}><Select value={sortBy} onChange={handleSortChange} style={{ width: "100%" }} options={[
+            { value: "latest", label: "最新保存" },
+            { value: "engagement", label: "综合互动" },
+            { value: "likes", label: "最多点赞" },
+            { value: "comments", label: "最多评论" },
+            { value: "collects", label: "最多收藏" },
+          ]} /></Col>
           <Col><Checkbox checked={hasAssetsFilter} onChange={(e) => setHasAssetsFilter(e.target.checked)}>有素材</Checkbox></Col>
           <Col><Checkbox checked={hasCommentsFilter} onChange={(e) => setHasCommentsFilter(e.target.checked)}>有评论</Checkbox></Col>
           <Col><Segmented value={viewMode} onChange={(v) => setViewMode(v as string)} options={[{ label: "卡片", value: "card" }, { label: "表格", value: "table" }]} /></Col>
           <Col><Button onClick={clearFilters}>重置</Button></Col>
-          <Col><Button type="primary" onClick={() => void loadNotes()} loading={isLoading}>筛选</Button></Col>
+          <Col><Button type="primary" onClick={() => void loadNotes({ page: 1 })} loading={isLoading}>筛选</Button></Col>
         </Row>
       </Card>
 
@@ -398,7 +433,7 @@ export function XhsLibraryPage() {
         <Empty description="内容库还是空的"><Link to="/platforms/xhs/discovery"><Button type="primary" icon={<BookOutlined />}>去发现笔记</Button></Link></Empty>
       ) : viewMode === "table" ? (
         <Card size="small">
-          <Table<SavedNote> columns={tableColumns} dataSource={notes} rowKey="id" size="small" pagination={{ pageSize: 20 }}
+          <Table<SavedNote> columns={tableColumns} dataSource={notes} rowKey="id" size="small" pagination={false}
             rowSelection={{ selectedRowKeys: selectedNoteIds, onChange: (keys) => setSelectedNoteIds(keys as number[]) }}
             onRow={(n) => ({ onClick: () => void openDetail(n), style: { cursor: "pointer" } })} />
         </Card>
@@ -437,12 +472,32 @@ export function XhsLibraryPage() {
                       })()}
                     </>
                   } />
+                  {note.analysis_marks?.length ? (
+                    <div style={{ marginTop: 6 }}>
+                      {note.is_analysis_focus && <Tag color="gold" style={{ fontSize: 11 }}>重点</Tag>}
+                      {note.analysis_marks.map((mark) => <Tag key={mark} color="blue" style={{ fontSize: 11 }}>{mark}</Tag>)}
+                    </div>
+                  ) : null}
                   {note.tags?.length ? <div style={{ marginTop: 6 }}>{note.tags.map((t) => <Tag key={t.id} color="blue" style={{ fontSize: 11 }}>{t.name}</Tag>)}</div> : null}
                 </Card>
               </Col>
             );
           })}
         </Row>
+      )}
+
+      {total > 0 && (
+        <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
+          <Pagination
+            current={page}
+            pageSize={pageSize}
+            total={total}
+            showSizeChanger
+            pageSizeOptions={["20", "40", "80", "100"]}
+            showTotal={(count, range) => `展示 ${range[0]}-${range[1]} / 共 ${count} 条`}
+            onChange={handlePageChange}
+          />
+        </div>
       )}
 
       <Drawer title={selectedNote?.title || "笔记详情"} open={isDetailOpen} onClose={closeDetail} width={640} styles={{ body: { background: "#1a1a1a" } }}>

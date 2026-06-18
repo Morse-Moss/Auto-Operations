@@ -418,12 +418,17 @@ def create_huitun_discovery_run(
     live_keyword_client=Depends(get_huitun_live_keyword_client),
 ):
     seed_keywords = _normalize_keywords([input_item.source_keyword for input_item in payload.inputs])
+    effective_limit_per_seed = (
+        min(payload.limit_per_seed, huitun_live_keyword_source.HUITUN_HOTWORD_MAX_PAGE_SIZE)
+        if payload.source_mode == "live_account"
+        else payload.limit_per_seed
+    )
     run = KeywordDiscoveryRun(
         user_id=current_user.id,
         platform="xhs",
         source="huitun",
         seed_keywords=seed_keywords,
-        limit_per_seed=payload.limit_per_seed,
+        limit_per_seed=effective_limit_per_seed,
         source_mode=payload.source_mode,
         status="running",
     )
@@ -437,7 +442,7 @@ def create_huitun_discovery_run(
         for input_item in payload.inputs:
             source_keyword = input_item.source_keyword.strip()
             try:
-                seed_rows = live_keyword_client.fetch_huitun_hotwords(cookies_text, source_keyword, payload.limit_per_seed)
+                seed_rows = live_keyword_client.fetch_huitun_hotwords(cookies_text, source_keyword, effective_limit_per_seed)
             except RuntimeError as exc:
                 seed_results.append(_seed_failure(source_keyword, str(exc)))
                 continue
@@ -445,7 +450,7 @@ def create_huitun_discovery_run(
             seed_results.append(_seed_success(source_keyword, len(seed_rows)))
     else:
         for input_item in payload.inputs:
-            seed_rows = _rows_from_huitun_input(input_item, payload.source_mode)[: payload.limit_per_seed]
+            seed_rows = _rows_from_huitun_input(input_item, payload.source_mode)[: effective_limit_per_seed]
             rows.extend(seed_rows)
             seed_results.append(_seed_success(input_item.source_keyword.strip(), len(seed_rows)))
     rows = dedupe_keyword_candidates(rows)
