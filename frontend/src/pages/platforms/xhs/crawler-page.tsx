@@ -51,6 +51,14 @@ const distanceOptions = [
 ];
 
 type CrawlChannel = "keyword_group" | "manual_keyword";
+type CrawlSpeedPreset = "safe" | "standard" | "fast" | "custom";
+
+const crawlSpeedOptions = [
+  { value: "safe", label: "保守模式（推荐真实账号）" },
+  { value: "standard", label: "标准模式（少量验证）" },
+  { value: "fast", label: "快速模式（仅测试账号）" },
+  { value: "custom", label: "自定义" },
+];
 
 function splitUrls(value: string): string[] {
   return value.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean);
@@ -215,6 +223,14 @@ function savedStatusTag(item: XhsDataCrawlItem) {
   return <Text type="secondary">-</Text>;
 }
 
+function accountStatusLabel(status: string): string {
+  if (status === "active") return "可用";
+  if (status === "expired") return "已过期";
+  if (status === "disabled") return "已停用";
+  if (status === "pending") return "待确认";
+  return status || "未知";
+}
+
 function exportRowsToExcel(items: XhsDataCrawlItem[]) {
   const rows = items.map((item) => [
     item.status,
@@ -285,9 +301,10 @@ export function XhsCrawlerPage() {
   const [urls, setUrls] = useState("");
   const [keyword, setKeyword] = useState("");
   const [pages, setPages] = useState(1);
-  const [maxNotes, setMaxNotes] = useState(20);
-  const [timeSleep, setTimeSleep] = useState(1);
-  const [commentSleep, setCommentSleep] = useState(5);
+  const [maxNotes, setMaxNotes] = useState(5);
+  const [timeSleep, setTimeSleep] = useState(5);
+  const [commentSleep, setCommentSleep] = useState(15);
+  const [crawlSpeedPreset, setCrawlSpeedPreset] = useState<CrawlSpeedPreset>("safe");
   const [fetchCommentsChecked, setFetchCommentsChecked] = useState(queryFetchComments);
   const [saveToLibraryChecked, setSaveToLibraryChecked] = useState(true);
   const [dataSavedCount, setDataSavedCount] = useState(0);
@@ -343,12 +360,32 @@ export function XhsCrawlerPage() {
     }
   }
 
+  function applyCrawlSpeedPreset(nextPreset: CrawlSpeedPreset) {
+    setCrawlSpeedPreset(nextPreset);
+    if (nextPreset === "safe") {
+      setTimeSleep(5);
+      setCommentSleep(15);
+      setMaxNotes(5);
+      setPages(1);
+    } else if (nextPreset === "standard") {
+      setTimeSleep(3);
+      setCommentSleep(10);
+      setMaxNotes(10);
+      setPages(1);
+    } else if (nextPreset === "fast") {
+      setTimeSleep(1);
+      setCommentSleep(5);
+      setMaxNotes(20);
+      setPages(1);
+    }
+  }
+
   async function handleSimpleRun() {
     setError(null);
     setSummaryMessage(null);
     setKeywordGroupSummary(null);
     if (!selectedAccountId) { setError("请先选择一个可用的 PC 账号。"); return; }
-    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到 active 账号或重新登录。"); return; }
+    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到可用账号或重新登录。"); return; }
     if (!selectedKeywordGroupId) { setError("请先选择一个关键词组。"); return; }
     setIsRunning(true);
     setItems([]);
@@ -394,7 +431,7 @@ export function XhsCrawlerPage() {
     setKeywordGroupSummary(null);
     if (isKeywordGroupMode) { await handleSimpleRun(); return; }
     if (!selectedAccountId) { setError("请先选择一个可用的 PC 账号。"); return; }
-    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到 active 账号或重新登录。"); return; }
+    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到可用账号或重新登录。"); return; }
     const parsedUrls = splitUrls(urls);
     if (mode !== "search" && parsedUrls.length === 0) { setError("请至少输入一个笔记链接。"); return; }
     if (mode === "search" && !keyword.trim()) { setError("请填写搜索关键词。"); return; }
@@ -464,7 +501,7 @@ export function XhsCrawlerPage() {
       <Row justify="space-between" align="middle" style={{ marginBottom: 24 }}>
         <Col>
           <Title level={4} style={{ margin: 0 }}>数据抓取</Title>
-          <Text type="secondary">搜索结果、笔记详情和评论抓取，失败项单独标注并可导出 Excel</Text>
+          <Text type="secondary">搜索结果、笔记详情和评论抓取，失败项单独标注并可导出表格</Text>
         </Col>
         <Col>
           <Button icon={<ReloadOutlined />} onClick={() => { void loadAccounts(); void loadKeywordGroups(); }} loading={isLoadingAccounts}>刷新账号和关键词组</Button>
@@ -491,7 +528,7 @@ export function XhsCrawlerPage() {
                   status={selectedAccount?.status === "expired" ? "error" : undefined}
                   options={[...activePcAccounts, ...pcAccounts.filter((a) => a.status !== "active")].map((a) => ({
                     value: a.id,
-                    label: `${a.nickname || `PC 账号 ${a.id}`} · ${a.status}`,
+                    label: `${a.nickname || `PC 账号 ${a.id}`} · ${accountStatusLabel(a.status)}`,
                     disabled: a.status === "expired",
                   }))}
                 />
@@ -571,7 +608,7 @@ export function XhsCrawlerPage() {
                     </Col>
                     <Col xs={12} md={4}>
                       <Form.Item label="爬取数量">
-                        <InputNumber min={1} max={200} value={maxNotes} onChange={(v) => { const n = v ?? 20; setMaxNotes(n); setPages(Math.max(1, Math.ceil(n / 20))); }} style={{ width: "100%" }} />
+                        <InputNumber min={1} max={200} value={maxNotes} onChange={(v) => { const n = v ?? 5; setCrawlSpeedPreset("custom"); setMaxNotes(n); setPages(Math.max(1, Math.ceil(n / 20))); }} style={{ width: "100%" }} />
                       </Form.Item>
                     </Col>
                     <Col xs={12} md={4}>
@@ -589,17 +626,53 @@ export function XhsCrawlerPage() {
                         <Select value={filters.note_time} onChange={(v) => setFilters((c) => ({ ...c, note_time: v }))} options={noteTimeOptions} />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} md={4}>
-                      <Form.Item label="距离">
-                        <Select value={filters.pos_distance} onChange={(v) => setFilters((c) => ({ ...c, pos_distance: v }))} options={distanceOptions} />
-                      </Form.Item>
-                    </Col>
-                    <Col xs={12} md={4}>
-                      <Form.Item label="Geo">
-                        <Input value={filters.geo} onChange={(e) => setFilters((c) => ({ ...c, geo: e.target.value }))} placeholder="经纬度" />
-                      </Form.Item>
-                    </Col>
                   </Row>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="真实账号请使用保守模式"
+                    description="建议单次采集 5-10 条；连续大量采集或同时抓取评论可能触发平台风控。账号出现异常后，应暂停采集并降低频率。"
+                    style={{ marginBottom: 16 }}
+                  />
+                  <Collapse
+                    ghost
+                    activeKey={showAdvanced ? ["advanced"] : []}
+                    onChange={(keys) => setShowAdvanced(Array.isArray(keys) ? keys.includes("advanced") : keys === "advanced")}
+                    items={[{
+                      key: "advanced",
+                      label: <Space><SettingOutlined />高级设置</Space>,
+                      children: (
+                        <Row gutter={16}>
+                          <Col xs={24} md={6}>
+                            <Form.Item label="采集速度">
+                              <Select value={crawlSpeedPreset} onChange={applyCrawlSpeedPreset} options={crawlSpeedOptions} />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={12} md={4}>
+                            <Form.Item label="搜索间隔（秒）">
+                              <InputNumber min={1} max={60} step={0.5} value={timeSleep} onChange={(v) => { setCrawlSpeedPreset("custom"); setTimeSleep(v ?? 5); }} style={{ width: "100%" }} />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={12} md={4}>
+                            <Form.Item label="评论间隔（秒）">
+                              <InputNumber min={1} max={120} step={0.5} value={commentSleep} onChange={(v) => { setCrawlSpeedPreset("custom"); setCommentSleep(v ?? 15); }} style={{ width: "100%" }} />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={12} md={4}>
+                            <Form.Item label="距离">
+                              <Select value={filters.pos_distance} onChange={(v) => setFilters((c) => ({ ...c, pos_distance: v }))} options={distanceOptions} />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={12} md={6}>
+                            <Form.Item label="地理位置">
+                              <Input value={filters.geo} onChange={(e) => setFilters((c) => ({ ...c, geo: e.target.value }))} placeholder="经纬度" />
+                            </Form.Item>
+                          </Col>
+                        </Row>
+                      ),
+                    }]}
+                    style={{ marginBottom: 8 }}
+                  />
                 </>
               ) : (
                 <Form.Item label="笔记链接">
@@ -662,7 +735,7 @@ export function XhsCrawlerPage() {
           ) : null}
           {!isKeywordGroupMode && mode === "comments" ? (
             <Text type="secondary" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
-              只爬评论模式不会创建新笔记，结果可在本页查看或导出 Excel。
+              只爬评论模式不会创建新笔记，结果可在本页查看或导出表格。
             </Text>
           ) : null}
 
@@ -675,8 +748,8 @@ export function XhsCrawlerPage() {
                 key: "advanced",
                 label: <Space><SettingOutlined />高级设置</Space>,
                 children: <Row gutter={16}>
-                  <Col span={4}><Form.Item label="Time Sleep"><InputNumber min={0} max={60} step={0.5} value={timeSleep} onChange={(v) => setTimeSleep(v ?? 1)} style={{ width: "100%" }} /></Form.Item></Col>
-                  <Col span={4}><Form.Item label="Comment Sleep"><InputNumber min={0} max={120} step={0.5} value={commentSleep} onChange={(v) => setCommentSleep(v ?? 5)} style={{ width: "100%" }} /></Form.Item></Col>
+                  <Col span={4}><Form.Item label="搜索间隔（秒）"><InputNumber min={1} max={60} step={0.5} value={timeSleep} onChange={(v) => { setCrawlSpeedPreset("custom"); setTimeSleep(v ?? 5); }} style={{ width: "100%" }} /></Form.Item></Col>
+                  <Col span={4}><Form.Item label="评论间隔（秒）"><InputNumber min={1} max={120} step={0.5} value={commentSleep} onChange={(v) => { setCrawlSpeedPreset("custom"); setCommentSleep(v ?? 15); }} style={{ width: "100%" }} /></Form.Item></Col>
                   <Col span={4}><Form.Item label="排序"><Select value={filters.sort_type_choice} onChange={(v) => setFilters((c) => ({ ...c, sort_type_choice: v }))} options={sortOptions} /></Form.Item></Col>
                   <Col span={4}><Form.Item label="类型"><Select value={filters.note_type} onChange={(v) => setFilters((c) => ({ ...c, note_type: v }))} options={noteTypeOptions} /></Form.Item></Col>
                   <Col span={4}><Form.Item label="时间范围"><Select value={filters.note_time} onChange={(v) => setFilters((c) => ({ ...c, note_time: v }))} options={noteTimeOptions} /></Form.Item></Col>
@@ -689,7 +762,7 @@ export function XhsCrawlerPage() {
             <Button type="primary" htmlType="submit" loading={isRunning} disabled={noPcAccount} icon={isKeywordGroupMode || mode === "search" ? <SearchOutlined /> : <CloudDownloadOutlined />}>
               {isRunning ? "抓取中..." : isKeywordGroupMode ? "开始采集" : mode === "search" ? "开始抓取关键词" : "开始抓取"}
             </Button>
-            <Button icon={<FileExcelOutlined />} onClick={() => items.length && exportRowsToExcel(items)} disabled={!items.length}>导出 Excel</Button>
+            <Button icon={<FileExcelOutlined />} onClick={() => items.length && exportRowsToExcel(items)} disabled={!items.length}>导出表格</Button>
           </Space>
         </Form>
 

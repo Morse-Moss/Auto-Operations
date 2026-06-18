@@ -4066,7 +4066,7 @@ def test_crawler_page_has_independent_comment_sleep_control():
     source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
 
     assert "commentSleep" in source
-    assert "Comment Sleep" in source
+    assert "评论间隔（秒）" in source
     assert "comment_sleep" in source
 
 
@@ -5948,6 +5948,42 @@ def test_runninghub_upload_reference_image_accepts_success_code_zero(tmp_path, m
     assert filename == "openapi/ref.png"
 
 
+def test_runninghub_upload_reference_image_accepts_camel_case_file_name(tmp_path, monkeypatch):
+    from backend.app.core import config as config_module
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    media_dir = tmp_path / "storage" / "media"
+    media_dir.mkdir(parents=True)
+    ref = media_dir / "xhs-upload-u1-ref.png"
+    ref.write_bytes(b"fake-image")
+    monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"))
+
+    class FakeResponse:
+        status_code = 200
+        content = b'{"code":0,"message":"success","data":{"fileName":"openapi/ref.png"}}'
+        encoding = "utf-8"
+        apparent_encoding = "utf-8"
+        text = content.decode("utf-8")
+
+        def raise_for_status(self):
+            pass
+
+    class FakeSession:
+        def post(self, url, **kwargs):
+            return FakeResponse()
+
+    client_instance = RunningHubImageClient(session=FakeSession(), poll_interval_seconds=0, max_poll_attempts=1)
+
+    filename = client_instance._upload_reference_image(
+        base_url="https://www.runninghub.cn",
+        api_key="sk-test",
+        image_ref="/api/files/media/xhs-upload-u1-ref.png",
+        owner_user_id=1,
+    )
+
+    assert filename == "openapi/ref.png"
+
+
 def test_runninghub_upload_reference_image_accepts_filename_even_when_code_differs(tmp_path, monkeypatch):
     from backend.app.core import config as config_module
     from backend.app.services.ai_service import RunningHubImageClient
@@ -6028,25 +6064,37 @@ def test_image_client_for_model_uses_runninghub_client_for_any_fallback():
     assert isinstance(image_client, RunningHubImageClient)
 
 
-def test_runninghub_resolve_local_image_path_enforces_owner_upload_prefix(tmp_path, monkeypatch):
+def test_runninghub_resolve_local_image_path_enforces_owned_media_prefixes(tmp_path, monkeypatch):
     from backend.app.core import config as config_module
     from backend.app.services.ai_service import RunningHubImageClient
 
     media_dir = tmp_path / "storage" / "media"
     media_dir.mkdir(parents=True)
-    owned_file = media_dir / "xhs-upload-u1-owned.png"
-    other_file = media_dir / "xhs-upload-u2-other.png"
-    owned_file.write_bytes(b"owned")
+    upload_file = media_dir / "xhs-upload-u1-owned.png"
+    asset_file = media_dir / "xhs-asset-u1-owned.png"
+    image_file = media_dir / "xhs-image-u1-owned.png"
+    other_file = media_dir / "xhs-asset-u2-other.png"
+    upload_file.write_bytes(b"upload")
+    asset_file.write_bytes(b"asset")
+    image_file.write_bytes(b"image")
     other_file.write_bytes(b"other")
     monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"))
 
     assert RunningHubImageClient._resolve_local_image_path(
         "/api/files/media/xhs-upload-u1-owned.png",
         owner_user_id=1,
-    ) == owned_file.resolve()
+    ) == upload_file.resolve()
+    assert RunningHubImageClient._resolve_local_image_path(
+        "/api/files/media/xhs-asset-u1-owned.png",
+        owner_user_id=1,
+    ) == asset_file.resolve()
+    assert RunningHubImageClient._resolve_local_image_path(
+        "/api/files/media/xhs-image-u1-owned.png",
+        owner_user_id=1,
+    ) == image_file.resolve()
     with pytest.raises(ValueError, match="参考图文件不存在或无权访问"):
         RunningHubImageClient._resolve_local_image_path(
-            "/api/files/media/xhs-upload-u2-other.png",
+            "/api/files/media/xhs-asset-u2-other.png",
             owner_user_id=1,
         )
 

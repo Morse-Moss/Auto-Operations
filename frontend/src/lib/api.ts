@@ -960,8 +960,8 @@ export async function generateCoverWithAi(payload: GenerateCoverPayload): Promis
   return response.data;
 }
 
-export async function generateImageWithAi(payload: GenerateImagePayload): Promise<GenerateImageResult> {
-  const response = await http.post<GenerateImageResult>("/ai/images/generate", payload, { timeout: 180000 });
+export async function generateImageWithAi(payload: GenerateImagePayload, silent = false): Promise<GenerateImageResult> {
+  const response = await http.post<GenerateImageResult>("/ai/images/generate", payload, { timeout: 180000, _silent: silent } as never);
   return response.data;
 }
 

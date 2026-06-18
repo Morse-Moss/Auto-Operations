@@ -56,15 +56,15 @@ const xhsNavItems: MenuProps["items"] = [
   { key: "/platforms/xhs/dashboard", icon: <DashboardOutlined />, label: "小红书总览" },
   { key: "/platforms/xhs/accounts", icon: <SafetyCertificateOutlined />, label: "小红书账号矩阵" },
   { key: "/platforms/xhs/discovery", icon: <SearchOutlined />, label: "小红书笔记发现" },
-  { key: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "小红书数据抓取" },
   { key: "/platforms/xhs/keywords", icon: <KeyOutlined />, label: "小红书关键词组" },
+  { key: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "小红书数据抓取" },
   { key: "/platforms/xhs/library", icon: <DatabaseOutlined />, label: "小红书内容库" },
+  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "小红书分析中心" },
   { key: "/platforms/xhs/drafts", icon: <FileTextOutlined />, label: "小红书草稿工坊" },
   { key: "/platforms/xhs/image-studio", icon: <StarOutlined />, label: "小红书图片工坊" },
   { key: "/platforms/xhs/video-studio", icon: <VideoCameraOutlined />, label: "小红书视频工坊" },
   { key: "/platforms/xhs/publish", icon: <SendOutlined />, label: "小红书发布中心" },
   { key: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "小红书自动运营" },
-  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "小红书分析中心" },
   { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "小红书竞品监控" },
 ];
 

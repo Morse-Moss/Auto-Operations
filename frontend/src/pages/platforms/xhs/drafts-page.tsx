@@ -97,6 +97,15 @@ function filenameFromUrl(url: string): string {
   }
 }
 
+function apiErrorDetail(err: unknown): string {
+  return typeof err === "object" && err !== null && "response" in err &&
+    typeof err.response === "object" && err.response !== null && "data" in err.response &&
+    typeof err.response.data === "object" && err.response.data !== null && "detail" in err.response.data &&
+    typeof err.response.data.detail === "string"
+    ? err.response.data.detail
+    : "";
+}
+
 /* ── sortable image thumbnail ─────────────────────────────────────── */
 
 function SortableImageThumb({ asset, onEdit, onRemove, onView }: { asset: DraftAsset; onEdit: () => void; onRemove: () => void; onView: () => void }) {
@@ -977,11 +986,12 @@ export function XhsDraftsPage() {
                                     prompt: optimizePrompt.trim(),
                                     reference_images: [asset.url || asset.local_path, ...optimizeRefImages],
                                     save_to_assets: false,
-                                  });
+                                  }, true);
                                   setOptimizeResult(result.url);
                                   antMessage.success("图片润色完成");
-                                } catch {
-                                  antMessage.error("图片润色失败，请确认已配置图片生成模型");
+                                } catch (err) {
+                                  const detail = apiErrorDetail(err);
+                                  antMessage.error(detail || "图片润色失败，请检查图片模型配置和参考图是否可用");
                                 } finally { setIsOptimizing(false); }
                               }}
                             >

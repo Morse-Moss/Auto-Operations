@@ -36,7 +36,7 @@ import {
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
@@ -47,6 +47,7 @@ import {
   createXhsAnalyticsReport,
   downloadExportFile,
   fetchKeywordGroups,
+  fetchSavedNote,
   fetchXhsAnalysisReport,
   fetchXhsAnalysisReports,
   fetchXhsCommentInsights,
@@ -62,6 +63,7 @@ import type {
   AnalyticsTopContent,
   DashboardOverview,
   KeywordGroup,
+  SavedNote,
   TopicCard,
 } from "../../../types";
 
@@ -139,6 +141,44 @@ function evidenceLabel(evidenceId: string): string {
   return "证据";
 }
 
+function noteIdFromEvidenceId(evidenceId: string): number | null {
+  const match = evidenceId.match(/^note:(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+function getEvidenceNoteId(report: AnalysisReport, evidenceId: string): number | null {
+  const directNoteId = noteIdFromEvidenceId(evidenceId);
+  if (directNoteId) return directNoteId;
+  const commentIdMatch = evidenceId.match(/^comment:(\d+)$/);
+  if (!commentIdMatch) return null;
+  const comment = report.evidence_pool.comments.find((item) => item.evidence_id === evidenceId);
+  return comment?.note_id ?? null;
+}
+
+function getNoteUrl(note: SavedNote): string {
+  const raw = note.raw_json ?? {};
+  for (const key of ["note_url", "url", "share_url"]) {
+    const value = raw[key];
+    if (typeof value === "string" && value.startsWith("http")) return value;
+  }
+  const data = (raw.data && typeof raw.data === "object") ? raw.data as Record<string, unknown> : {};
+  const items = Array.isArray(data.items) ? data.items : [];
+  const item = (items[0] && typeof items[0] === "object") ? items[0] as Record<string, unknown> : {};
+  const card = (item.note_card && typeof item.note_card === "object") ? item.note_card as Record<string, unknown> : {};
+  for (const obj of [card, item]) {
+    const xsec = obj.xsec_token;
+    if (typeof xsec === "string" && xsec) {
+      const source = (typeof obj.xsec_source === "string" ? obj.xsec_source : "") || "pc_feed";
+      return `https://www.xiaohongshu.com/explore/${note.note_id}?xsec_token=${xsec}&xsec_source=${source}`;
+    }
+    for (const key of ["note_url", "url", "share_url"]) {
+      const value = obj[key];
+      if (typeof value === "string" && value.startsWith("http")) return value;
+    }
+  }
+  return `https://www.xiaohongshu.com/explore/${note.note_id}`;
+}
+
 const topContentColumns: ColumnsType<AnalyticsTopContent> = [
   {
     title: "标题",
@@ -184,6 +224,13 @@ export function XhsAnalyticsPage() {
   const [keywordGroups, setKeywordGroups] = useState<KeywordGroup[]>([]);
   const [analysisReports, setAnalysisReports] = useState<AnalysisReport[]>([]);
   const [selectedReport, setSelectedReport] = useState<AnalysisReport | null>(null);
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null);
+  const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false);
+  const [evidenceNote, setEvidenceNote] = useState<SavedNote | null>(null);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const evidenceRequestSeq = useRef(0);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [keywordGroupId, setKeywordGroupId] = useState<number | undefined>();
   const [excludedNoteIds, setExcludedNoteIds] = useState<number[]>([]);
@@ -290,6 +337,7 @@ export function XhsAnalyticsPage() {
 
   async function handleSelectReport(report: AnalysisReport) {
     setSelectedReport(report);
+    setHistoryDrawerOpen(false);
     try {
       const detail = await fetchXhsAnalysisReport(report.id);
       setSelectedReport(detail);
@@ -390,6 +438,41 @@ export function XhsAnalyticsPage() {
       message.error("草稿骨架保存失败，请稍后重试。");
     } finally {
       setCreatingDraftCardId(null);
+    }
+  }
+
+  async function openEvidence(evidenceId: string) {
+    setSelectedEvidenceId(evidenceId);
+    setEvidenceDrawerOpen(true);
+    setEvidenceNote(null);
+    setEvidenceError(null);
+    const requestSeq = evidenceRequestSeq.current + 1;
+    evidenceRequestSeq.current = requestSeq;
+
+    if (!selectedReport) {
+      setEvidenceLoading(false);
+      return;
+    }
+    const noteId = getEvidenceNoteId(selectedReport, evidenceId);
+    if (!noteId) {
+      setEvidenceLoading(false);
+      return;
+    }
+
+    setEvidenceLoading(true);
+    try {
+      const note = await fetchSavedNote(noteId, true);
+      if (evidenceRequestSeq.current === requestSeq) {
+        setEvidenceNote(note);
+      }
+    } catch {
+      if (evidenceRequestSeq.current === requestSeq) {
+        setEvidenceError("原文笔记加载失败，可以先查看报告内保留的证据摘要。");
+      }
+    } finally {
+      if (evidenceRequestSeq.current === requestSeq) {
+        setEvidenceLoading(false);
+      }
     }
   }
 
@@ -613,6 +696,22 @@ export function XhsAnalyticsPage() {
     );
   }
 
+  function renderEvidenceTags(evidenceIds: string[]) {
+    return (
+      <Space wrap>
+        {evidenceIds.map((evidenceId) => (
+          <Tag
+            key={evidenceId}
+            style={{ cursor: "pointer" }}
+            onClick={() => void openEvidence(evidenceId)}
+          >
+            {evidenceLabel(evidenceId)} {evidenceId}
+          </Tag>
+        ))}
+      </Space>
+    );
+  }
+
   function renderSummaryList(title: string, items: Array<{ id: string; text: string; evidence_ids: string[] }>) {
     return (
       <Card size="small" title={title}>
@@ -624,16 +723,92 @@ export function XhsAnalyticsPage() {
             <List.Item>
               <Space direction="vertical" size={4}>
                 <Text>{item.text}</Text>
-                <Space wrap>
-                  {item.evidence_ids.map((evidenceId) => (
-                    <Tag key={evidenceId}>{evidenceLabel(evidenceId)} {evidenceId}</Tag>
-                  ))}
-                </Space>
+                {renderEvidenceTags(item.evidence_ids)}
               </Space>
             </List.Item>
           )}
         />
       </Card>
+    );
+  }
+
+  function renderEvidenceDrawerBody() {
+    if (!selectedReport || !selectedEvidenceId) {
+      return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未选择证据。" />;
+    }
+
+    const noteEvidence = selectedReport.evidence_pool.notes.find((item) => item.evidence_id === selectedEvidenceId);
+    const commentEvidence = selectedReport.evidence_pool.comments.find((item) => item.evidence_id === selectedEvidenceId);
+    const keywordEvidence = selectedReport.evidence_pool.keywords.find((item) => item.evidence_id === selectedEvidenceId);
+    const metricEvidence = selectedReport.evidence_pool.metrics.find((item) => item.evidence_id === selectedEvidenceId);
+
+    return (
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        <Tag>{evidenceLabel(selectedEvidenceId)} {selectedEvidenceId}</Tag>
+        {evidenceError && <Alert type="warning" showIcon message={evidenceError} />}
+        {evidenceLoading && <Spin tip="正在加载原文笔记..." />}
+
+        {noteEvidence && (
+          <Card size="small" title={noteEvidence.title || "笔记证据"}>
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="作者">{noteEvidence.author_name || "-"}</Descriptions.Item>
+              <Descriptions.Item label="互动">{formatNumber(noteEvidence.engagement)}</Descriptions.Item>
+              <Descriptions.Item label="赞藏评转">
+                {formatNumber(noteEvidence.likes)} / {formatNumber(noteEvidence.collects)} / {formatNumber(noteEvidence.comments)} / {formatNumber(noteEvidence.shares)}
+              </Descriptions.Item>
+              <Descriptions.Item label="匹配关键词">
+                {noteEvidence.matched_keywords.length > 0 ? noteEvidence.matched_keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>) : "-"}
+              </Descriptions.Item>
+              <Descriptions.Item label="摘要">{noteEvidence.excerpt || "-"}</Descriptions.Item>
+            </Descriptions>
+          </Card>
+        )}
+
+        {commentEvidence && (
+          <Card size="small" title="评论证据">
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="评论原文">{commentEvidence.content}</Descriptions.Item>
+              <Descriptions.Item label="点赞数">{formatNumber(commentEvidence.like_count)}</Descriptions.Item>
+              <Descriptions.Item label="关联笔记">note:{commentEvidence.note_id}</Descriptions.Item>
+              <Descriptions.Item label="信号">
+                {commentEvidence.signals.length > 0 ? commentEvidence.signals.map((signal) => <Tag key={signal}>{signal}</Tag>) : "-"}
+              </Descriptions.Item>
+            </Descriptions>
+          </Card>
+        )}
+
+        {keywordEvidence && (
+          <Card size="small" title="关键词证据">
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="关键词">{keywordEvidence.keyword}</Descriptions.Item>
+              <Descriptions.Item label="命中笔记">{keywordEvidence.matched_notes}</Descriptions.Item>
+              <Descriptions.Item label="命中评论">{keywordEvidence.matched_comments}</Descriptions.Item>
+            </Descriptions>
+          </Card>
+        )}
+
+        {metricEvidence && (
+          <Card size="small" title="指标证据">
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="指标名">{metricEvidence.name}</Descriptions.Item>
+              <Descriptions.Item label="指标值">{formatNumber(metricEvidence.value)}</Descriptions.Item>
+              <Descriptions.Item label="说明">{metricEvidence.description}</Descriptions.Item>
+            </Descriptions>
+          </Card>
+        )}
+
+        {evidenceNote && (
+          <Card size="small" title="原文笔记">
+            <Space direction="vertical" size="small" style={{ width: "100%" }}>
+              <Text strong>{evidenceNote.title || evidenceNote.note_id}</Text>
+              <Paragraph style={{ whiteSpace: "pre-wrap" }}>{evidenceNote.content || "暂无正文。"}</Paragraph>
+              <Button href={getNoteUrl(evidenceNote)} target="_blank" rel="noreferrer">
+                打开小红书原文
+              </Button>
+            </Space>
+          </Card>
+        )}
+      </Space>
     );
   }
 
@@ -663,9 +838,7 @@ export function XhsAnalyticsPage() {
                     <Progress percent={card.sub_scores.traffic_potential} size="small" format={() => "流量潜力"} />
                     <Progress percent={card.sub_scores.demand_strength} size="small" format={() => "需求强度"} />
                     <Progress percent={card.sub_scores.actionability} size="small" format={() => "可执行性"} />
-                    <Space wrap>
-                      {card.evidence_ids.map((evidenceId) => <Tag key={evidenceId}>{evidenceId}</Tag>)}
-                    </Space>
+                    {renderEvidenceTags(card.evidence_ids)}
                   </Space>
                 </Card>
               </Col>
@@ -741,9 +914,7 @@ export function XhsAnalyticsPage() {
                         />
                       </Form.Item>
                     </Form>
-                    <Space wrap>
-                      {editedCard.evidence_ids.map((evidenceId) => <Tag key={evidenceId}>{evidenceId}</Tag>)}
-                    </Space>
+                    {renderEvidenceTags(editedCard.evidence_ids)}
                   </Card>
                 </Col>
               );
@@ -846,6 +1017,9 @@ export function XhsAnalyticsPage() {
         description="从真实关键词组、笔记和评论生成有证据的洞察卡、选题卡和草稿骨架。"
         action={
           <Space>
+            <Button onClick={() => setHistoryDrawerOpen(true)}>
+              历史报告 {analysisReports.length}
+            </Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={openWizard}>
               创建分析报告
             </Button>
@@ -921,37 +1095,13 @@ export function XhsAnalyticsPage() {
         </div>
       ) : (
         <>
-          <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-            <Col xs={24} lg={10}>
-              <Card
-                title="历史分析报告"
-                extra={<Tag>{analysisReports.length} 份</Tag>}
-                style={{ background: "#1f1f1f", borderColor: "#303030", height: "100%" }}
-              >
-                <Table<AnalysisReport>
-                  columns={reportColumns}
-                  dataSource={analysisReports}
-                  rowKey="id"
-                  size="small"
-                  pagination={{ pageSize: 5, size: "small" }}
-                  locale={{ emptyText: "暂无分析报告。" }}
-                  rowClassName={(record) => record.id === selectedReport?.id ? "ant-table-row-selected" : ""}
-                  onRow={(record) => ({
-                    onClick: () => void handleSelectReport(record),
-                  })}
-                />
-              </Card>
-            </Col>
-            <Col xs={24} lg={14}>
-              <Card
-                title="当前报告"
-                extra={selectedReport ? <Tag color={statusColorMap[selectedReport.status]}>{selectedReport.status}</Tag> : null}
-                style={{ background: "#1f1f1f", borderColor: "#303030", minHeight: 300 }}
-              >
-                {renderReportDetail()}
-              </Card>
-            </Col>
-          </Row>
+          <Card
+            title="当前报告"
+            extra={selectedReport ? <Tag color={statusColorMap[selectedReport.status]}>{selectedReport.status}</Tag> : null}
+            style={{ background: "#1f1f1f", borderColor: "#303030", minHeight: 300, marginBottom: 24 }}
+          >
+            {renderReportDetail()}
+          </Card>
 
           <Divider style={{ borderColor: "#303030", margin: "24px 0" }}>
             <Text type="secondary">基础概览</Text>
@@ -1128,6 +1278,37 @@ export function XhsAnalyticsPage() {
           </Card>
         </>
       )}
+
+      <Drawer
+        title="历史分析报告"
+        width={720}
+        open={historyDrawerOpen}
+        onClose={() => setHistoryDrawerOpen(false)}
+        destroyOnHidden
+      >
+        <Table<AnalysisReport>
+          columns={reportColumns}
+          dataSource={analysisReports}
+          rowKey="id"
+          size="small"
+          pagination={{ pageSize: 8, size: "small" }}
+          locale={{ emptyText: "暂无分析报告。" }}
+          rowClassName={(record) => record.id === selectedReport?.id ? "ant-table-row-selected" : ""}
+          onRow={(record) => ({
+            onClick: () => void handleSelectReport(record),
+          })}
+        />
+      </Drawer>
+
+      <Drawer
+        title="证据详情"
+        width={640}
+        open={evidenceDrawerOpen}
+        onClose={() => setEvidenceDrawerOpen(false)}
+        destroyOnHidden
+      >
+        {renderEvidenceDrawerBody()}
+      </Drawer>
 
       <Drawer
         title="创建小红书分析报告"

@@ -421,7 +421,7 @@ class RunningHubImageClient:
         response.raise_for_status()
         payload = _load_json_response(response)
         data = payload.get("data") if isinstance(payload, dict) else None
-        filename = data.get("filename") if isinstance(data, dict) else None
+        filename = (data.get("filename") or data.get("fileName")) if isinstance(data, dict) else None
         if isinstance(filename, str) and filename:
             return filename
         if not isinstance(payload, dict) or payload.get("code") not in {0, 200}:
@@ -447,8 +447,14 @@ class RunningHubImageClient:
         except ValueError as exc:
             raise ValueError("参考图必须来自媒体资产目录") from exc
 
-        if owner_user_id is not None and not resolved.name.startswith(f"xhs-upload-u{owner_user_id}-"):
-            raise ValueError("参考图文件不存在或无权访问")
+        if owner_user_id is not None:
+            valid_prefixes = (
+                f"xhs-upload-u{owner_user_id}-",
+                f"xhs-asset-u{owner_user_id}-",
+                f"xhs-image-u{owner_user_id}-",
+            )
+            if not resolved.name.startswith(valid_prefixes):
+                raise ValueError("参考图文件不存在或无权访问")
         if not resolved.is_file():
             if owner_user_id is not None:
                 raise ValueError("参考图文件不存在或无权访问")
