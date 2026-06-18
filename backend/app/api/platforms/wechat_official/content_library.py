@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from backend.app.api.platforms.wechat_official.schemas import WechatOfficialCreateDraftRequest, WechatOfficialRecommendationUpdateRequest
+from backend.app.api.platforms.wechat_official.schemas import WechatOfficialCreateDraftRequest, WechatOfficialHotspotAnalyzeRequest, WechatOfficialRecommendationUpdateRequest
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.models import User
@@ -37,9 +37,19 @@ def list_content_library(
     )
 
 
+@router.get("/{article_id}")
+def get_content_detail(article_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WechatOfficialContentService(db).get_detail(current_user.id, article_id)
+
+
 @router.patch("/{article_id}/recommendation")
 def update_recommendation(article_id: int, payload: WechatOfficialRecommendationUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return WechatOfficialContentService(db).update_recommendation(current_user.id, article_id, payload.model_dump(exclude_unset=True))
+
+
+@router.post("/{article_id}/analyze-hotspots")
+def analyze_hotspots(article_id: int, payload: WechatOfficialHotspotAnalyzeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WechatOfficialContentService(db).analyze_hotspots(current_user.id, article_id, payload.model_dump())
 
 
 @router.post("/{article_id}/create-draft")

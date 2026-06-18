@@ -88,6 +88,9 @@ import type {
   WechatOfficialArticleSyncResponse,
   WechatOfficialBackendLoginCompletePayload,
   WechatOfficialBackendSession,
+  WechatOfficialAnalyzeHotspotsPayload,
+  WechatOfficialAnalyzeHotspotsResponse,
+  WechatOfficialContentDetail,
   WechatOfficialContentLibraryItem,
   WechatOfficialCreateDraftPayload,
   WechatOfficialCrawlAccount,
@@ -445,12 +448,28 @@ export async function fetchWechatOfficialContentLibrary(params?: {
   return response.data;
 }
 
+export async function fetchWechatOfficialContentDetail(articleId: number): Promise<WechatOfficialContentDetail> {
+  const response = await http.get<WechatOfficialContentDetail>(`/wechat-official/content-library/${articleId}`);
+  return response.data;
+}
+
 export async function updateWechatOfficialRecommendation(
   articleId: number,
   payload: WechatOfficialRecommendationUpdatePayload
 ): Promise<WechatOfficialContentLibraryItem> {
   const response = await http.patch<WechatOfficialContentLibraryItem>(
     `/wechat-official/content-library/${articleId}/recommendation`,
+    payload
+  );
+  return response.data;
+}
+
+export async function analyzeWechatOfficialHotspots(
+  articleId: number,
+  payload: WechatOfficialAnalyzeHotspotsPayload = {}
+): Promise<WechatOfficialAnalyzeHotspotsResponse> {
+  const response = await http.post<WechatOfficialAnalyzeHotspotsResponse>(
+    `/wechat-official/content-library/${articleId}/analyze-hotspots`,
     payload
   );
   return response.data;

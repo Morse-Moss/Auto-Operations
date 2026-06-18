@@ -5,7 +5,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
-from backend.app.models import WechatOfficialArticle
+from backend.app.core.security import encrypt_text
+from backend.app.models import ModelConfig, WechatOfficialArticle, WechatOfficialArticleSnapshot, WechatOfficialCrawlAccount
+from backend.app.services import wechat_official_content_service
 
 client = TestClient(app)
 
@@ -123,6 +125,7 @@ def test_content_library_recommendation_patch_stores_analysis_fields_in_raw_json
             headers=headers,
             json={
                 "recommendation_status": "shortlisted",
+                "pool_status": "shortlisted",
                 "low_follower_evidence": True,
                 "low_follower_note": "账号粉丝少但阅读高",
                 "business_direction": "私域增长",
@@ -132,18 +135,156 @@ def test_content_library_recommendation_patch_stores_analysis_fields_in_raw_json
                 "core_insight": "用户关注可复制路径",
                 "case_info": {"brand": "Example"},
                 "customer_conversion_method": "引导咨询",
+                "hotspot_breakdown": {"hook": "强标题", "pain_point": "获客焦虑"},
+                "analysis_mode": "manual",
             },
         )
 
         assert response.status_code == 200
         analysis = response.json()["analysis"]
         assert analysis["recommendation_status"] == "shortlisted"
+        assert analysis["pool_status"] == "shortlisted"
         assert analysis["viral_factors"] == ["强结果", "低门槛"]
         assert analysis["case_info"] == {"brand": "Example"}
+        assert analysis["hotspot_breakdown"]["hook"] == "强标题"
+        assert analysis["analysis_mode"] == "manual"
 
         with TestingSessionLocal() as db:
             article = db.get(WechatOfficialArticle, article_id)
             assert article is not None
             assert article.raw_json["analysis"]["customer_conversion_method"] == "引导咨询"
+            assert article.raw_json["analysis"]["pool_status"] == "shortlisted"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_rejects_invalid_pool_status_without_mutating_analysis(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("invalid-pool-status-user")
+        article_id = _create_article(headers, title="状态案例", url="https://mp.weixin.qq.com/s/status", read_count=120000)
+        ok = client.patch(
+            f"/api/wechat-official/content-library/{article_id}/recommendation",
+            headers=headers,
+            json={"pool_status": "shortlisted"},
+        )
+        assert ok.status_code == 200
+
+        response = client.patch(
+            f"/api/wechat-official/content-library/{article_id}/recommendation",
+            headers=headers,
+            json={"pool_status": "published"},
+        )
+
+        assert response.status_code in {400, 422}
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            assert article.raw_json["analysis"]["pool_status"] == "shortlisted"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_detail_returns_snapshot_and_sanitized_raw_json(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        owner_headers = _register("detail-owner")
+        other_headers = _register("detail-other")
+        article_id = _create_article(owner_headers, title="详情案例", url="https://mp.weixin.qq.com/s/detail", read_count=130000)
+        client.patch(
+            f"/api/wechat-official/content-library/{article_id}/recommendation",
+            headers=owner_headers,
+            json={"pool_status": "shortlisted", "hotspot_breakdown": {"hook": "详情钩子"}},
+        )
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            article.raw_json = {
+                **(article.raw_json or {}),
+                "redfox": {"external_id": "wx-1", "work_uuid": "wx-1", "api_key": "leaked-key", "token": "leaked-token"},
+            }
+            db.add(WechatOfficialArticleSnapshot(article_id=article_id, status="captured", text="详情正文快照", raw_json={"api_key": "snapshot-secret"}))
+            db.commit()
+
+        response = client.get(f"/api/wechat-official/content-library/{article_id}", headers=owner_headers)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["article"]["id"] == article_id
+        assert payload["analysis"]["pool_status"] == "shortlisted"
+        assert payload["latest_snapshot"]["text"] == "详情正文快照"
+        assert payload["raw_json"]["redfox"]["external_id"] == "wx-1"
+        serialized = response.text
+        assert "leaked-key" not in serialized
+        assert "leaked-token" not in serialized
+        assert "snapshot-secret" not in serialized
+        assert "api_key" not in serialized.lower()
+        assert "token" not in serialized.lower()
+
+        other = client.get(f"/api/wechat-official/content-library/{article_id}", headers=other_headers)
+        assert other.status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_analyze_hotspots_falls_back_to_template_without_default_model(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("hotspot-template-user")
+        article_id = _create_article(headers, title="爆点案例", url="https://mp.weixin.qq.com/s/hotspot-template", read_count=150000)
+
+        response = client.post(f"/api/wechat-official/content-library/{article_id}/analyze-hotspots", headers=headers, json={})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["analysis_mode"] == "template"
+        assert payload["analysis"]["hotspot_breakdown"]["hook"]
+        assert payload["analysis"]["pool_status"] == "shortlisted"
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            assert article.raw_json["analysis"]["analysis_mode"] == "template"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_analyze_hotspots_uses_fake_ai_json_and_degrades_on_invalid_json(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("hotspot-ai-user")
+        article_id = _create_article(headers, title="AI拆解案例", url="https://mp.weixin.qq.com/s/hotspot-ai", read_count=160000)
+        bad_article_id = _create_article(headers, title="AI异常案例", url="https://mp.weixin.qq.com/s/hotspot-bad", read_count=160000)
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            account = db.get(WechatOfficialCrawlAccount, article.account_id)
+            assert account is not None
+            db.add(ModelConfig(user_id=account.user_id, name="Fake Text", model_type="text", provider="openai", model_name="fake", base_url="https://example.test", encrypted_api_key=encrypt_text("fake-key"), is_default=True))
+            db.commit()
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def polish_text(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return '{"hotspot_breakdown":{"hook":"AI钩子","pain_point":"AI痛点","promise":"AI承诺","credibility":"AI证据","structure":"AI结构","reuse_angle":"AI角度"},"viral_factors":["强冲突"],"core_insight":"AI洞察","title_type":"冲突型","article_type_label":"案例拆解"}'
+                return "not json"
+
+        fake_client = FakeClient()
+        monkeypatch.setattr(wechat_official_content_service, "OpenAICompatibleTextClient", lambda: fake_client)
+
+        response = client.post(f"/api/wechat-official/content-library/{article_id}/analyze-hotspots", headers=headers, json={})
+        assert response.status_code == 200
+        analysis = response.json()["analysis"]
+        assert response.json()["analysis_mode"] == "ai"
+        assert analysis["hotspot_breakdown"]["hook"] == "AI钩子"
+        assert analysis["viral_factors"] == ["强冲突"]
+        assert analysis["core_insight"] == "AI洞察"
+
+        degraded = client.post(f"/api/wechat-official/content-library/{bad_article_id}/analyze-hotspots", headers=headers, json={})
+        assert degraded.status_code == 200
+        assert degraded.json()["analysis_mode"] == "template_ai_parse_failed"
+        assert degraded.json()["analysis"]["hotspot_breakdown"]["hook"]
     finally:
         app.dependency_overrides.pop(get_db, None)
