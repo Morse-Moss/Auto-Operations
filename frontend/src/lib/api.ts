@@ -34,6 +34,7 @@ import type {
   GenerateCoverPayload,
   GenerateImagePayload,
   GenerateImageResult,
+  GenerateImageTaskResult,
   GeneratedImageAsset,
   GenerateTagsPayload,
   GenerateTitlePayload,
@@ -961,7 +962,17 @@ export async function generateCoverWithAi(payload: GenerateCoverPayload): Promis
 }
 
 export async function generateImageWithAi(payload: GenerateImagePayload, silent = false): Promise<GenerateImageResult> {
-  const response = await http.post<GenerateImageResult>("/ai/images/generate", payload, { timeout: 180000, _silent: silent } as never);
+  const response = await http.post<GenerateImageResult>("/ai/images/generate", payload, { timeout: 600000, _silent: silent } as never);
+  return response.data;
+}
+
+export async function startImageGenerationTask(payload: GenerateImagePayload): Promise<GenerateImageTaskResult> {
+  const response = await http.post<GenerateImageTaskResult>("/ai/images/generate-async", payload);
+  return response.data;
+}
+
+export async function fetchTask(taskId: number): Promise<TaskRecord> {
+  const response = await http.get<TaskRecord>(`/tasks/${taskId}`);
   return response.data;
 }
 

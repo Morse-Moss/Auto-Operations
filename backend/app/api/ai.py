@@ -4,14 +4,15 @@ import re
 from collections.abc import Callable
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.app.core.database import get_db
+from backend.app.core.database import SessionLocal, get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
+from backend.app.core.time import shanghai_now
 from backend.app.models import AiDraft, AiGeneratedAsset, ModelConfig, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
@@ -229,6 +230,86 @@ def _recorded_image_task(
     task.status = "completed"
     task.progress = 100
     return task, result
+
+
+def _run_async_image_generate_task(task_id: int, current_user_id: int, model_config_id: int, api_key: str, fallback_client: ImageAiClient | None = None) -> None:
+    db = SessionLocal()
+    try:
+        task = db.get(Task, task_id)
+        model_config = db.get(ModelConfig, model_config_id)
+        if task is None or model_config is None or task.user_id != current_user_id:
+            return
+
+        task.status = "running"
+        task.progress = 20
+        task.started_at = shanghai_now()
+        db.commit()
+
+        payload = task.payload or {}
+        reference_images = payload.get("reference_images")
+        refs = reference_images if isinstance(reference_images, list) else []
+        image_client = _image_client_for_model(model_config, fallback_client or OpenAICompatibleImageClient())
+        try:
+            if model_config.provider == "runninghub-ai-app":
+                for image_ref in refs:
+                    if isinstance(image_ref, str):
+                        RunningHubImageClient._resolve_local_image_path(image_ref, owner_user_id=current_user_id)
+                result = image_client.generate_image(
+                    model_config=model_config,
+                    api_key=api_key,
+                    prompt=str(payload.get("prompt") or ""),
+                    reference_images=[str(item) for item in refs],
+                    owner_user_id=current_user_id,
+                )
+            else:
+                result = image_client.generate_image(
+                    model_config=model_config,
+                    api_key=api_key,
+                    prompt=str(payload.get("prompt") or ""),
+                    reference_images=[str(item) for item in refs] or None,
+                )
+        except ValueError as exc:
+            redacted_error = _redact_sensitive_text(str(exc), [api_key])
+            task.status = "failed"
+            task.progress = 100
+            task.finished_at = shanghai_now()
+            task.payload = {**(task.payload or {}), "error": redacted_error}
+            db.commit()
+            return
+        except Exception as exc:
+            redacted_error = _redact_sensitive_text(str(exc), [api_key])
+            task.status = "failed"
+            task.progress = 100
+            task.finished_at = shanghai_now()
+            task.payload = {**(task.payload or {}), "error": f"AI image generation failed: {redacted_error}"}
+            db.commit()
+            return
+
+        response_data: dict[str, Any] = {"url": result.get("url") or "", "raw": result.get("raw")}
+        if bool(payload.get("save_to_assets", True)):
+            asset = AiGeneratedAsset(
+                user_id=current_user_id,
+                prompt=str(payload.get("prompt") or ""),
+                model_name=model_config.model_name,
+                params={
+                    "provider": model_config.provider,
+                    "reference_images": refs,
+                    "raw": result.get("raw"),
+                },
+                file_path=result.get("url") or "",
+            )
+            db.add(asset)
+            db.flush()
+            response_data["asset"] = _serialize_generated_asset(asset)
+            task.payload = {**(task.payload or {}), "result": response_data, "asset_id": asset.id}
+        else:
+            task.payload = {**(task.payload or {}), "result": response_data}
+        task.status = "completed"
+        task.progress = 100
+        task.finished_at = shanghai_now()
+        db.commit()
+    finally:
+        db.close()
 
 
 @router.post("/rewrite-note")
@@ -514,6 +595,41 @@ def generate_image(
     else:
         db.commit()
     return response_data
+
+
+@router.post("/images/generate-async")
+def generate_image_async(
+    payload: GenerateImageRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    image_ai_client: ImageAiClient = Depends(get_image_ai_client),
+):
+    model_config, api_key = _image_model_context(db, current_user)
+    reference_images = payload.reference_images or []
+    if model_config.provider == "runninghub-ai-app":
+        for image_ref in reference_images:
+            RunningHubImageClient._resolve_local_image_path(image_ref, owner_user_id=current_user.id)
+
+    task = Task(
+        user_id=current_user.id,
+        platform="xhs",
+        task_type="ai_image_generate",
+        status="pending",
+        progress=0,
+        payload={
+            "model_config_id": model_config.id,
+            "prompt": payload.prompt,
+            "reference_images": reference_images,
+            "save_to_assets": payload.save_to_assets,
+        },
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    fallback_client = image_ai_client if model_config.provider != "runninghub-ai-app" else None
+    background_tasks.add_task(_run_async_image_generate_task, task.id, current_user.id, model_config.id, api_key, fallback_client)
+    return {"task_id": task.id, "status": task.status, "progress": task.progress, "payload": task.payload or {}}
 
 
 @router.post("/images/describe")

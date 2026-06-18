@@ -36,16 +36,19 @@ import {
   deleteUserImage,
   describeImageWithAi,
   fetchGeneratedImageAssets,
+  fetchTask,
   fetchUserImages,
-  generateImageWithAi,
+  startImageGenerationTask,
   uploadAssetFile,
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
-import type { GeneratedImageAsset, UserImageFile } from "../../../types";
+import type { GeneratedImageAsset, GenerateImageResult, TaskRecord, UserImageFile } from "../../../types";
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
 const RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT = 2;
+const IMAGE_GENERATION_POLL_INTERVAL_MS = 3000;
+const IMAGE_GENERATION_MAX_POLLS = 220;
 
 function isRenderableImage(value: string): boolean {
   return (
@@ -54,6 +57,28 @@ function isRenderableImage(value: string): boolean {
     value.startsWith("data:image/") ||
     value.startsWith("/api/")
   );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function imageResultFromTask(task: TaskRecord): GenerateImageResult | null {
+  const result = task.payload.result;
+  if (!result || typeof result !== "object") return null;
+  const record = result as Record<string, unknown>;
+  return typeof record.url === "string" && record.url
+    ? {
+      url: record.url,
+      raw: record.raw,
+      asset: record.asset as GeneratedImageAsset | undefined,
+    }
+    : null;
+}
+
+function taskErrorMessage(task: TaskRecord): string {
+  const error = task.payload.error;
+  return typeof error === "string" && error ? error : "AI 图片生成失败，请检查任务详情。";
 }
 
 export function XhsImageStudioPage() {
@@ -105,17 +130,37 @@ export function XhsImageStudioPage() {
     setMessage(null);
     setGeneratedPreview(null);
     try {
-      const result = await generateImageWithAi({
+      const startedTask = await startImageGenerationTask({
         prompt: prompt.trim(),
         reference_images:
           referenceImages.length > 0 ? referenceImages : undefined,
         save_to_assets: saveToAssets,
       });
-      setGeneratedPreview(result.url);
-      if (result.asset) {
-        setAssets((prev) => [result.asset!, ...prev]);
+      setMessage(`图片生成任务已提交（#${startedTask.task_id}），正在后台生成...`);
+
+      for (let index = 0; index < IMAGE_GENERATION_MAX_POLLS; index += 1) {
+        await sleep(IMAGE_GENERATION_POLL_INTERVAL_MS);
+        const task = await fetchTask(startedTask.task_id);
+        if (task.status === "completed") {
+          const result = imageResultFromTask(task);
+          if (!result) {
+            throw new Error("图片任务已完成，但结果为空。请到任务中心查看详情。");
+          }
+          setGeneratedPreview(result.url);
+          if (result.asset) {
+            setAssets((prev) => [result.asset!, ...prev]);
+          } else {
+            void loadAssets();
+          }
+          setMessage("图片生成成功。");
+          return;
+        }
+        if (["failed", "cancelled", "exhausted"].includes(task.status)) {
+          throw new Error(taskErrorMessage(task));
+        }
+        setMessage(`图片生成中（#${startedTask.task_id}，${task.progress}%），可稍后刷新资产查看结果。`);
       }
-      setMessage("图片生成成功。");
+      setMessage(`图片生成任务仍在运行（#${startedTask.task_id}）。你可以稍后点击“刷新资产”查看结果。`);
     } catch (err) {
       const responseDetail =
         typeof err === "object" &&

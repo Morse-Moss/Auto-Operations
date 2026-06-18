@@ -571,6 +571,7 @@ def _override_database(tmp_path):
         finally:
             db.close()
 
+    override_get_db.sessionmaker = TestingSessionLocal
     app.dependency_overrides[get_db] = override_get_db
     return get_db
 
@@ -6064,6 +6065,25 @@ def test_image_client_for_model_uses_runninghub_client_for_any_fallback():
     assert isinstance(image_client, RunningHubImageClient)
 
 
+def test_runninghub_default_wait_window_allows_long_image_jobs():
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    client_instance = RunningHubImageClient()
+
+    assert client_instance.poll_interval_seconds * client_instance.max_poll_attempts >= 480
+
+
+def test_frontend_ai_image_generate_uses_async_task_polling_for_long_runninghub_jobs():
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    page_source = open("frontend/src/pages/platforms/xhs/image-studio-page.tsx", encoding="utf-8").read()
+
+    assert "generate-async" in api_source
+    assert "startImageGenerationTask" in page_source
+    assert "fetchTask" in page_source
+    assert "图片生成任务已提交" in page_source
+    assert "图片生成任务仍在运行" in page_source
+
+
 def test_runninghub_resolve_local_image_path_enforces_owned_media_prefixes(tmp_path, monkeypatch):
     from backend.app.core import config as config_module
     from backend.app.services.ai_service import RunningHubImageClient
@@ -6109,7 +6129,8 @@ def test_ai_image_routes_require_authentication(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_path):
+def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_path, monkeypatch):
+    import backend.app.api.ai as ai_api
     from backend.app.api.ai import get_image_ai_client
 
     class FakeImageAiClient:
@@ -6119,6 +6140,10 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
         def generate_cover(self, *, model_config, api_key, prompt, size, style):
             self.calls.append(("generate_cover", model_config.model_name, api_key, prompt, size, style))
             return {"url": "https://cdn.example.test/cover.png", "raw": {"seed": 1}}
+
+        def generate_image(self, *, model_config, api_key, prompt, reference_images=None, owner_user_id=None):
+            self.calls.append(("generate_image", model_config.model_name, api_key, prompt, reference_images, owner_user_id))
+            return {"url": "https://cdn.example.test/generated.png", "raw": {"seed": 2}}
 
         def describe_image(self, *, model_config, api_key, image_url, instruction):
             self.calls.append(("describe_image", model_config.model_name, api_key, image_url, instruction))
@@ -6130,6 +6155,7 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
     intruder_token = _register_and_get_access_token("ai-image-intruder")
     try:
         app.dependency_overrides[get_image_ai_client] = lambda: fake_client
+        monkeypatch.setattr(ai_api, "SessionLocal", app.dependency_overrides[db_dependency].sessionmaker)
         model_response = client.post(
             "/api/model-configs",
             headers={"Authorization": f"Bearer {owner_token}"},
@@ -6173,13 +6199,29 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
         assert describe_response.status_code == 200
         assert describe_response.json()["text"] == "这是一张低卡早餐封面"
 
+        async_response = client.post(
+            "/api/ai/images/generate-async",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"prompt": "异步生成测试", "reference_images": ["https://cdn.example.test/ref.png"], "save_to_assets": True},
+        )
+        assert async_response.status_code == 200
+        async_payload = async_response.json()
+        assert async_payload["task_id"] > 0
+        task_detail_response = client.get(f"/api/tasks/{async_payload['task_id']}", headers={"Authorization": f"Bearer {owner_token}"})
+        assert task_detail_response.status_code == 200
+        task_detail = task_detail_response.json()
+        assert task_detail["status"] == "completed"
+        assert task_detail["payload"]["result"]["url"] == "https://cdn.example.test/generated.png"
+        assert task_detail["payload"]["result"]["asset"]["file_path"] == "https://cdn.example.test/generated.png"
+
         tasks_response = client.get("/api/tasks?platform=xhs", headers={"Authorization": f"Bearer {owner_token}"})
         assert tasks_response.status_code == 200
         task_types = [item["task_type"] for item in tasks_response.json()["items"]]
-        assert task_types == ["ai_image_describe", "ai_image_generate_cover"]
+        assert task_types == ["ai_image_generate", "ai_image_describe", "ai_image_generate_cover"]
         assert fake_client.calls == [
             ("generate_cover", "image-generate-test", "sk-image-secret", "低卡早餐封面", "1024x1024", "clean"),
             ("describe_image", "image-generate-test", "sk-image-secret", "https://cdn.example.test/cover.png", "描述卖点"),
+            ("generate_image", "image-generate-test", "sk-image-secret", "异步生成测试", ["https://cdn.example.test/ref.png"], None),
         ]
     finally:
         app.dependency_overrides.pop(get_image_ai_client, None)

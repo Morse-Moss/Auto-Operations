@@ -302,7 +302,7 @@ RUNNINGHUB_IMAGE_INPUT_NODES = ["3", "2"]
 
 
 class RunningHubImageClient:
-    def __init__(self, *, session: Any | None = None, poll_interval_seconds: float = 2.0, max_poll_attempts: int = 90) -> None:
+    def __init__(self, *, session: Any | None = None, poll_interval_seconds: float = 2.0, max_poll_attempts: int = 300) -> None:
         self.session = session or requests
         self.poll_interval_seconds = poll_interval_seconds
         self.max_poll_attempts = max_poll_attempts
