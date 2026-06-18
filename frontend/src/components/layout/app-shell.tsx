@@ -51,10 +51,8 @@ import type { AppNotification } from "../../types";
 const { Sider, Header, Content } = Layout;
 const { Title, Text } = Typography;
 
-const mainNavItems: MenuProps["items"] = [
+const xhsNavItems: MenuProps["items"] = [
   { key: "/platform-select", icon: <DashboardOutlined />, label: "平台中心" },
-  { key: "/platforms/wechat-official/dashboard", icon: <DatabaseOutlined />, label: "公众号爆文" },
-  { type: "divider" },
   { key: "/platforms/xhs/dashboard", icon: <DashboardOutlined />, label: "小红书总览" },
   { key: "/platforms/xhs/accounts", icon: <SafetyCertificateOutlined />, label: "小红书账号矩阵" },
   { key: "/platforms/xhs/discovery", icon: <SearchOutlined />, label: "小红书笔记发现" },
@@ -68,6 +66,11 @@ const mainNavItems: MenuProps["items"] = [
   { key: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "小红书自动运营" },
   { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "小红书分析中心" },
   { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "小红书竞品监控" },
+];
+
+const wechatOfficialNavItems: MenuProps["items"] = [
+  { key: "/platform-select", icon: <DashboardOutlined />, label: "平台中心" },
+  { key: "/platforms/wechat-official/dashboard", icon: <DatabaseOutlined />, label: "公众号爆文" },
 ];
 
 const footerNavItems: MenuProps["items"] = [
@@ -109,6 +112,8 @@ export function AppShell() {
   const handleMarkAllRead = async () => { await markAllNotificationsRead(); void loadNotifications(); };
   const handleMenuClick: MenuProps["onClick"] = ({ key }) => { navigate(key); };
   const selectedKeys = [location.pathname];
+  const isWechatOfficialRoute = location.pathname.startsWith("/platforms/wechat-official");
+  const mainNavItems = isWechatOfficialRoute ? wechatOfficialNavItems : xhsNavItems;
 
   const notificationDropdownContent = (
     <div style={{ width: 360, background: "#1f1f1f", borderRadius: 8, border: "1px solid #303030", overflow: "hidden" }}>
