@@ -5,7 +5,17 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
-from backend.app.models import AiDraft, PublishJob, WechatOfficialArticle, WechatOfficialArticleMetric, WechatOfficialArticleSnapshot, WechatOfficialCrawlJob, WechatOfficialDraftSource
+from backend.app.models import (
+    AiDraft,
+    PublishJob,
+    WechatOfficialArticle,
+    WechatOfficialArticleComment,
+    WechatOfficialArticleCommentReply,
+    WechatOfficialArticleMetric,
+    WechatOfficialArticleSnapshot,
+    WechatOfficialCrawlJob,
+    WechatOfficialDraftSource,
+)
 from backend.app.services import wechat_official_redfox_service as redfox_service
 
 client = TestClient(app)
@@ -83,9 +93,30 @@ class FakeRedfoxClient:
                 "summary": "URL补全摘要",
                 "workUrl": url,
                 "author": "URL公众号",
+                "coverUrl": "https://example.com/url-cover.jpg",
                 "content": "URL 详情正文。",
+                "html": '<p>URL 详情正文。</p><img src="https://example.com/html-image.jpg" />',
+                "contentImages": [{"url": "https://example.com/body-image.jpg", "width": 640, "height": 480}],
+                "comments": [
+                    {
+                        "commentId": "comment-1",
+                        "nickName": "读者一",
+                        "userId": "reader-1",
+                        "content": "这篇很有启发",
+                        "likeCount": 12,
+                        "createTime": "2026-06-18 10:00:00",
+                        "replies": [
+                            {"replyId": "reply-1", "nickName": "作者", "content": "谢谢", "likeCount": 2}
+                        ],
+                        "api_key": "comment-secret",
+                    }
+                ],
                 "readCount": 130000,
+                "commentCount": 1,
                 "shareCount": 66,
+                "api_key": "detail-secret",
+                "token": "detail-token",
+                "cookie": "detail-cookie",
             },
         }
 
@@ -194,7 +225,7 @@ def test_redfox_keyword_collect_saves_articles_metrics_snapshots_and_candidates(
 
 
 def test_redfox_account_collect_and_url_import_use_same_library_path(tmp_path, monkeypatch):
-    get_db, _ = _override_database(tmp_path)
+    get_db, TestingSessionLocal = _override_database(tmp_path)
     monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeRedfoxClient, raising=False)
     try:
         headers = _register("redfox-account-url-user")
@@ -220,5 +251,31 @@ def test_redfox_account_collect_and_url_import_use_same_library_path(tmp_path, m
         assert library.status_code == 200
         titles = {item["title"] for item in library.json()["items"]}
         assert {"公众号热文", "URL补全爆文"}.issubset(titles)
+        url_item = next(item for item in library.json()["items"] if item["title"] == "URL补全爆文")
+
+        detail = client.get(f"/api/wechat-official/content-library/{url_item['id']}", headers=headers)
+        assert detail.status_code == 200
+        serialized_detail = detail.text
+        assert "detail-secret" not in serialized_detail
+        assert "detail-token" not in serialized_detail
+        assert "detail-cookie" not in serialized_detail
+        assert "comment-secret" not in serialized_detail
+        detail_payload = detail.json()
+        assert detail_payload["latest_snapshot"]["images_json"]
+        assert {image["url"] for image in detail_payload["latest_snapshot"]["images_json"]} >= {
+            "https://example.com/url-cover.jpg",
+            "https://example.com/html-image.jpg",
+            "https://example.com/body-image.jpg",
+        }
+        assert detail_payload["comments"]["total"] == 1
+        assert detail_payload["comments"]["items"][0]["content"] == "这篇很有启发"
+        assert detail_payload["comments"]["items"][0]["replies"][0]["content"] == "谢谢"
+
+        with TestingSessionLocal() as db:
+            snapshot = db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == url_item["id"]))
+            assert snapshot is not None
+            assert len(snapshot.images_json or []) == 3
+            assert db.scalar(select(WechatOfficialArticleComment).where(WechatOfficialArticleComment.article_id == url_item["id"])) is not None
+            assert db.scalar(select(WechatOfficialArticleCommentReply)) is not None
     finally:
         app.dependency_overrides.pop(get_db, None)

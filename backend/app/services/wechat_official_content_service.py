@@ -10,7 +10,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import ModelConfig, WechatOfficialArticle, WechatOfficialArticleMetric, WechatOfficialArticleSnapshot
+from backend.app.models import ModelConfig, WechatOfficialArticle, WechatOfficialArticleComment, WechatOfficialArticleCommentReply, WechatOfficialArticleMetric, WechatOfficialArticleSnapshot
 from backend.app.services.ai_service import OpenAICompatibleTextClient
 from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_metric
 
@@ -91,6 +91,9 @@ class WechatOfficialContentService:
             "latest_metric": metric_payload,
             "analysis": analysis,
             "latest_snapshot": _serialize_snapshot_detail(latest_snapshot) if latest_snapshot else None,
+            "images": _detail_images(article, latest_snapshot),
+            "comments": _comments(self.db, article.id),
+            "detail_status": _detail_status(article, latest_snapshot, _detail_images(article, latest_snapshot), _comments(self.db, article.id)),
             "raw_json": _safe_raw_json(article.raw_json or {}),
         }
 
@@ -212,6 +215,82 @@ def _safe_raw_json(value: Any) -> Any:
     if isinstance(value, list):
         return [_safe_raw_json(item) for item in value]
     return value
+
+
+def _detail_images(article: WechatOfficialArticle, snapshot: WechatOfficialArticleSnapshot | None) -> list[dict[str, Any]]:
+    images: list[dict[str, Any]] = []
+    if snapshot and isinstance(snapshot.images_json, list):
+        for item in snapshot.images_json:
+            if isinstance(item, dict) and item.get("url"):
+                images.append(_safe_raw_json(item))
+            elif isinstance(item, str) and item:
+                images.append({"url": item, "type": "content", "source": "snapshot"})
+    if article.cover_url:
+        images.insert(0, {"url": article.cover_url, "type": "cover", "alt": "", "width": None, "height": None, "source": "article"})
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for image in images:
+        url = str(image.get("url") or "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        deduped.append(image)
+    return deduped
+
+
+def _comments(db: Session, article_id: int, limit: int = 50) -> dict[str, Any]:
+    rows = db.scalars(
+        select(WechatOfficialArticleComment)
+        .where(WechatOfficialArticleComment.article_id == article_id)
+        .order_by(WechatOfficialArticleComment.like_count.desc(), WechatOfficialArticleComment.id.asc())
+        .limit(limit)
+    ).all()
+    items = []
+    for comment in rows:
+        replies = db.scalars(
+            select(WechatOfficialArticleCommentReply)
+            .where(WechatOfficialArticleCommentReply.comment_id == comment.id)
+            .order_by(WechatOfficialArticleCommentReply.id.asc())
+        ).all()
+        items.append(
+            {
+                "id": comment.id,
+                "article_id": comment.article_id,
+                "comment_id": comment.comment_id,
+                "user_name": comment.user_name,
+                "user_id": comment.user_id,
+                "content": comment.content,
+                "like_count": comment.like_count,
+                "created_at_remote": comment.created_at_remote,
+                "raw_json": _safe_raw_json(comment.raw_json or {}),
+                "replies": [
+                    {
+                        "id": reply.id,
+                        "reply_id": reply.reply_id,
+                        "user_name": reply.user_name,
+                        "user_id": reply.user_id,
+                        "content": reply.content,
+                        "like_count": reply.like_count,
+                        "created_at_remote": reply.created_at_remote,
+                        "raw_json": _safe_raw_json(reply.raw_json or {}),
+                    }
+                    for reply in replies
+                ],
+            }
+        )
+    return {"items": items, "total": len(items), "available": bool(items), "source": "stored" if items else "none"}
+
+
+def _detail_status(article: WechatOfficialArticle, snapshot: WechatOfficialArticleSnapshot | None, images: list[dict[str, Any]], comments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "has_cover": bool(article.cover_url),
+        "has_snapshot": snapshot is not None,
+        "has_text": bool(snapshot and snapshot.text),
+        "has_html": bool(snapshot and snapshot.html),
+        "image_count": len(images),
+        "comment_count": int(comments.get("total") or 0),
+        "can_refresh_from_redfox": bool(article.article_url or article.content_url),
+    }
 
 
 def _template_hotspot_analysis(article: WechatOfficialArticle, source_text: str) -> dict[str, Any]:

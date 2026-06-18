@@ -18,6 +18,7 @@ import {
   Drawer,
   Form,
   Input,
+  Image,
   InputNumber,
   List,
   message,
@@ -44,6 +45,7 @@ import {
   fetchWechatOfficialOverview,
   fetchWechatOfficialRedfoxConfig,
   importWechatOfficialRedfoxUrl,
+  refreshWechatOfficialContentDetail,
   saveWechatOfficialRedfoxConfig,
   updateWechatOfficialRecommendation,
   validateWechatOfficialRedfoxConfig,
@@ -233,6 +235,9 @@ export function WechatOfficialDashboard() {
   const [draftIdByArticle, setDraftIdByArticle] = useState<Record<number, number>>({});
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [refreshingDetail, setRefreshingDetail] = useState(false);
+  const [detailActionMessage, setDetailActionMessage] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [contentDetail, setContentDetail] = useState<WechatOfficialContentDetail | null>(null);
 
   const [configForm] = Form.useForm();
@@ -253,7 +258,7 @@ export function WechatOfficialDashboard() {
       const [overviewPayload, configPayload, libraryPayload] = await Promise.all([
         fetchWechatOfficialOverview(),
         fetchWechatOfficialRedfoxConfig(),
-        fetchWechatOfficialContentLibrary({ viral_only: true, min_read_count: DEFAULT_MIN_READ }),
+        fetchWechatOfficialContentLibrary(),
       ]);
       setOverview(overviewPayload);
       setConfigured(configPayload.configured);
@@ -290,9 +295,12 @@ export function WechatOfficialDashboard() {
   async function openDetail(articleId: number): Promise<void> {
     setDetailOpen(true);
     setDetailLoading(true);
+    setDetailError(null);
+    setDetailActionMessage(null);
     try {
       setContentDetail(await fetchWechatOfficialContentDetail(articleId));
     } catch (error) {
+      setDetailError(error instanceof Error ? error.message : "文章详情读取失败");
       message.error(error instanceof Error ? error.message : "文章详情读取失败");
     } finally {
       setDetailLoading(false);
@@ -303,6 +311,24 @@ export function WechatOfficialDashboard() {
     const articleId = contentDetail?.article.id;
     if (articleId) {
       setContentDetail(await fetchWechatOfficialContentDetail(articleId));
+    }
+  }
+
+  async function handleRefreshDetail(): Promise<void> {
+    const articleId = contentDetail?.article.id;
+    if (!articleId) return;
+    setRefreshingDetail(true);
+    setDetailError(null);
+    setDetailActionMessage(null);
+    try {
+      const detail = await refreshWechatOfficialContentDetail(articleId);
+      setContentDetail(detail);
+      await refreshWorkspace();
+      setDetailActionMessage("详情已补全：封面、正文图片和评论以 Redfox 返回为准；未执行素材上传或发布动作。");
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : "详情补全失败，请确认 Redfox 配置可用且文章 URL 可访问。");
+    } finally {
+      setRefreshingDetail(false);
     }
   }
 
@@ -635,9 +661,11 @@ export function WechatOfficialDashboard() {
         </Col>
       </Row>
 
-      <Drawer title="公众号文章详情" open={detailOpen} onClose={() => setDetailOpen(false)} width={760} loading={detailLoading}>
+      <Drawer title="公众号文章详情" open={detailOpen} onClose={() => setDetailOpen(false)} width={960} loading={detailLoading}>
         {contentDetail ? (
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            {detailError ? <Alert showIcon type="error" message="详情操作失败" description={detailError} /> : null}
+            {detailActionMessage ? <Alert showIcon type="success" message={detailActionMessage} /> : null}
             <Descriptions column={1} size="small" bordered>
               <Descriptions.Item label="标题">{contentDetail.article.title}</Descriptions.Item>
               <Descriptions.Item label="公众号/作者">{contentDetail.article.author_name || "未知"}</Descriptions.Item>
@@ -648,10 +676,56 @@ export function WechatOfficialDashboard() {
             </Descriptions>
 
             <Space wrap>
+              <Button loading={refreshingDetail} onClick={() => void handleRefreshDetail()}>补全正文与素材</Button>
               <Button loading={busyAction === `analyze-${contentDetail.article.id}`} onClick={() => handleAnalyze(contentDetail.article)}>拆解爆点</Button>
               <Button type="primary" loading={busyAction === `draft-${contentDetail.article.id}`} onClick={() => handleCreateDraft(contentDetail.article)}>按「{selectedTemplate.name}」生成草稿</Button>
               <Button loading={busyAction === `dry-${contentDetail.article.id}`} onClick={() => handleDryRun(contentDetail.article)}>Dry-run</Button>
             </Space>
+
+            <Alert
+              showIcon
+              type={contentDetail.detail_status?.has_snapshot ? "success" : "warning"}
+              message={contentDetail.detail_status?.has_snapshot ? "详情素材已补全" : "当前仅有列表采集数据"}
+              description={`正文 ${contentDetail.detail_status?.has_text ? "已获取" : "未获取"} / 图片 ${contentDetail.detail_status?.image_count ?? 0} 张 / 评论正文 ${contentDetail.detail_status?.comment_count ?? 0} 条。补全只会拉取 Redfox 详情并保存远程 URL，不执行素材上传、草稿同步或发布。`}
+            />
+
+            <Card size="small" title="封面与正文图片" style={cardStyle}>
+              {contentDetail.images?.length ? (
+                <Image.PreviewGroup>
+                  <Row gutter={[12, 12]}>
+                    {contentDetail.images.map((image, index) => (
+                      <Col xs={12} sm={8} md={6} key={`${image.url}-${index}`}>
+                        <Card size="small" cover={<Image src={image.url} alt={image.alt || contentDetail.article.title} referrerPolicy="no-referrer" style={{ aspectRatio: "1 / 1", objectFit: "cover" }} />}>
+                          <Tag color={image.type === "cover" ? "blue" : "default"}>{image.type === "cover" ? "封面" : "正文图"}</Tag>
+                        </Card>
+                      </Col>
+                    ))}
+                  </Row>
+                </Image.PreviewGroup>
+              ) : <Text type="secondary">暂无封面或正文图片；可点击“补全正文与素材”尝试拉取 Redfox 详情。</Text>}
+            </Card>
+
+            <Card size="small" title="正文内容" style={cardStyle}>
+              <Paragraph style={{ whiteSpace: "pre-wrap" }}>{contentDetail.latest_snapshot?.text || contentDetail.article.digest || "暂无正文；当前可能只完成了列表采集。"}</Paragraph>
+            </Card>
+
+            <Card size="small" title={`评论区（${contentDetail.comments?.total ?? 0}）`} style={cardStyle}>
+              {contentDetail.comments?.items?.length ? (
+                <List
+                  size="small"
+                  dataSource={contentDetail.comments.items}
+                  renderItem={(comment) => (
+                    <List.Item>
+                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                        <Text strong>{comment.user_name || "匿名读者"} <Text type="secondary">赞 {comment.like_count ?? 0}</Text></Text>
+                        <Text>{comment.content}</Text>
+                        {comment.replies?.length ? <div style={{ paddingLeft: 16, borderLeft: "2px solid #303030" }}>{comment.replies.map((reply, index) => <Paragraph key={index} type="secondary" style={{ marginBottom: 4 }}>{String(reply.user_name || "回复")}：{String(reply.content || "")}</Paragraph>)}</div> : null}
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              ) : <Text type="secondary">暂无评论正文。Redfox 可能只返回评论数，不返回评论列表；不会伪造评论内容。</Text>}
+            </Card>
 
             <Card size="small" title="爆点拆解" style={cardStyle}>
               <Descriptions column={1} size="small">
@@ -669,7 +743,7 @@ export function WechatOfficialDashboard() {
 
             <Collapse
               items={[
-                { key: "snapshot", label: "正文快照", children: <Paragraph style={{ whiteSpace: "pre-wrap" }}>{contentDetail.latest_snapshot?.text || "暂无正文快照"}</Paragraph> },
+                { key: "html", label: "HTML 快照（文本展示，不执行）", children: <pre style={{ whiteSpace: "pre-wrap" }}>{contentDetail.latest_snapshot?.html || "暂无 HTML 快照"}</pre> },
                 { key: "raw", label: "原始数据（已脱敏）", children: <pre style={{ whiteSpace: "pre-wrap" }}>{jsonBlock(contentDetail.raw_json)}</pre> },
               ]}
             />
