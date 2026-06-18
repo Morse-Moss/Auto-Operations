@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
-from backend.app.models import AiDraft, PublishJob, WechatOfficialDraftSource
+from backend.app.models import AiDraft, PublishJob, WechatOfficialArticle, WechatOfficialDraftSource
 
 client = TestClient(app)
 
@@ -89,6 +89,44 @@ def test_create_draft_from_content_library_creates_wechat_official_ai_draft_and_
             assert source is not None
             assert source.article_id == article_id
             assert source.source_type == "rewrite"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_create_draft_with_template_updates_source_article_analysis(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("draft-template-user")
+        article_id = _create_article_with_snapshot(headers)
+
+        response = client.post(
+            f"/api/wechat-official/content-library/{article_id}/create-draft",
+            headers=headers,
+            json={
+                "rewrite_style": "提炼案例价值",
+                "target_audience": "内容运营",
+                "call_to_action": "收藏并复盘",
+                "template_key": "case_rewrite",
+                "template_name": "案例拆解",
+                "template_instruction": "按 背景-冲突-方法-结果-启发 组织二创草稿。",
+                "opening_angle": "从爆文结构拆解可复用方法",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert "案例拆解" in payload["body"]
+        assert "按 背景-冲突-方法-结果-启发 组织二创草稿。" in payload["body"]
+        assert "从爆文结构拆解可复用方法" in payload["body"]
+
+        with TestingSessionLocal() as db:
+            source = db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == payload["id"]))
+            assert source is not None
+            assert source.raw_json["rewrite_params"]["template_key"] == "case_rewrite"
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            assert article.raw_json["analysis"]["pool_status"] == "draft_ready"
+            assert article.raw_json["analysis"]["draft_template_key"] == "case_rewrite"
     finally:
         app.dependency_overrides.pop(get_db, None)
 

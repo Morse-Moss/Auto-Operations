@@ -13,7 +13,9 @@ import {
   Col,
   Collapse,
   DatePicker,
+  Descriptions,
   Divider,
+  Drawer,
   Form,
   Input,
   InputNumber,
@@ -21,6 +23,7 @@ import {
   message,
   Row,
   Segmented,
+  Select,
   Space,
   Statistic,
   Tag,
@@ -31,10 +34,12 @@ import { Link } from "react-router-dom";
 
 import { PageHeader } from "../../components/layout/app-shell";
 import {
+  analyzeWechatOfficialHotspots,
   collectWechatOfficialRedfoxAccount,
   collectWechatOfficialRedfoxArticles,
   createWechatOfficialDraft,
   dryRunWechatOfficialDraft,
+  fetchWechatOfficialContentDetail,
   fetchWechatOfficialContentLibrary,
   fetchWechatOfficialOverview,
   fetchWechatOfficialRedfoxConfig,
@@ -44,17 +49,22 @@ import {
   validateWechatOfficialRedfoxConfig,
 } from "../../lib/api";
 import type {
+  WechatOfficialContentDetail,
   WechatOfficialContentLibraryItem,
+  WechatOfficialCreateDraftPayload,
   WechatOfficialOverview,
+  WechatOfficialPoolStatus,
   WechatOfficialRedfoxCollectResponse,
   WechatOfficialRedfoxConfig,
 } from "../../types";
 
 const { Text, Paragraph } = Typography;
 const { RangePicker } = DatePicker;
+const { TextArea } = Input;
 
 const cardStyle = { background: "#1f1f1f", borderColor: "#303030" };
 const DEFAULT_MIN_READ = 100000;
+const MAX_BATCH_KEYWORDS = 5;
 
 const fallbackOverview: WechatOfficialOverview = {
   platform_id: "wechat_official",
@@ -69,10 +79,16 @@ const fallbackOverview: WechatOfficialOverview = {
   blocked_actions: ["真实授权", "素材上传", "草稿同步", "预览发送", "群发发布"],
 };
 
-type RedfoxMode = "keyword" | "account" | "url";
+type RedfoxMode = "keyword" | "batch" | "account" | "url";
 
 type KeywordForm = {
   keyword: string;
+  pages: number;
+  min_read_count: number;
+};
+
+type BatchKeywordsForm = {
+  keywords: string;
   pages: number;
   min_read_count: number;
 };
@@ -90,16 +106,81 @@ type UrlForm = {
   min_read_count: number;
 };
 
+type BatchKeywordResult = {
+  keyword: string;
+  status: "succeeded" | "failed";
+  summary?: WechatOfficialRedfoxCollectResponse["summary"];
+  error?: string;
+};
+
+type DraftTemplate = {
+  key: string;
+  name: string;
+  rewrite_style: string;
+  target_audience: string;
+  call_to_action: string;
+  template_instruction: string;
+  opening_angle: string;
+};
+
+const POOL_STATUS_OPTIONS: Array<{ value: WechatOfficialPoolStatus; label: string; color: string }> = [
+  { value: "candidate", label: "候选", color: "blue" },
+  { value: "shortlisted", label: "已入选", color: "green" },
+  { value: "analyzing", label: "拆解中", color: "gold" },
+  { value: "draft_ready", label: "草稿已生成", color: "purple" },
+  { value: "rejected", label: "已拒绝", color: "red" },
+  { value: "archived", label: "已归档", color: "default" },
+];
+
+const WECHAT_DRAFT_TEMPLATES: DraftTemplate[] = [
+  {
+    key: "case_rewrite",
+    name: "案例拆解",
+    rewrite_style: "保留爆文结构，提炼可复用案例价值",
+    target_audience: "私域运营和内容负责人",
+    call_to_action: "关注后续更新",
+    template_instruction: "按 背景-冲突-方法-结果-启发 组织二创草稿。",
+    opening_angle: "从爆文结构拆解可复用方法",
+  },
+  {
+    key: "insight_commentary",
+    name: "观点评论",
+    rewrite_style: "提炼核心观点，加入克制评论",
+    target_audience: "行业观察者和管理者",
+    call_to_action: "欢迎留言交流",
+    template_instruction: "按 现象-判断-原因-建议 组织公众号评论稿。",
+    opening_angle: "用运营视角解释这篇文章为什么能传播",
+  },
+  {
+    key: "practical_guide",
+    name: "实操清单",
+    rewrite_style: "转成可执行方法论",
+    target_audience: "一线运营和创业者",
+    call_to_action: "收藏并复盘自己的业务",
+    template_instruction: "按 问题-步骤-注意事项-复盘清单 组织。",
+    opening_angle: "把爆文观点转成可落地的操作步骤",
+  },
+];
+
 function statusColor(status?: string): string {
   if (!status) return "default";
-  if (["blocked", "expired", "invalid", "failed"].includes(status)) return "red";
-  if (["planned", "partial", "pending", "unknown"].includes(status)) return "gold";
-  if (["available", "valid", "active", "succeeded", "completed"].includes(status)) return "green";
+  if (["blocked", "expired", "invalid", "failed", "rejected"].includes(status)) return "red";
+  if (["planned", "partial", "pending", "unknown", "analyzing"].includes(status)) return "gold";
+  if (["available", "valid", "active", "succeeded", "completed", "shortlisted"].includes(status)) return "green";
+  if (["draft_ready"].includes(status)) return "purple";
   return "default";
 }
 
 function readCount(article: WechatOfficialContentLibraryItem): number {
   return Number(article.latest_metric?.read_count ?? 0);
+}
+
+function poolStatus(article: WechatOfficialContentLibraryItem): string {
+  return String(article.analysis?.pool_status || article.analysis?.recommendation_status || "candidate");
+}
+
+function poolStatusLabel(status?: string): string {
+  return POOL_STATUS_OPTIONS.find((item) => item.value === status)?.label || status || "候选";
 }
 
 function lowFollowerLabel(article: WechatOfficialContentLibraryItem): string {
@@ -117,6 +198,26 @@ function collectSummaryText(result: WechatOfficialRedfoxCollectResponse | null):
   return `拉取 ${summary.fetched}，保存 ${summary.saved}，10万+候选 ${summary.viral_candidates}，重复 ${summary.deduped}，API 调用 ${summary.api_calls}`;
 }
 
+function splitKeywords(value: string): string[] {
+  return Array.from(new Set(value.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean))).slice(0, MAX_BATCH_KEYWORDS);
+}
+
+function draftPayload(template: DraftTemplate): WechatOfficialCreateDraftPayload {
+  return {
+    rewrite_style: template.rewrite_style,
+    target_audience: template.target_audience,
+    call_to_action: template.call_to_action,
+    template_key: template.key,
+    template_name: template.name,
+    template_instruction: template.template_instruction,
+    opening_angle: template.opening_angle,
+  };
+}
+
+function jsonBlock(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
 export function WechatOfficialDashboard() {
   const [overview, setOverview] = useState<WechatOfficialOverview>(fallbackOverview);
   const [redfoxConfig, setRedfoxConfig] = useState<WechatOfficialRedfoxConfig | null>(null);
@@ -125,16 +226,27 @@ export function WechatOfficialDashboard() {
   const [loadFailed, setLoadFailed] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [mode, setMode] = useState<RedfoxMode>("keyword");
+  const [poolFilter, setPoolFilter] = useState<string>("all");
+  const [selectedTemplateKey, setSelectedTemplateKey] = useState(WECHAT_DRAFT_TEMPLATES[0].key);
   const [lastCollectResult, setLastCollectResult] = useState<WechatOfficialRedfoxCollectResponse | null>(null);
+  const [batchResults, setBatchResults] = useState<BatchKeywordResult[]>([]);
   const [draftIdByArticle, setDraftIdByArticle] = useState<Record<number, number>>({});
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [contentDetail, setContentDetail] = useState<WechatOfficialContentDetail | null>(null);
 
   const [configForm] = Form.useForm();
   const [keywordForm] = Form.useForm<KeywordForm>();
+  const [batchForm] = Form.useForm<BatchKeywordsForm>();
   const [accountForm] = Form.useForm<AccountForm>();
   const [urlForm] = Form.useForm<UrlForm>();
 
+  const selectedTemplate = WECHAT_DRAFT_TEMPLATES.find((item) => item.key === selectedTemplateKey) || WECHAT_DRAFT_TEMPLATES[0];
   const candidateCount = useMemo(() => contentItems.filter((item) => item.is_candidate).length, [contentItems]);
+  const displayedItems = useMemo(() => contentItems.filter((item) => poolFilter === "all" || poolStatus(item) === poolFilter), [contentItems, poolFilter]);
   const configuredText = configured ? `已配置 ${redfoxConfig?.masked_api_key || "****"}` : "未配置";
+  const batchKeywords = splitKeywords(String(Form.useWatch("keywords", batchForm) || ""));
+  const batchPages = Number(Form.useWatch("pages", batchForm) || 1);
 
   const refreshWorkspace = useCallback(async () => {
     try {
@@ -175,6 +287,25 @@ export function WechatOfficialDashboard() {
     }
   }
 
+  async function openDetail(articleId: number): Promise<void> {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    try {
+      setContentDetail(await fetchWechatOfficialContentDetail(articleId));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "文章详情读取失败");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function reloadDetail(): Promise<void> {
+    const articleId = contentDetail?.article.id;
+    if (articleId) {
+      setContentDetail(await fetchWechatOfficialContentDetail(articleId));
+    }
+  }
+
   const handleSaveConfig = () => runAction("save-config", "Redfox API Key 配置已保存", async () => {
     const values = await configForm.validateFields();
     const payload = {
@@ -208,6 +339,33 @@ export function WechatOfficialDashboard() {
     await refreshWorkspace();
   });
 
+  const handleBatchCollect = () => runAction("collect-batch", "批量关键词计划执行完成", async () => {
+    const values = await batchForm.validateFields();
+    const keywords = splitKeywords(values.keywords);
+    if (!keywords.length) throw new Error("请输入至少 1 个关键词");
+    const results: BatchKeywordResult[] = [];
+    for (const keyword of keywords) {
+      try {
+        const response = await collectWechatOfficialRedfoxArticles({
+          keyword,
+          pages: values.pages ?? 1,
+          sort_type: "_4",
+          min_read_count: values.min_read_count ?? DEFAULT_MIN_READ,
+          save_snapshot: true,
+        });
+        results.push({ keyword, status: "succeeded", summary: response.summary });
+        setLastCollectResult(response);
+      } catch (error) {
+        results.push({ keyword, status: "failed", error: error instanceof Error ? error.message : "收集失败" });
+      }
+      setBatchResults([...results]);
+    }
+    await refreshWorkspace();
+    if (results.some((item) => item.status === "failed")) {
+      message.warning("部分关键词收集失败，已保留成功结果。");
+    }
+  });
+
   const handleAccountCollect = () => runAction("collect-account", "公众号爆文收集完成", async () => {
     const values = await accountForm.validateFields();
     const range = Array.isArray(values.range) ? values.range : [];
@@ -236,23 +394,29 @@ export function WechatOfficialDashboard() {
     await refreshWorkspace();
   });
 
-  const handleCreateDraft = (article: WechatOfficialContentLibraryItem) => runAction(`draft-${article.id}`, "已生成公众号二创草稿", async () => {
-    const draft = await createWechatOfficialDraft(article.id, {
-      rewrite_style: "保留爆文结构，提炼可复用案例价值",
-      target_audience: "私域运营和内容负责人",
-      call_to_action: "关注后续更新",
-    });
+  const handleUpdatePoolStatus = (article: WechatOfficialContentLibraryItem, nextStatus: WechatOfficialPoolStatus) => runAction(`status-${article.id}-${nextStatus}`, `已更新为${poolStatusLabel(nextStatus)}`, async () => {
+    await updateWechatOfficialRecommendation(article.id, { pool_status: nextStatus });
+    await refreshWorkspace();
+    if (contentDetail?.article.id === article.id) await reloadDetail();
+  });
+
+  const handleAnalyze = (article: WechatOfficialContentLibraryItem) => runAction(`analyze-${article.id}`, "爆点拆解已生成", async () => {
+    await analyzeWechatOfficialHotspots(article.id, {});
+    await refreshWorkspace();
+    if (contentDetail?.article.id === article.id) await reloadDetail();
+  });
+
+  const handleCreateDraft = (article: WechatOfficialContentLibraryItem) => runAction(`draft-${article.id}`, `已按「${selectedTemplate.name}」生成公众号二创草稿`, async () => {
+    const draft = await createWechatOfficialDraft(article.id, draftPayload(selectedTemplate));
     setDraftIdByArticle((current) => ({ ...current, [article.id]: draft.id }));
+    await refreshWorkspace();
+    if (contentDetail?.article.id === article.id) await reloadDetail();
   });
 
   const handleDryRun = (article: WechatOfficialContentLibraryItem) => runAction(`dry-${article.id}`, "dry-run 完成：真实发布和群发保持 blocked", async () => {
     let draftId = draftIdByArticle[article.id];
     if (!draftId) {
-      const draft = await createWechatOfficialDraft(article.id, {
-        rewrite_style: "保留爆文结构，提炼可复用案例价值",
-        target_audience: "私域运营和内容负责人",
-        call_to_action: "关注后续更新",
-      });
+      const draft = await createWechatOfficialDraft(article.id, draftPayload(selectedTemplate));
       draftId = draft.id;
       setDraftIdByArticle((current) => ({ ...current, [article.id]: draft.id }));
     }
@@ -260,10 +424,6 @@ export function WechatOfficialDashboard() {
     if (!result.publish_blocked || !result.sendall_blocked) {
       throw new Error("dry-run 未返回 blocked 状态，请检查后端安全契约。");
     }
-  });
-
-  const handleMarkRecommended = (article: WechatOfficialContentLibraryItem) => runAction(`recommend-${article.id}`, "已标记为 recommended", async () => {
-    await updateWechatOfficialRecommendation(article.id, { recommendation_status: "recommended" });
     await refreshWorkspace();
   });
 
@@ -272,12 +432,21 @@ export function WechatOfficialDashboard() {
     await refreshWorkspace();
   });
 
+  const renderArticleActions = (article: WechatOfficialContentLibraryItem) => [
+    <Button key="detail" size="small" onClick={() => void openDetail(article.id)}>详情</Button>,
+    <Button key="shortlist" size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入选</Button>,
+    <Button key="analyze" size="small" loading={busyAction === `analyze-${article.id}`} onClick={() => handleAnalyze(article)}>拆解爆点</Button>,
+    <Button key="draft" size="small" loading={busyAction === `draft-${article.id}`} onClick={() => handleCreateDraft(article)}>生成草稿</Button>,
+    <Button key="dry" size="small" loading={busyAction === `dry-${article.id}`} onClick={() => handleDryRun(article)}>Dry-run</Button>,
+    <Button key="reject" size="small" danger loading={busyAction === `status-${article.id}-rejected`} onClick={() => handleUpdatePoolStatus(article, "rejected")}>拒绝</Button>,
+  ];
+
   return (
     <div>
       <PageHeader
         eyebrow="运营中台 / 微信公众号"
-        title="Redfox 公众号爆文收集"
-        description="通过 RedFoxHub 官方 API 收集公众号 10万+ 文章，沉淀为爆文候选并生成二创草稿。真实发布与群发保持阻断。"
+        title="公众号选题池工作台"
+        description="批量收集公众号爆文，推进选题状态，拆解爆点并生成二创草稿。真实发布与群发保持阻断。"
         action={
           <Space>
             <Tag color="red">发布/群发 blocked</Tag>
@@ -296,13 +465,13 @@ export function WechatOfficialDashboard() {
         type="info"
         style={{ marginBottom: 16 }}
         message="Redfox 是内容数据源，不是公众号发布通道"
-        description="本页面只做爆文收集、候选入库、草稿生成和 dry-run。真实授权、素材上传、草稿同步、预览发送、群发发布没有可执行入口。"
+        description="本页面只做爆文收集、选题池、草稿生成和 dry-run。真实授权、素材上传、草稿同步、预览发送、群发发布没有可执行入口。"
       />
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Redfox" value={configuredText} prefix={<SafetyCertificateOutlined />} /></Card></Col>
         <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="10万+ 候选" value={candidateCount} prefix={<DatabaseOutlined />} /></Card></Col>
-        <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="内容库展示" value={contentItems.length} prefix={<FileTextOutlined />} /></Card></Col>
+        <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="选题池展示" value={displayedItems.length} prefix={<FileTextOutlined />} /></Card></Col>
         <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Blocked actions" value={overview.blocked_actions.length} prefix={<LockOutlined />} /></Card></Col>
       </Row>
 
@@ -326,11 +495,11 @@ export function WechatOfficialDashboard() {
         </Col>
 
         <Col xs={24} xl={16}>
-          <Card title="爆文收集" style={cardStyle}>
+          <Card title="爆文收集计划" style={cardStyle}>
             <Segmented
               value={mode}
               onChange={(value) => setMode(value as RedfoxMode)}
-              options={[{ label: "按关键词收集", value: "keyword" }, { label: "按公众号收集", value: "account" }, { label: "文章 URL 补全", value: "url" }]}
+              options={[{ label: "单关键词", value: "keyword" }, { label: "批量关键词", value: "batch" }, { label: "按公众号", value: "account" }, { label: "文章 URL", value: "url" }]}
               style={{ marginBottom: 16 }}
             />
 
@@ -340,6 +509,36 @@ export function WechatOfficialDashboard() {
                 <Form.Item name="pages" label="页数"><InputNumber min={1} max={3} /></Form.Item>
                 <Form.Item name="min_read_count" label="最低阅读"><InputNumber min={0} step={10000} /></Form.Item>
                 <Form.Item><Button type="primary" loading={busyAction === "collect-keyword"} onClick={handleKeywordCollect}>开始收集爆文</Button></Form.Item>
+              </Form>
+            ) : null}
+
+            {mode === "batch" ? (
+              <Form form={batchForm} layout="vertical" initialValues={{ pages: 1, min_read_count: DEFAULT_MIN_READ }}>
+                <Form.Item name="keywords" label="批量关键词（最多 5 个，换行或逗号分隔）" rules={[{ required: true, message: "请输入关键词" }]}>
+                  <TextArea rows={4} placeholder="私域增长\nAI Agent\n企业微信" />
+                </Form.Item>
+                <Space wrap>
+                  <Form.Item name="pages" label="页数"><InputNumber min={1} max={3} /></Form.Item>
+                  <Form.Item name="min_read_count" label="最低阅读"><InputNumber min={0} step={10000} /></Form.Item>
+                  <Button type="primary" loading={busyAction === "collect-batch"} onClick={handleBatchCollect}>执行批量收集</Button>
+                  <Tag color="gold">预计 API 调用 {batchKeywords.length * batchPages}</Tag>
+                </Space>
+                {batchResults.length ? (
+                  <List
+                    size="small"
+                    dataSource={batchResults}
+                    renderItem={(item) => (
+                      <List.Item>
+                        <Space wrap>
+                          <Tag color={item.status === "succeeded" ? "green" : "red"}>{item.keyword}</Tag>
+                          <Text type={item.status === "succeeded" ? undefined : "danger"}>
+                            {item.summary ? `拉取 ${item.summary.fetched} / 保存 ${item.summary.saved} / 候选 ${item.summary.viral_candidates} / API ${item.summary.api_calls}` : item.error}
+                          </Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                ) : null}
               </Form>
             ) : null}
 
@@ -366,45 +565,51 @@ export function WechatOfficialDashboard() {
 
             <Divider />
             <Alert showIcon type="success" message="最近一次收集结果" description={collectSummaryText(lastCollectResult)} />
-            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>默认 1 页，最多 3 页；Redfox 是付费 API，执行前请关注预计 API 调用次数。</Paragraph>
+            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>默认 1 页，最多 3 页；批量关键词会串行执行，避免并发消耗 Redfox API。</Paragraph>
           </Card>
         </Col>
 
         <Col xs={24}>
-          <Card title="10万+ 爆文候选库" style={cardStyle}>
+          <Card
+            title="公众号选题池"
+            style={cardStyle}
+            extra={
+              <Space wrap>
+                <Select value={poolFilter} onChange={setPoolFilter} style={{ width: 140 }} options={[{ value: "all", label: "全部状态" }, ...POOL_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }))]} />
+                <Select value={selectedTemplateKey} onChange={setSelectedTemplateKey} style={{ width: 160 }} options={WECHAT_DRAFT_TEMPLATES.map((template) => ({ value: template.key, label: template.name }))} />
+              </Space>
+            }
+          >
             <List
-              dataSource={contentItems}
-              locale={{ emptyText: "暂无 10万+ 候选文章；先配置 Redfox 并执行收集。" }}
-              renderItem={(article) => (
-                <List.Item
-                  actions={[
-                    <Button key="draft" size="small" loading={busyAction === `draft-${article.id}`} onClick={() => handleCreateDraft(article)}>生成二创草稿</Button>,
-                    <Button key="dry" size="small" loading={busyAction === `dry-${article.id}`} onClick={() => handleDryRun(article)}>Dry-run</Button>,
-                    <Button key="rec" size="small" loading={busyAction === `recommend-${article.id}`} onClick={() => handleMarkRecommended(article)}>标记推荐</Button>,
-                    <Button key="low" size="small" loading={busyAction === `low-${article.id}`} onClick={() => handleMarkManualLowFollower(article)}>标记低粉证据</Button>,
-                  ]}
-                >
-                  <List.Item.Meta
-                    title={
-                      <Space wrap>
-                        <Text strong>{article.title || `Article #${article.id}`}</Text>
-                        <Tag color="green">Redfox</Tag>
-                        <Tag color={article.is_candidate ? "red" : "default"}>{article.is_candidate ? "爆文候选" : "普通文章"}</Tag>
-                        <Tag color="blue">阅读 {readCount(article).toLocaleString()}</Tag>
-                        <Tag color={statusColor(String(article.analysis?.recommendation_status || "candidate"))}>{String(article.analysis?.recommendation_status || "candidate")}</Tag>
-                        <Tag>{lowFollowerLabel(article)}</Tag>
-                      </Space>
-                    }
-                    description={
-                      <Space direction="vertical" size={4}>
-                        <Text type="secondary">公众号/作者：{article.author_name || "未知"} · 发布时间：{article.publish_time_remote || "未知"}</Text>
-                        <Text type="secondary">点赞 {article.latest_metric?.like_count ?? 0} / 在看 {article.latest_metric?.wow_count ?? 0} / 评论 {article.latest_metric?.comment_count ?? 0} / 分享 {article.latest_metric?.share_count ?? 0}</Text>
-                        <Text>{article.digest || article.article_url}</Text>
-                      </Space>
-                    }
-                  />
-                </List.Item>
-              )}
+              dataSource={displayedItems}
+              locale={{ emptyText: "暂无候选文章；先配置 Redfox 并执行收集。" }}
+              renderItem={(article) => {
+                const status = poolStatus(article);
+                return (
+                  <List.Item actions={renderArticleActions(article)}>
+                    <List.Item.Meta
+                      title={
+                        <Space wrap>
+                          <Button type="link" style={{ padding: 0 }} onClick={() => void openDetail(article.id)}><Text strong>{article.title || `Article #${article.id}`}</Text></Button>
+                          <Tag color="green">Redfox</Tag>
+                          <Tag color={article.is_candidate ? "red" : "default"}>{article.is_candidate ? "爆文候选" : "普通文章"}</Tag>
+                          <Tag color="blue">阅读 {readCount(article).toLocaleString()}</Tag>
+                          <Tag color={statusColor(status)}>{poolStatusLabel(status)}</Tag>
+                          <Tag>{lowFollowerLabel(article)}</Tag>
+                          {article.analysis?.analysis_mode ? <Tag color="purple">{article.analysis.analysis_mode}</Tag> : null}
+                        </Space>
+                      }
+                      description={
+                        <Space direction="vertical" size={4}>
+                          <Text type="secondary">公众号/作者：{article.author_name || "未知"} · 发布时间：{article.publish_time_remote || "未知"}</Text>
+                          <Text type="secondary">点赞 {article.latest_metric?.like_count ?? 0} / 在看 {article.latest_metric?.wow_count ?? 0} / 评论 {article.latest_metric?.comment_count ?? 0} / 分享 {article.latest_metric?.share_count ?? 0}</Text>
+                          <Text>{article.digest || article.article_url}</Text>
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                );
+              }}
             />
           </Card>
         </Col>
@@ -429,6 +634,48 @@ export function WechatOfficialDashboard() {
           />
         </Col>
       </Row>
+
+      <Drawer title="公众号文章详情" open={detailOpen} onClose={() => setDetailOpen(false)} width={760} loading={detailLoading}>
+        {contentDetail ? (
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="标题">{contentDetail.article.title}</Descriptions.Item>
+              <Descriptions.Item label="公众号/作者">{contentDetail.article.author_name || "未知"}</Descriptions.Item>
+              <Descriptions.Item label="发布时间">{contentDetail.article.publish_time_remote || "未知"}</Descriptions.Item>
+              <Descriptions.Item label="链接">{contentDetail.article.article_url || contentDetail.article.content_url}</Descriptions.Item>
+              <Descriptions.Item label="指标">阅读 {contentDetail.latest_metric?.read_count ?? 0} / 点赞 {contentDetail.latest_metric?.like_count ?? 0} / 在看 {contentDetail.latest_metric?.wow_count ?? 0} / 评论 {contentDetail.latest_metric?.comment_count ?? 0} / 分享 {contentDetail.latest_metric?.share_count ?? 0}</Descriptions.Item>
+              <Descriptions.Item label="状态"><Tag color={statusColor(poolStatus(contentDetail.article))}>{poolStatusLabel(poolStatus(contentDetail.article))}</Tag></Descriptions.Item>
+            </Descriptions>
+
+            <Space wrap>
+              <Button loading={busyAction === `analyze-${contentDetail.article.id}`} onClick={() => handleAnalyze(contentDetail.article)}>拆解爆点</Button>
+              <Button type="primary" loading={busyAction === `draft-${contentDetail.article.id}`} onClick={() => handleCreateDraft(contentDetail.article)}>按「{selectedTemplate.name}」生成草稿</Button>
+              <Button loading={busyAction === `dry-${contentDetail.article.id}`} onClick={() => handleDryRun(contentDetail.article)}>Dry-run</Button>
+            </Space>
+
+            <Card size="small" title="爆点拆解" style={cardStyle}>
+              <Descriptions column={1} size="small">
+                <Descriptions.Item label="标题钩子">{contentDetail.analysis.hotspot_breakdown?.hook || "待拆解"}</Descriptions.Item>
+                <Descriptions.Item label="读者痛点">{contentDetail.analysis.hotspot_breakdown?.pain_point || "待拆解"}</Descriptions.Item>
+                <Descriptions.Item label="内容承诺">{contentDetail.analysis.hotspot_breakdown?.promise || "待拆解"}</Descriptions.Item>
+                <Descriptions.Item label="可信证据">{contentDetail.analysis.hotspot_breakdown?.credibility || "待拆解"}</Descriptions.Item>
+                <Descriptions.Item label="结构路径">{contentDetail.analysis.hotspot_breakdown?.structure || "待拆解"}</Descriptions.Item>
+                <Descriptions.Item label="二创角度">{contentDetail.analysis.hotspot_breakdown?.reuse_angle || "待拆解"}</Descriptions.Item>
+              </Descriptions>
+              <Paragraph type="secondary">模式：{contentDetail.analysis.analysis_mode || "未拆解"}；核心洞察：{contentDetail.analysis.core_insight || "待补充"}</Paragraph>
+            </Card>
+
+            <Card size="small" title="摘要" style={cardStyle}><Paragraph>{contentDetail.article.digest || "无摘要"}</Paragraph></Card>
+
+            <Collapse
+              items={[
+                { key: "snapshot", label: "正文快照", children: <Paragraph style={{ whiteSpace: "pre-wrap" }}>{contentDetail.latest_snapshot?.text || "暂无正文快照"}</Paragraph> },
+                { key: "raw", label: "原始数据（已脱敏）", children: <pre style={{ whiteSpace: "pre-wrap" }}>{jsonBlock(contentDetail.raw_json)}</pre> },
+              ]}
+            />
+          </Space>
+        ) : <Text type="secondary">请选择文章查看详情。</Text>}
+      </Drawer>
     </div>
   );
 }

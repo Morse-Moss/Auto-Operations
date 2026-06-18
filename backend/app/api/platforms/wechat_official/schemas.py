@@ -115,7 +115,8 @@ class WechatOfficialArticleCommentsRequest(BaseModel):
 
 class WechatOfficialRecommendationUpdateRequest(BaseModel):
     recommendation_status: str | None = None
-    low_follower_evidence: bool | None = None
+    pool_status: str | None = None
+    low_follower_evidence: bool | str | None = None
     low_follower_note: str | None = None
     business_direction: str | None = None
     title_type: str | None = None
@@ -124,12 +125,25 @@ class WechatOfficialRecommendationUpdateRequest(BaseModel):
     core_insight: str | None = None
     case_info: dict[str, Any] | None = None
     customer_conversion_method: str | None = None
+    hotspot_breakdown: dict[str, Any] | None = None
+    draft_template_key: str | None = None
+    analysis_mode: str | None = None
+    analysis_updated_at: str | None = None
+
+
+class WechatOfficialHotspotAnalyzeRequest(BaseModel):
+    mode: str = "auto"
+    instruction: str = ""
 
 
 class WechatOfficialCreateDraftRequest(BaseModel):
     rewrite_style: str = "保持原文结构"
     target_audience: str = "公众号读者"
     call_to_action: str = "关注后续更新"
+    template_key: str | None = None
+    template_name: str | None = None
+    template_instruction: str | None = None
+    opening_angle: str | None = None
 
 
 class WechatOfficialDraftDryRunRequest(BaseModel):

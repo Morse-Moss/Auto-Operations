@@ -188,8 +188,21 @@ export type WechatOfficialArticleMetric = {
   captured_at?: string | null;
 };
 
+export type WechatOfficialPoolStatus = "candidate" | "shortlisted" | "analyzing" | "draft_ready" | "rejected" | "archived";
+
+export type WechatOfficialHotspotBreakdown = {
+  hook?: string;
+  pain_point?: string;
+  promise?: string;
+  credibility?: string;
+  structure?: string;
+  reuse_angle?: string;
+  [key: string]: unknown;
+};
+
 export type WechatOfficialArticleAnalysis = {
   recommendation_status?: string;
+  pool_status?: WechatOfficialPoolStatus | string;
   low_follower_evidence?: boolean | "unknown" | "manual" | "inferred" | string;
   low_follower_note?: string;
   business_direction?: string;
@@ -199,6 +212,10 @@ export type WechatOfficialArticleAnalysis = {
   core_insight?: string;
   case_info?: Record<string, unknown>;
   customer_conversion_method?: string;
+  hotspot_breakdown?: WechatOfficialHotspotBreakdown;
+  draft_template_key?: string;
+  analysis_mode?: string;
+  analysis_updated_at?: string;
   [key: string]: unknown;
 };
 
@@ -278,6 +295,7 @@ export type WechatOfficialArticleComment = {
 
 export type WechatOfficialRecommendationUpdatePayload = {
   recommendation_status?: string | null;
+  pool_status?: WechatOfficialPoolStatus | string | null;
   low_follower_evidence?: boolean | "unknown" | "manual" | "inferred" | string | null;
   low_follower_note?: string | null;
   business_direction?: string | null;
@@ -287,12 +305,38 @@ export type WechatOfficialRecommendationUpdatePayload = {
   core_insight?: string | null;
   case_info?: Record<string, unknown> | null;
   customer_conversion_method?: string | null;
+  hotspot_breakdown?: WechatOfficialHotspotBreakdown | null;
+  draft_template_key?: string | null;
+  analysis_mode?: string | null;
+};
+
+export type WechatOfficialContentDetail = {
+  article: WechatOfficialContentLibraryItem;
+  latest_metric?: WechatOfficialArticleMetric | null;
+  analysis: WechatOfficialArticleAnalysis;
+  latest_snapshot?: (WechatOfficialArticleSnapshot & { html?: string; images_json?: unknown[]; captured_at?: string | null }) | null;
+  raw_json?: Record<string, unknown>;
+};
+
+export type WechatOfficialAnalyzeHotspotsPayload = {
+  mode?: "auto" | "template" | string;
+  instruction?: string;
+};
+
+export type WechatOfficialAnalyzeHotspotsResponse = {
+  article_id: number;
+  analysis_mode: string;
+  analysis: WechatOfficialArticleAnalysis;
 };
 
 export type WechatOfficialCreateDraftPayload = {
   rewrite_style?: string;
   target_audience?: string;
   call_to_action?: string;
+  template_key?: string;
+  template_name?: string;
+  template_instruction?: string;
+  opening_angle?: string;
 };
 
 export type WechatOfficialDraft = Draft & {
