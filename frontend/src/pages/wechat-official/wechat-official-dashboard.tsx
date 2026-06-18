@@ -31,7 +31,7 @@ import {
   Typography,
 } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { PageHeader } from "../../components/layout/app-shell";
 import {
@@ -125,6 +125,44 @@ type DraftTemplate = {
   opening_angle: string;
 };
 
+type WechatOfficialSection = "dashboard" | "accounts" | "discovery" | "library" | "drafts" | "settings";
+
+const SECTION_COPY: Record<WechatOfficialSection, { title: string; description: string }> = {
+  dashboard: {
+    title: "公众号运营总览",
+    description: "汇总 Redfox 配置、候选文章、选题池和 blocked 动作状态。",
+  },
+  accounts: {
+    title: "公众号账号矩阵",
+    description: "查看公众号账号接入状态；真实授权和发布动作仍保持阻断。",
+  },
+  discovery: {
+    title: "公众号爆文发现",
+    description: "通过关键词、公众号或文章 URL 收集爆文候选。",
+  },
+  library: {
+    title: "公众号内容库",
+    description: "管理已收集的公众号文章，补全正文、图片和评论素材。",
+  },
+  drafts: {
+    title: "公众号草稿工坊",
+    description: "基于爆文拆解生成二创草稿，并只执行 dry-run 校验。",
+  },
+  settings: {
+    title: "Redfox 设置",
+    description: "配置和校验 Redfox API Key；Redfox 只作为内容数据源。",
+  },
+};
+
+function sectionFromPath(pathname: string): WechatOfficialSection {
+  const parts = pathname.split("/").filter(Boolean);
+  const section = parts[parts.length - 1];
+  if (["accounts", "discovery", "library", "drafts", "settings"].includes(section || "")) {
+    return section as WechatOfficialSection;
+  }
+  return "dashboard";
+}
+
 const POOL_STATUS_OPTIONS: Array<{ value: WechatOfficialPoolStatus; label: string; color: string }> = [
   { value: "candidate", label: "候选", color: "blue" },
   { value: "shortlisted", label: "已入选", color: "green" },
@@ -194,6 +232,23 @@ function lowFollowerLabel(article: WechatOfficialContentLibraryItem): string {
   return "未知";
 }
 
+function articleCoverUrl(article: WechatOfficialContentLibraryItem): string {
+  return article.cover_url || "";
+}
+
+function formatMetric(value: number | undefined | null): string {
+  const numeric = Number(value ?? 0);
+  if (numeric >= 10000) return `${(numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1)}w`;
+  return numeric.toLocaleString();
+}
+
+function articleMaterialLabel(article: WechatOfficialContentLibraryItem): string {
+  const analysis = article.analysis || {};
+  if (analysis.pool_status === "draft_ready") return "草稿已生成";
+  if (analysis.analysis_mode) return "已拆解";
+  return "待补全";
+}
+
 function collectSummaryText(result: WechatOfficialRedfoxCollectResponse | null): string {
   if (!result) return "尚未执行收集";
   const { summary } = result;
@@ -220,7 +275,25 @@ function jsonBlock(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2);
 }
 
+function apiErrorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === "object" && "response" in error) {
+    const response = (error as { response?: { data?: { detail?: unknown } } }).response;
+    const detail = response?.data?.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 export function WechatOfficialDashboard() {
+  const location = useLocation();
+  const currentSection = sectionFromPath(location.pathname);
+  const sectionCopy = SECTION_COPY[currentSection];
+  const showDashboard = currentSection === "dashboard";
+  const showAccounts = currentSection === "accounts";
+  const showDiscovery = currentSection === "discovery";
+  const showLibrary = currentSection === "library";
+  const showDrafts = currentSection === "drafts";
+  const showSettings = currentSection === "settings";
   const [overview, setOverview] = useState<WechatOfficialOverview>(fallbackOverview);
   const [redfoxConfig, setRedfoxConfig] = useState<WechatOfficialRedfoxConfig | null>(null);
   const [configured, setConfigured] = useState(false);
@@ -326,7 +399,7 @@ export function WechatOfficialDashboard() {
       await refreshWorkspace();
       setDetailActionMessage("详情已补全：封面、正文图片和评论以 Redfox 返回为准；未执行素材上传或发布动作。");
     } catch (error) {
-      setDetailError(error instanceof Error ? error.message : "详情补全失败，请确认 Redfox 配置可用且文章 URL 可访问。");
+      setDetailError(apiErrorMessage(error, "详情补全失败，请确认 Redfox 配置可用且文章 URL 可访问。"));
     } finally {
       setRefreshingDetail(false);
     }
@@ -471,8 +544,8 @@ export function WechatOfficialDashboard() {
     <div>
       <PageHeader
         eyebrow="运营中台 / 微信公众号"
-        title="公众号选题池工作台"
-        description="批量收集公众号爆文，推进选题状态，拆解爆点并生成二创草稿。真实发布与群发保持阻断。"
+        title={sectionCopy.title}
+        description={sectionCopy.description}
         action={
           <Space>
             <Tag color="red">发布/群发 blocked</Tag>
@@ -494,16 +567,36 @@ export function WechatOfficialDashboard() {
         description="本页面只做爆文收集、选题池、草稿生成和 dry-run。真实授权、素材上传、草稿同步、预览发送、群发发布没有可执行入口。"
       />
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Redfox" value={configuredText} prefix={<SafetyCertificateOutlined />} /></Card></Col>
-        <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="10万+ 候选" value={candidateCount} prefix={<DatabaseOutlined />} /></Card></Col>
-        <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="选题池展示" value={displayedItems.length} prefix={<FileTextOutlined />} /></Card></Col>
-        <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Blocked actions" value={overview.blocked_actions.length} prefix={<LockOutlined />} /></Card></Col>
-      </Row>
+      {showDashboard ? (
+        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+          <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Redfox" value={configuredText} prefix={<SafetyCertificateOutlined />} /></Card></Col>
+          <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="10万+ 候选" value={candidateCount} prefix={<DatabaseOutlined />} /></Card></Col>
+          <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="选题池展示" value={displayedItems.length} prefix={<FileTextOutlined />} /></Card></Col>
+          <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Blocked actions" value={overview.blocked_actions.length} prefix={<LockOutlined />} /></Card></Col>
+        </Row>
+      ) : null}
+
+      {showAccounts ? (
+        <Card title="公众号账号矩阵" style={{ ...cardStyle, marginBottom: 16 }}>
+          <Alert
+            showIcon
+            type="warning"
+            message="真实公众号授权仍保持阻断"
+            description="当前账号矩阵只展示接入状态和安全边界；真实授权、素材上传、草稿同步、预览发送、群发发布没有可执行入口。"
+            style={{ marginBottom: 16 }}
+          />
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}><Card size="small" style={cardStyle}><Statistic title="Redfox 数据源" value={configuredText} prefix={<SafetyCertificateOutlined />} /></Card></Col>
+            <Col xs={24} md={8}><Card size="small" style={cardStyle}><Statistic title="账号授权" value="blocked" prefix={<LockOutlined />} /></Card></Col>
+            <Col xs={24} md={8}><Card size="small" style={cardStyle}><Statistic title="Blocked actions" value={overview.blocked_actions.length} prefix={<LockOutlined />} /></Card></Col>
+          </Row>
+        </Card>
+      ) : null}
 
       <Row gutter={[16, 16]}>
-        <Col xs={24} xl={8}>
-          <Card title="Redfox API 配置" style={cardStyle}>
+        {showSettings ? (
+          <Col xs={24} xl={8}>
+            <Card title="Redfox API 配置" style={cardStyle}>
             <Form form={configForm} layout="vertical" initialValues={{ name: "RedFoxHub", base_url: "https://redfox.hk" }}>
               <Form.Item label="名称" name="name"><Input placeholder="RedFoxHub" /></Form.Item>
               <Form.Item label="Base URL" name="base_url"><Input placeholder="https://redfox.hk" /></Form.Item>
@@ -519,8 +612,10 @@ export function WechatOfficialDashboard() {
             </Paragraph>
           </Card>
         </Col>
+        ) : null}
 
-        <Col xs={24} xl={16}>
+        {showDiscovery ? (
+          <Col xs={24}>
           <Card title="爆文收集计划" style={cardStyle}>
             <Segmented
               value={mode}
@@ -594,10 +689,12 @@ export function WechatOfficialDashboard() {
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>默认 1 页，最多 3 页；批量关键词会串行执行，避免并发消耗 Redfox API。</Paragraph>
           </Card>
         </Col>
+        ) : null}
 
+        {showDiscovery || showLibrary || showDrafts ? (
         <Col xs={24}>
           <Card
-            title="公众号选题池"
+            title={showDrafts ? "公众号草稿工坊" : showDiscovery ? "本次收集/已入库候选" : "公众号内容库"}
             style={cardStyle}
             extra={
               <Space wrap>
@@ -606,40 +703,72 @@ export function WechatOfficialDashboard() {
               </Space>
             }
           >
-            <List
-              dataSource={displayedItems}
-              locale={{ emptyText: "暂无候选文章；先配置 Redfox 并执行收集。" }}
-              renderItem={(article) => {
-                const status = poolStatus(article);
-                return (
-                  <List.Item actions={renderArticleActions(article)}>
-                    <List.Item.Meta
-                      title={
-                        <Space wrap>
-                          <Button type="link" style={{ padding: 0 }} onClick={() => void openDetail(article.id)}><Text strong>{article.title || `Article #${article.id}`}</Text></Button>
-                          <Tag color="green">Redfox</Tag>
-                          <Tag color={article.is_candidate ? "red" : "default"}>{article.is_candidate ? "爆文候选" : "普通文章"}</Tag>
-                          <Tag color="blue">阅读 {readCount(article).toLocaleString()}</Tag>
-                          <Tag color={statusColor(status)}>{poolStatusLabel(status)}</Tag>
-                          <Tag>{lowFollowerLabel(article)}</Tag>
-                          {article.analysis?.analysis_mode ? <Tag color="purple">{article.analysis.analysis_mode}</Tag> : null}
+            <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
+              <Col xs={12} md={6}><Card size="small" style={cardStyle}><Statistic title="已入库" value={contentItems.length} /></Card></Col>
+              <Col xs={12} md={6}><Card size="small" style={cardStyle}><Statistic title="当前展示" value={displayedItems.length} /></Card></Col>
+              <Col xs={12} md={6}><Card size="small" style={cardStyle}><Statistic title="爆文候选" value={candidateCount} /></Card></Col>
+              <Col xs={12} md={6}><Card size="small" style={cardStyle}><Statistic title="视图" value="卡片" /></Card></Col>
+            </Row>
+            {showDrafts ? <Alert showIcon type="info" message="草稿工坊只生成本地二创草稿" description="真实草稿同步、预览发送和群发发布保持 blocked；Dry-run 只校验安全契约。" style={{ marginBottom: 16 }} /> : null}
+            {displayedItems.length === 0 ? (
+              <Alert showIcon type="info" message="暂无候选文章" description={showDiscovery ? "执行爆文收集后，保存入库的文章会直接显示在这里。" : "先到爆文发现执行收集，或调整筛选条件。"} />
+            ) : (
+              <Row gutter={[16, 16]}>
+                {displayedItems.map((article) => {
+                  const status = poolStatus(article);
+                  const coverUrl = articleCoverUrl(article);
+                  return (
+                    <Col xs={24} sm={12} lg={8} xl={6} key={article.id}>
+                      <Card
+                        hoverable
+                        size="small"
+                        style={{ ...cardStyle, height: "100%" }}
+                        onClick={() => void openDetail(article.id)}
+                        cover={
+                          <div style={{ position: "relative", background: "#262626" }}>
+                            {coverUrl ? (
+                              <img src={coverUrl} alt={article.title || "封面"} referrerPolicy="no-referrer" style={{ width: "100%", aspectRatio: "4 / 3", objectFit: "cover", display: "block" }} />
+                            ) : (
+                              <div style={{ width: "100%", aspectRatio: "4 / 3", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.25)", fontSize: 28 }}><FileTextOutlined /></div>
+                            )}
+                            <Tag color="green" style={{ position: "absolute", top: 8, left: 8 }}>公众号</Tag>
+                            <Tag color={article.is_candidate ? "red" : "default"} style={{ position: "absolute", top: 8, right: 8 }}>{article.is_candidate ? "爆文" : "文章"}</Tag>
+                          </div>
+                        }
+                      >
+                        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                          <Text strong ellipsis title={article.title}>{article.title || `Article #${article.id}`}</Text>
+                          <Text type="secondary" ellipsis>{article.author_name || "未知公众号"}{article.publish_time_remote ? ` · ${article.publish_time_remote}` : ""}</Text>
+                          <Space size={10} wrap style={{ color: "rgba(255,255,255,.55)", fontSize: 12 }}>
+                            <span>阅读 {formatMetric(article.latest_metric?.read_count)}</span>
+                            <span>赞 {formatMetric(article.latest_metric?.like_count)}</span>
+                            <span>评论 {formatMetric(article.latest_metric?.comment_count)}</span>
+                          </Space>
+                          <Space wrap size={4}>
+                            <Tag color={statusColor(status)}>{poolStatusLabel(status)}</Tag>
+                            <Tag>{lowFollowerLabel(article)}</Tag>
+                            <Tag color="blue">{articleMaterialLabel(article)}</Tag>
+                          </Space>
+                          <Text type="secondary" ellipsis title={article.digest || article.article_url || ""}>{article.digest || article.article_url || "暂无摘要"}</Text>
+                          <Space wrap onClick={(event) => event.stopPropagation()}>
+                            <Button size="small" onClick={() => void openDetail(article.id)}>详情</Button>
+                            <Button size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入选</Button>
+                            <Button size="small" loading={busyAction === `analyze-${article.id}`} onClick={() => handleAnalyze(article)}>拆解</Button>
+                            <Button size="small" type="primary" loading={busyAction === `draft-${article.id}`} onClick={() => handleCreateDraft(article)}>草稿</Button>
+                            {article.article_url ? <Button size="small" href={article.article_url} target="_blank" rel="noreferrer">原文</Button> : null}
+                          </Space>
                         </Space>
-                      }
-                      description={
-                        <Space direction="vertical" size={4}>
-                          <Text type="secondary">公众号/作者：{article.author_name || "未知"} · 发布时间：{article.publish_time_remote || "未知"}</Text>
-                          <Text type="secondary">点赞 {article.latest_metric?.like_count ?? 0} / 在看 {article.latest_metric?.wow_count ?? 0} / 评论 {article.latest_metric?.comment_count ?? 0} / 分享 {article.latest_metric?.share_count ?? 0}</Text>
-                          <Text>{article.digest || article.article_url}</Text>
-                        </Space>
-                      }
-                    />
-                  </List.Item>
-                );
-              }}
-            />
+                      </Card>
+                    </Col>
+                  );
+                })}
+              </Row>
+            )}
           </Card>
         </Col>
+        ) : null}
 
+        {showDashboard ? (
         <Col xs={24}>
           <Collapse
             items={[
@@ -659,6 +788,7 @@ export function WechatOfficialDashboard() {
             ]}
           />
         </Col>
+        ) : null}
       </Row>
 
       <Drawer title="公众号文章详情" open={detailOpen} onClose={() => setDetailOpen(false)} width={960} loading={detailLoading}>

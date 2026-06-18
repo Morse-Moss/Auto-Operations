@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import requests
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,7 +22,7 @@ from backend.app.models import (
     WechatOfficialRedfoxConfig,
 )
 from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_metric
-from backend.app.services.wechat_official_redfox_client import WechatOfficialRedfoxClient
+from backend.app.services.wechat_official_redfox_client import RedfoxApiError, WechatOfficialRedfoxClient
 
 DEFAULT_REDFOX_BASE_URL = "https://redfox.hk"
 DEFAULT_PAGE_SIZE = 20
@@ -149,7 +150,7 @@ class WechatOfficialRedfoxService:
         if not url:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="url is required")
         client = self._client(user_id)
-        response = client.query_article_detail(url=url)
+        response = self._query_article_detail_or_raise(client, url=url)
         normalized = [self.adapter.normalize_article_detail(response)]
         return self._save_collection(
             user_id,
@@ -170,7 +171,7 @@ class WechatOfficialRedfoxService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Article URL is required to refresh detail")
 
         client = self._client(user_id)
-        response = client.query_article_detail(url=url)
+        response = self._query_article_detail_or_raise(client, url=url)
         payload = self.adapter.normalize_article_detail(response)
         payload["article_url"] = payload.get("article_url") or article.article_url or article.content_url
         payload["content_url"] = payload.get("content_url") or article.content_url or article.article_url
@@ -205,6 +206,22 @@ class WechatOfficialRedfoxService:
         from backend.app.services.wechat_official_content_service import WechatOfficialContentService
 
         return WechatOfficialContentService(self.db).get_detail(user_id, article_id)
+
+    def _query_article_detail_or_raise(self, client: WechatOfficialRedfoxClient, *, url: str) -> dict[str, Any]:
+        try:
+            return client.query_article_detail(url=url)
+        except requests.Timeout as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Redfox detail request timed out; please retry later") from exc
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else status.HTTP_502_BAD_GATEWAY
+            message = f"Redfox detail request failed with HTTP {status_code}"
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message) from exc
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox detail request failed: {exc}") from exc
+        except RedfoxApiError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox detail API rejected the request: {exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Redfox detail response is not valid JSON") from exc
 
     def _save_collection(
         self,
