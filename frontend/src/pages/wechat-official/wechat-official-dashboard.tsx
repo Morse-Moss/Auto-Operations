@@ -52,6 +52,8 @@ import {
   updateWechatOfficialRecommendation,
   validateWechatOfficialRedfoxConfig,
 } from "../../lib/api";
+import { WechatOfficialDraftWorkbench } from "./wechat-official-draft-workbench";
+
 import type {
   WechatOfficialContentDetail,
   WechatOfficialContentLibraryItem,
@@ -148,7 +150,7 @@ const SECTION_COPY: Record<WechatOfficialSection, { title: string; description: 
   },
   drafts: {
     title: "公众号草稿工坊",
-    description: "基于爆文拆解生成二创草稿，并只执行 dry-run 校验。",
+    description: "基于爆文拆解生成独立草稿箱中的独立草稿，并只执行 dry-run 校验。",
   },
   settings: {
     title: "Redfox 设置",
@@ -332,9 +334,9 @@ export function WechatOfficialDashboard() {
     return status === "candidate" || status === "shortlisted" || status === "analyzing" || status === "draft_ready";
   }), [contentItems]);
   const displayedItems = useMemo(() => {
-    const baseItems = showLibrary ? libraryItems : showDiscovery || showDrafts ? discoveryItems : contentItems;
+    const baseItems = showLibrary ? libraryItems : showDiscovery ? discoveryItems : contentItems;
     return baseItems.filter((item) => poolFilter === "all" || poolStatus(item) === poolFilter);
-  }, [contentItems, discoveryItems, libraryItems, poolFilter, showDiscovery, showDrafts, showLibrary]);
+  }, [contentItems, discoveryItems, libraryItems, poolFilter, showDiscovery, showLibrary]);
   const configuredText = configured ? `已配置 ${redfoxConfig?.masked_api_key || "****"}` : "未配置";
   const batchKeywords = splitKeywords(String(Form.useWatch("keywords", batchForm) || ""));
   const batchPages = Number(Form.useWatch("pages", batchForm) || 1);
@@ -723,10 +725,16 @@ export function WechatOfficialDashboard() {
         </Col>
         ) : null}
 
-        {showDiscovery || showLibrary || showDrafts ? (
+        {showDrafts ? (
+          <Col xs={24}>
+            <WechatOfficialDraftWorkbench />
+          </Col>
+        ) : null}
+
+        {showDiscovery || showLibrary ? (
         <Col xs={24}>
           <Card
-            title={showDrafts ? "公众号草稿工坊" : showDiscovery ? "本次收集/已入库候选" : "公众号内容库"}
+            title={showDiscovery ? "本次收集/已入库候选" : "公众号内容库"}
             style={cardStyle}
             extra={
               <Space wrap>
@@ -741,9 +749,8 @@ export function WechatOfficialDashboard() {
               <Col xs={12} md={6}><Card size="small" style={cardStyle}><Statistic title="爆文候选" value={candidateCount} /></Card></Col>
               <Col xs={12} md={6}><Card size="small" style={cardStyle}><Statistic title="视图" value="卡片" /></Card></Col>
             </Row>
-            {showDrafts ? <Alert showIcon type="info" message="草稿工坊只生成本地二创草稿" description="真实草稿同步、预览发送和群发发布保持 blocked；Dry-run 只校验安全契约。" style={{ marginBottom: 16 }} /> : null}
             {displayedItems.length === 0 ? (
-              <Alert showIcon type="info" message={showLibrary ? "暂无已入库文章" : "暂无候选文章"} description={showDiscovery ? "执行爆文收集后，候选文章会显示在这里；点击入库后才会进入内容库。" : showLibrary ? "先把候选文章入库，或调整筛选条件。" : "先到爆文发现执行收集，或调整筛选条件。"} />
+              <Alert showIcon type="info" message={showLibrary ? "暂无已入库文章" : "暂无候选文章"} description={showDiscovery ? "执行爆文收集后，候选文章会显示在这里；点击入库后才会进入内容库。" : "先把候选文章入库，或调整筛选条件。"} />
             ) : (
               <Row gutter={[16, 16]}>
                 {displayedItems.map((article) => {
