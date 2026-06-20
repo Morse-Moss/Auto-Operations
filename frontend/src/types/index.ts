@@ -415,6 +415,8 @@ export type WechatOfficialRedfoxConfigPayload = {
 export type WechatOfficialRedfoxKeywordCollectPayload = {
   keyword: string;
   pages?: number;
+  target_count?: number;
+  max_pages?: number;
   sort_type?: "_0" | "_2" | "_4" | string;
   min_read_count?: number;
   save_snapshot?: boolean;
@@ -444,6 +446,11 @@ export type WechatOfficialRedfoxCollectSummary = {
   viral_candidates: number;
   failed: number;
   api_calls: number;
+  requested_target_count?: number;
+  max_pages?: number;
+  filtered?: number;
+  relevance_matched?: number;
+  target_reached?: boolean;
   estimated_credit_cost?: number | null;
 };
 

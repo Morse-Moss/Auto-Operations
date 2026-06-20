@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import re
 import requests
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -27,7 +28,10 @@ from backend.app.services.wechat_official_redfox_client import RedfoxApiError, W
 
 DEFAULT_REDFOX_BASE_URL = "https://redfox.hk"
 DEFAULT_PAGE_SIZE = 20
+DEFAULT_TARGET_COUNT = 10
+MAX_TARGET_COUNT = 50
 MAX_PAGES = 3
+MAX_KEYWORD_AUTO_PAGES = 5
 
 
 class WechatOfficialRedfoxService:
@@ -85,25 +89,61 @@ class WechatOfficialRedfoxService:
         keyword = str(payload.get("keyword") or "").strip()
         if not keyword:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="keyword is required")
-        pages = _bounded_pages(payload.get("pages"))
+
         sort_type = str(payload.get("sort_type") or "_4")
+        target_count = _resolve_keyword_target_count(payload.get("target_count"), legacy_pages_value=payload.get("pages"))
+        max_pages = _bounded_keyword_pages(payload.get("max_pages"), fallback=_legacy_pages(payload.get("pages")))
+        min_read_count = _int_or_default(payload.get("min_read_count"), default=100000)
+        save_snapshot = bool(payload.get("save_snapshot", True))
+
         client = self._client(user_id)
-        normalized: list[dict[str, Any]] = []
+        fetched: list[dict[str, Any]] = []
+        matched: list[dict[str, Any]] = []
         api_calls = 0
-        for page_index in range(pages):
+        filtered = 0
+        relevance_matched = 0
+        search_tokens = _keyword_tokens(keyword)
+        target_reached = False
+
+        for page_index in range(max_pages):
             response = client.search_articles(keyword=keyword, offset=page_index * DEFAULT_PAGE_SIZE, sort_type=sort_type)
             api_calls += 1
-            normalized.extend(self.adapter.normalize_article_list(response))
+            page_items = self.adapter.normalize_article_list(response)
+            fetched.extend(page_items)
+            for item in page_items:
+                is_match = _article_matches_keyword(item, search_tokens)
+                if is_match:
+                    relevance_matched += 1
+                    if len(matched) < target_count:
+                        matched.append(item)
+                        if len(matched) >= target_count:
+                            target_reached = True
+                else:
+                    filtered += 1
+            if target_reached:
+                break
+
+        params: dict[str, Any] = {"keyword": keyword, "sort_type": sort_type, "target_count": target_count, "max_pages": max_pages}
+        summary_extra = {
+            "requested_target_count": target_count,
+            "max_pages": max_pages,
+            "filtered": filtered,
+            "relevance_matched": relevance_matched,
+            "target_reached": target_reached,
+        }
+
         return self._save_collection(
             user_id,
-            normalized,
+            matched,
             source_label="redfox_keyword",
             keyword=keyword,
-            requested_limit=pages * DEFAULT_PAGE_SIZE,
-            min_read_count=int(payload.get("min_read_count") or 100000),
-            save_snapshot=bool(payload.get("save_snapshot", True)),
+            requested_limit=target_count,
+            min_read_count=min_read_count,
+            save_snapshot=save_snapshot,
             api_calls=api_calls,
-            params={"keyword": keyword, "pages": pages, "sort_type": sort_type},
+            fetched_count=len(fetched),
+            params=params,
+            summary_extra=summary_extra,
         )
 
     def collect_account(self, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -133,7 +173,7 @@ class WechatOfficialRedfoxService:
             source_label="redfox_account",
             keyword=account_name or account,
             requested_limit=pages * DEFAULT_PAGE_SIZE,
-            min_read_count=int(payload.get("min_read_count") or 100000),
+            min_read_count=_int_or_default(payload.get("min_read_count"), default=100000),
             save_snapshot=bool(payload.get("save_snapshot", True)),
             api_calls=api_calls,
             params={
@@ -159,7 +199,7 @@ class WechatOfficialRedfoxService:
             source_label="redfox_url",
             keyword=url,
             requested_limit=1,
-            min_read_count=int(payload.get("min_read_count") or 100000),
+            min_read_count=_int_or_default(payload.get("min_read_count"), default=100000),
             save_snapshot=bool(payload.get("save_snapshot", True)),
             api_calls=1,
             params={"url": url},
@@ -236,14 +276,16 @@ class WechatOfficialRedfoxService:
         save_snapshot: bool,
         api_calls: int,
         params: dict[str, Any],
+        fetched_count: int | None = None,
+        summary_extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         job = WechatOfficialCrawlJob(
             keyword=keyword,
             status="running",
             source="redfox",
             requested_limit=requested_limit,
-            fetched_count=len(articles_payload),
-            params_json={"source": source_label, "api_calls": api_calls, **sanitize_payload(params)},
+            fetched_count=fetched_count if fetched_count is not None else len(articles_payload),
+            params_json={"source": source_label, "api_calls": api_calls, **sanitize_payload(params), **sanitize_payload(summary_extra or {})},
             started_at=shanghai_now(),
         )
         self.db.add(job)
@@ -280,16 +322,19 @@ class WechatOfficialRedfoxService:
             latest_metric = self._latest_metric(article.id)
             analysis = dict((article.raw_json or {}).get("analysis") or {})
             items.append(serialize_article(article, latest_metric=serialize_metric(latest_metric) if latest_metric else None, analysis=analysis))
+        summary = {
+            "fetched": fetched_count if fetched_count is not None else len(articles_payload),
+            "saved": len(saved_articles),
+            "deduped": deduped,
+            "viral_candidates": viral_candidates,
+            "failed": 0,
+            "api_calls": api_calls,
+            "estimated_credit_cost": None,
+        }
+        if summary_extra:
+            summary.update(summary_extra)
         return {
-            "summary": {
-                "fetched": len(articles_payload),
-                "saved": len(saved_articles),
-                "deduped": deduped,
-                "viral_candidates": viral_candidates,
-                "failed": 0,
-                "api_calls": api_calls,
-                "estimated_credit_cost": None,
-            },
+            "summary": summary,
             "job": {"id": job.id, "source": job.source, "status": job.status},
             "items": items,
         }
@@ -446,6 +491,74 @@ def _bounded_pages(value: Any) -> int:
     except (TypeError, ValueError):
         pages = 1
     return max(1, min(MAX_PAGES, pages))
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value if value is not None and value != "" else default)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def _int_or_default(value: Any, *, default: int) -> int:
+    try:
+        return int(value if value is not None and value != "" else default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _legacy_pages(value: Any) -> int:
+    return _bounded_int(value, default=1, minimum=1, maximum=MAX_KEYWORD_AUTO_PAGES)
+
+
+def _legacy_target_count(value: Any) -> int:
+    if value is None or value == "":
+        return DEFAULT_TARGET_COUNT
+    return max(1, _legacy_pages(value) * DEFAULT_PAGE_SIZE)
+
+
+def _resolve_keyword_target_count(value: Any, *, legacy_pages_value: Any) -> int:
+    if value is None or value == "":
+        return _legacy_target_count(legacy_pages_value)
+    return _bounded_int(value, default=DEFAULT_TARGET_COUNT, minimum=1, maximum=MAX_TARGET_COUNT)
+
+
+def _bounded_keyword_pages(value: Any, *, fallback: int) -> int:
+    return _bounded_int(value, default=fallback, minimum=1, maximum=MAX_KEYWORD_AUTO_PAGES)
+
+
+def _keyword_tokens(keyword: str) -> list[str]:
+    tokens = [token.strip().lower() for token in re.split(r"[\s,，、\n\t]+", keyword) if token and token.strip()]
+    if tokens:
+        seen: set[str] = set()
+        unique: list[str] = []
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            unique.append(token)
+        return unique
+    return [keyword.strip().lower()]
+
+
+def _article_matches_keyword(article: dict[str, Any], tokens: list[str]) -> bool:
+    haystacks: list[str] = []
+    for key in ("title", "digest", "content_text"):
+        value = article.get(key)
+        if isinstance(value, str) and value.strip():
+            haystacks.append(value.strip().lower())
+    raw = article.get("raw")
+    if isinstance(raw, dict):
+        for key in ("title", "summary", "memo", "content", "content_text"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                haystacks.append(value.strip().lower())
+    for haystack in haystacks:
+        for token in tokens:
+            if token and token in haystack:
+                return True
+    return False
 
 
 def _normalize_base_url(base_url: str) -> str:

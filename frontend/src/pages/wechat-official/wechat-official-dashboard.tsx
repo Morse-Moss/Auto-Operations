@@ -69,6 +69,8 @@ const { RangePicker } = DatePicker;
 const { TextArea } = Input;
 
 const cardStyle = { background: "#1f1f1f", borderColor: "#303030" };
+const DEFAULT_TARGET_COUNT = 10;
+const DEFAULT_MAX_PAGES = 3;
 const DEFAULT_MIN_READ = 100000;
 const MAX_BATCH_KEYWORDS = 5;
 
@@ -89,13 +91,15 @@ type RedfoxMode = "keyword" | "batch" | "account" | "url";
 
 type KeywordForm = {
   keyword: string;
-  pages: number;
+  target_count: number;
+  max_pages: number;
   min_read_count: number;
 };
 
 type BatchKeywordsForm = {
   keywords: string;
-  pages: number;
+  target_count: number;
+  max_pages: number;
   min_read_count: number;
 };
 
@@ -256,7 +260,23 @@ function articleMaterialLabel(article: WechatOfficialContentLibraryItem): string
 function collectSummaryText(result: WechatOfficialRedfoxCollectResponse | null): string {
   if (!result) return "尚未执行收集";
   const { summary } = result;
-  return `拉取 ${summary.fetched}，保存 ${summary.saved}，10万+候选 ${summary.viral_candidates}，重复 ${summary.deduped}，API 调用 ${summary.api_calls}`;
+  const details: string[] = [];
+
+  if (summary.requested_target_count !== undefined) {
+    details.push(`目标相关 ${summary.requested_target_count}`);
+  }
+  if (summary.relevance_matched !== undefined) {
+    details.push(`相关命中 ${summary.relevance_matched}`);
+  }
+  if (summary.filtered !== undefined) {
+    details.push(`已过滤 ${summary.filtered}`);
+  }
+  if (summary.target_reached !== undefined) {
+    details.push(summary.target_reached ? "已达目标" : "未达目标");
+  }
+
+  const base = `拉取 ${summary.fetched}，保存 ${summary.saved}，10万+候选 ${summary.viral_candidates}，重复 ${summary.deduped}，API 调用 ${summary.api_calls}`;
+  return details.length ? `${base}，${details.join("，")}` : base;
 }
 
 function splitKeywords(value: string): string[] {
@@ -339,7 +359,8 @@ export function WechatOfficialDashboard() {
   }, [contentItems, discoveryItems, libraryItems, poolFilter, showDiscovery, showLibrary]);
   const configuredText = configured ? `已配置 ${redfoxConfig?.masked_api_key || "****"}` : "未配置";
   const batchKeywords = splitKeywords(String(Form.useWatch("keywords", batchForm) || ""));
-  const batchPages = Number(Form.useWatch("pages", batchForm) || 1);
+  const batchTargetCount = Number(Form.useWatch("target_count", batchForm) || DEFAULT_TARGET_COUNT);
+  const batchMaxPages = Number(Form.useWatch("max_pages", batchForm) || DEFAULT_MAX_PAGES);
 
   const refreshWorkspace = useCallback(async () => {
     try {
@@ -363,6 +384,10 @@ export function WechatOfficialDashboard() {
       setLoadFailed(true);
     }
   }, [configForm]);
+
+  const refreshCurrentSection = useCallback(async () => {
+    await refreshWorkspace();
+  }, [refreshWorkspace]);
 
   useEffect(() => {
     void refreshWorkspace();
@@ -444,7 +469,8 @@ export function WechatOfficialDashboard() {
     const values = await keywordForm.validateFields();
     const response = await collectWechatOfficialRedfoxArticles({
       keyword: values.keyword,
-      pages: values.pages ?? 1,
+      target_count: values.target_count ?? DEFAULT_TARGET_COUNT,
+      max_pages: values.max_pages ?? DEFAULT_MAX_PAGES,
       sort_type: "_4",
       min_read_count: values.min_read_count ?? DEFAULT_MIN_READ,
       save_snapshot: true,
@@ -462,7 +488,8 @@ export function WechatOfficialDashboard() {
       try {
         const response = await collectWechatOfficialRedfoxArticles({
           keyword,
-          pages: values.pages ?? 1,
+          target_count: values.target_count ?? DEFAULT_TARGET_COUNT,
+          max_pages: values.max_pages ?? DEFAULT_MAX_PAGES,
           sort_type: "_4",
           min_read_count: values.min_read_count ?? DEFAULT_MIN_READ,
           save_snapshot: true,
@@ -521,7 +548,7 @@ export function WechatOfficialDashboard() {
       okText: "删除",
       okType: "danger",
       cancelText: "取消",
-      onOk: () => runAction('delete-' + article.id, "爆文已删除并加入黑名单", async () => {
+      onOk: () => runAction(`delete-${article.id}`, "爆文已删除并加入黑名单", async () => {
         await deleteWechatOfficialContentLibraryItem(article.id);
         await refreshWorkspace();
         if (contentDetail?.article.id === article.id) {
@@ -559,20 +586,6 @@ export function WechatOfficialDashboard() {
     await refreshWorkspace();
   });
 
-  const handleMarkManualLowFollower = (article: WechatOfficialContentLibraryItem) => runAction(`low-${article.id}`, "已标记低粉证据为人工确认", async () => {
-    await updateWechatOfficialRecommendation(article.id, { low_follower_evidence: "manual", low_follower_note: "人工确认低粉爆文证据" });
-    await refreshWorkspace();
-  });
-
-  const renderArticleActions = (article: WechatOfficialContentLibraryItem) => [
-    <Button key="detail" size="small" onClick={() => void openDetail(article.id)}>详情</Button>,
-    <Button key="shortlist" size="small" loading={busyAction === `status-${article.id}-shortlisted`} onClick={() => handleUpdatePoolStatus(article, "shortlisted")}>入库</Button>,
-    <Button key="archive" size="small" loading={busyAction === `status-${article.id}-candidate`} onClick={() => handleArchiveArticle(article)}>移出内容库</Button>,
-    <Button key="analyze" size="small" loading={busyAction === `analyze-${article.id}`} onClick={() => handleAnalyze(article)}>拆解爆点</Button>,
-    <Button key="draft" size="small" loading={busyAction === `draft-${article.id}`} onClick={() => handleCreateDraft(article)}>生成草稿</Button>,
-    <Button key="dry" size="small" loading={busyAction === `dry-${article.id}`} onClick={() => handleDryRun(article)}>Dry-run</Button>,
-    <Button key="reject" size="small" danger loading={busyAction === `status-${article.id}-rejected`} onClick={() => handleUpdatePoolStatus(article, "rejected")}>拒绝</Button>,
-  ];
 
   return (
     <div>
@@ -583,7 +596,7 @@ export function WechatOfficialDashboard() {
         action={
           <Space>
             <Tag color="red">发布/群发 blocked</Tag>
-            <Button icon={<SyncOutlined />} loading={busyAction === "refresh"} onClick={() => runAction("refresh", "页面已刷新", refreshWorkspace)}>刷新</Button>
+            <Button icon={<SyncOutlined />} loading={busyAction === "refresh"} onClick={() => runAction("refresh", "页面已刷新", refreshCurrentSection)}>刷新</Button>
             <Link to="/platform-select"><Button icon={<ArrowLeftOutlined />}>平台中心</Button></Link>
           </Space>
         }
@@ -659,24 +672,27 @@ export function WechatOfficialDashboard() {
             />
 
             {mode === "keyword" ? (
-              <Form form={keywordForm} layout="inline" initialValues={{ pages: 1, min_read_count: DEFAULT_MIN_READ }}>
+              <Form form={keywordForm} layout="inline" initialValues={{ target_count: DEFAULT_TARGET_COUNT, max_pages: DEFAULT_MAX_PAGES, min_read_count: DEFAULT_MIN_READ }}>
                 <Form.Item name="keyword" rules={[{ required: true, message: "请输入关键词" }]}><Input placeholder="关键词，如 私域增长" /></Form.Item>
-                <Form.Item name="pages" label="页数"><InputNumber min={1} max={3} /></Form.Item>
+                <Form.Item name="target_count" label="目标相关篇数"><InputNumber min={1} max={50} /></Form.Item>
+                <Form.Item name="max_pages" label="最多翻页"><InputNumber min={1} max={5} /></Form.Item>
                 <Form.Item name="min_read_count" label="最低阅读"><InputNumber min={0} step={10000} /></Form.Item>
                 <Form.Item><Button type="primary" loading={busyAction === "collect-keyword"} onClick={handleKeywordCollect}>开始收集爆文</Button></Form.Item>
               </Form>
             ) : null}
 
             {mode === "batch" ? (
-              <Form form={batchForm} layout="vertical" initialValues={{ pages: 1, min_read_count: DEFAULT_MIN_READ }}>
+              <Form form={batchForm} layout="vertical" initialValues={{ target_count: DEFAULT_TARGET_COUNT, max_pages: DEFAULT_MAX_PAGES, min_read_count: DEFAULT_MIN_READ }}>
                 <Form.Item name="keywords" label="批量关键词（最多 5 个，换行或逗号分隔）" rules={[{ required: true, message: "请输入关键词" }]}>
                   <TextArea rows={4} placeholder="私域增长\nAI Agent\n企业微信" />
                 </Form.Item>
                 <Space wrap>
-                  <Form.Item name="pages" label="页数"><InputNumber min={1} max={3} /></Form.Item>
+                  <Form.Item name="target_count" label="目标相关篇数"><InputNumber min={1} max={50} /></Form.Item>
+                  <Form.Item name="max_pages" label="最多翻页"><InputNumber min={1} max={5} /></Form.Item>
                   <Form.Item name="min_read_count" label="最低阅读"><InputNumber min={0} step={10000} /></Form.Item>
                   <Button type="primary" loading={busyAction === "collect-batch"} onClick={handleBatchCollect}>执行批量收集</Button>
-                  <Tag color="gold">预计 API 调用 {batchKeywords.length * batchPages}</Tag>
+                  <Tag color="gold">API 调用上限 {batchKeywords.length * batchMaxPages}</Tag>
+                  <Tag color="blue">每词目标 {batchTargetCount} 篇</Tag>
                 </Space>
                 {batchResults.length ? (
                   <List
@@ -687,7 +703,7 @@ export function WechatOfficialDashboard() {
                         <Space wrap>
                           <Tag color={item.status === "succeeded" ? "green" : "red"}>{item.keyword}</Tag>
                           <Text type={item.status === "succeeded" ? undefined : "danger"}>
-                            {item.summary ? `拉取 ${item.summary.fetched} / 保存 ${item.summary.saved} / 候选 ${item.summary.viral_candidates} / API ${item.summary.api_calls}` : item.error}
+                            {item.summary ? `拉取 ${item.summary.fetched} / 相关命中 ${item.summary.relevance_matched ?? "-"} / 已过滤 ${item.summary.filtered ?? "-"} / 保存 ${item.summary.saved} / API ${item.summary.api_calls}` : item.error}
                           </Text>
                         </Space>
                       </List.Item>
@@ -720,7 +736,7 @@ export function WechatOfficialDashboard() {
 
             <Divider />
             <Alert showIcon type="success" message="最近一次收集结果" description={collectSummaryText(lastCollectResult)} />
-            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>默认 1 页，最多 3 页；批量关键词会串行执行，避免并发消耗 Redfox API。</Paragraph>
+            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>系统会先按标题、摘要、正文过滤不相关文章，再在最多翻页范围内尽量补齐目标相关篇数；批量关键词仍串行执行，避免并发消耗 Redfox API。</Paragraph>
           </Card>
         </Col>
         ) : null}

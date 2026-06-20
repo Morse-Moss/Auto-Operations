@@ -57,7 +57,7 @@ class FakeRedfoxClient:
                         "workUrl": "https://mp.weixin.qq.com/s/redfox-normal",
                         "publishTime": "2026-06-16 11:00:00",
                         "author": "增长研究所",
-                        "content": "正文：普通文章。",
+                        "content": "正文：普通私域增长文章。",
                         "readCount": 50000,
                         "likeCount": 30,
                     },
@@ -124,6 +124,129 @@ class FakeRedfoxClient:
         return {"code": 2000, "data": {"ok": True}}
 
 
+class FakeTargetCountRedfoxClient:
+    calls: list[tuple[str, int, str]] = []
+
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        assert api_key == "redfox-collect-secret"
+
+    def search_articles(self, *, keyword: str, offset: int, sort_type: str) -> dict:
+        self.__class__.calls.append((keyword, offset, sort_type))
+        assert keyword == "浴缸"
+        assert sort_type == "_4"
+        pages = {
+            0: [
+                {
+                    "workUuid": "bathtub-work-1",
+                    "title": "阳台上的浴缸改造",
+                    "summary": "阳台改造",
+                    "workUrl": "https://mp.weixin.qq.com/s/redfox-bathtub-1",
+                    "publishTime": "2026-06-16 09:00:00",
+                    "author": "家居改造社",
+                    "content": "正文：阳台上的浴缸改造方案。",
+                    "readCount": 180000,
+                    "likeCount": 2000,
+                },
+                {
+                    "workUuid": "bathtub-offtopic-1",
+                    "title": "淋浴房选购清单",
+                    "summary": "普通装修内容",
+                    "workUrl": "https://mp.weixin.qq.com/s/redfox-bathtub-offtopic-1",
+                    "publishTime": "2026-06-16 09:10:00",
+                    "author": "家居改造社",
+                    "content": "正文：普通装修内容。",
+                    "readCount": 120000,
+                    "likeCount": 1200,
+                },
+            ],
+            20: [
+                {
+                    "workUuid": "bathtub-work-2",
+                    "title": "小户型浴缸怎么选",
+                    "summary": "小户型选浴缸",
+                    "workUrl": "https://mp.weixin.qq.com/s/redfox-bathtub-2",
+                    "publishTime": "2026-06-16 10:00:00",
+                    "author": "家居改造社",
+                    "content": "正文：小户型浴缸选型指南。",
+                    "readCount": 150000,
+                    "likeCount": 1800,
+                },
+                {
+                    "workUuid": "bathtub-offtopic-2",
+                    "title": "卫生间地砖防滑指南",
+                    "summary": "普通装修内容",
+                    "workUrl": "https://mp.weixin.qq.com/s/redfox-bathtub-offtopic-2",
+                    "publishTime": "2026-06-16 10:10:00",
+                    "author": "家居改造社",
+                    "content": "正文：普通装修内容。",
+                    "readCount": 110000,
+                    "likeCount": 900,
+                },
+            ],
+            40: [
+                {
+                    "workUuid": "bathtub-work-3",
+                    "title": "浴缸材质怎么选",
+                    "summary": "材质选型",
+                    "workUrl": "https://mp.weixin.qq.com/s/redfox-bathtub-3",
+                    "publishTime": "2026-06-16 11:00:00",
+                    "author": "家居改造社",
+                    "content": "正文：浴缸材质对比。",
+                    "readCount": 140000,
+                    "likeCount": 1600,
+                },
+                {
+                    "workUuid": "bathtub-offtopic-3",
+                    "title": "瓷砖收边细节",
+                    "summary": "普通装修内容",
+                    "workUrl": "https://mp.weixin.qq.com/s/redfox-bathtub-offtopic-3",
+                    "publishTime": "2026-06-16 11:10:00",
+                    "author": "家居改造社",
+                    "content": "正文：普通装修内容。",
+                    "readCount": 105000,
+                    "likeCount": 800,
+                },
+            ],
+        }
+        return {"code": 2000, "data": {"list": pages[offset]}}
+
+
+class FakeDenseMatchRedfoxClient:
+    calls: list[tuple[str, int, str]] = []
+
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        assert api_key == "redfox-collect-secret"
+
+    def search_articles(self, *, keyword: str, offset: int, sort_type: str) -> dict:
+        self.__class__.calls.append((keyword, offset, sort_type))
+        assert keyword == "浴缸"
+        assert sort_type == "_4"
+        assert offset == 0
+        return {
+            "code": 2000,
+            "data": {
+                "list": [
+                    {
+                        "workUuid": f"dense-bathtub-{index}",
+                        "title": f"浴缸方案 {index}",
+                        "summary": "浴缸选购方案",
+                        "workUrl": f"https://mp.weixin.qq.com/s/redfox-dense-bathtub-{index}",
+                        "publishTime": "2026-06-16 12:00:00",
+                        "author": "家居改造社",
+                        "content": f"正文：浴缸内容 {index}。",
+                        "readCount": index,
+                        "likeCount": index,
+                    }
+                    for index in range(1, 21)
+                ]
+            },
+        }
+
+
 def _override_database(tmp_path):
     from backend.app.core.database import Base, get_db
 
@@ -168,7 +291,19 @@ def test_redfox_keyword_collect_saves_articles_metrics_snapshots_and_candidates(
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["summary"] == {"fetched": 2, "saved": 2, "deduped": 0, "viral_candidates": 1, "failed": 0, "api_calls": 1, "estimated_credit_cost": None}
+        summary = payload["summary"]
+        assert summary["fetched"] == 2
+        assert summary["saved"] == 2
+        assert summary["deduped"] == 0
+        assert summary["viral_candidates"] == 1
+        assert summary["failed"] == 0
+        assert summary["api_calls"] == 1
+        assert summary["estimated_credit_cost"] is None
+        assert summary["requested_target_count"] == 20
+        assert summary["max_pages"] == 1
+        assert summary["filtered"] == 0
+        assert summary["relevance_matched"] == 2
+        assert summary["target_reached"] is False
         assert len(payload["items"]) == 2
         viral = next(item for item in payload["items"] if item["title"] == "10万+私域案例")
         normal = next(item for item in payload["items"] if item["title"] == "普通私域案例")
@@ -220,6 +355,175 @@ def test_redfox_keyword_collect_saves_articles_metrics_snapshots_and_candidates(
             source = db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == draft_payload["id"]))
             assert source is not None
             assert db.scalar(select(PublishJob).where(PublishJob.source_draft_id == draft_payload["id"])) is None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_keyword_collect_filters_unrelated_articles_and_stops_at_target_count(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeTargetCountRedfoxClient, raising=False)
+    FakeTargetCountRedfoxClient.calls = []
+    try:
+        headers = _register("redfox-target-count-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/collect/articles",
+            headers=headers,
+            json={"keyword": "浴缸", "target_count": 2, "max_pages": 3, "sort_type": "_4", "min_read_count": 100000, "save_snapshot": True},
+        )
+
+        assert response.status_code == 200
+        summary = response.json()["summary"]
+        assert summary["fetched"] == 4
+        assert summary["saved"] == 2
+        assert summary["filtered"] == 2
+        assert summary["relevance_matched"] == 2
+        assert summary["requested_target_count"] == 2
+        assert summary["max_pages"] == 3
+        assert summary["target_reached"] is True
+        assert summary["api_calls"] == 2
+        assert {item["title"] for item in response.json()["items"]} == {"阳台上的浴缸改造", "小户型浴缸怎么选"}
+        assert FakeTargetCountRedfoxClient.calls == [("浴缸", 0, "_4"), ("浴缸", 20, "_4")]
+
+        with TestingSessionLocal() as db:
+            job = db.scalar(select(WechatOfficialCrawlJob).order_by(WechatOfficialCrawlJob.id.desc()))
+            assert job is not None
+            assert job.keyword == "浴缸"
+            assert job.requested_limit == 2
+            assert job.fetched_count == 4
+            assert job.saved_count == 2
+            assert job.params_json["keyword"] == "浴缸"
+            assert job.params_json["sort_type"] == "_4"
+            assert job.params_json["relevance_matched"] == 2
+            assert job.params_json["target_count"] == 2
+            assert job.params_json["max_pages"] == 3
+            assert job.params_json["filtered"] == 2
+            assert job.params_json["target_reached"] is True
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_keyword_collect_reports_target_not_reached_when_relevant_results_are_insufficient(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeTargetCountRedfoxClient, raising=False)
+    FakeTargetCountRedfoxClient.calls = []
+    try:
+        headers = _register("redfox-target-count-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/collect/articles",
+            headers=headers,
+            json={"keyword": "浴缸", "target_count": 4, "max_pages": 2, "sort_type": "_4", "min_read_count": 0, "save_snapshot": True},
+        )
+
+        assert response.status_code == 200
+        summary = response.json()["summary"]
+        assert summary["fetched"] == 4
+        assert summary["saved"] == 2
+        assert summary["filtered"] == 2
+        assert summary["relevance_matched"] == 2
+        assert summary["requested_target_count"] == 4
+        assert summary["max_pages"] == 2
+        assert summary["target_reached"] is False
+        assert summary["api_calls"] == 2
+        assert summary["viral_candidates"] == 2
+        assert {item["title"] for item in response.json()["items"]} == {"阳台上的浴缸改造", "小户型浴缸怎么选"}
+        assert FakeTargetCountRedfoxClient.calls == [("浴缸", 0, "_4"), ("浴缸", 20, "_4")]
+
+        with TestingSessionLocal() as db:
+            job = db.scalar(select(WechatOfficialCrawlJob).order_by(WechatOfficialCrawlJob.id.desc()))
+            assert job is not None
+            assert job.keyword == "浴缸"
+            assert job.requested_limit == 4
+            assert job.fetched_count == 4
+            assert job.saved_count == 2
+            assert job.params_json["keyword"] == "浴缸"
+            assert job.params_json["sort_type"] == "_4"
+            assert job.params_json["relevance_matched"] == 2
+            assert job.params_json["target_count"] == 4
+            assert job.params_json["max_pages"] == 2
+            assert job.params_json["filtered"] == 2
+            assert job.params_json["target_reached"] is False
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_keyword_collect_counts_full_matching_page_even_when_target_reached(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeDenseMatchRedfoxClient, raising=False)
+    FakeDenseMatchRedfoxClient.calls = []
+    try:
+        headers = _register("redfox-dense-match-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/collect/articles",
+            headers=headers,
+            json={"keyword": "浴缸", "target_count": 1, "max_pages": 3, "sort_type": "_4", "min_read_count": 0, "save_snapshot": True},
+        )
+
+        assert response.status_code == 200
+        summary = response.json()["summary"]
+        assert summary["fetched"] == 20
+        assert summary["saved"] == 1
+        assert summary["filtered"] == 0
+        assert summary["relevance_matched"] == 20
+        assert summary["requested_target_count"] == 1
+        assert summary["max_pages"] == 3
+        assert summary["target_reached"] is True
+        assert summary["api_calls"] == 1
+        assert summary["viral_candidates"] == 1
+        assert len(response.json()["items"]) == 1
+        assert FakeDenseMatchRedfoxClient.calls == [("浴缸", 0, "_4")]
+
+        with TestingSessionLocal() as db:
+            job = db.scalar(select(WechatOfficialCrawlJob).order_by(WechatOfficialCrawlJob.id.desc()))
+            assert job is not None
+            assert job.keyword == "浴缸"
+            assert job.requested_limit == 1
+            assert job.fetched_count == 20
+            assert job.saved_count == 1
+            assert job.params_json["relevance_matched"] == 20
+            assert job.params_json["target_reached"] is True
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_keyword_collect_legacy_pages_preserves_historic_requested_limit(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeTargetCountRedfoxClient, raising=False)
+    FakeTargetCountRedfoxClient.calls = []
+    try:
+        headers = _register("redfox-legacy-pages-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/collect/articles",
+            headers=headers,
+            json={"keyword": "浴缸", "pages": 3, "sort_type": "_4", "min_read_count": 100000, "save_snapshot": True},
+        )
+
+        assert response.status_code == 200
+        summary = response.json()["summary"]
+        assert summary["requested_target_count"] == 60
+        assert summary["max_pages"] == 3
+        assert summary["target_reached"] is False
+        assert summary["saved"] == 3
+        assert summary["fetched"] == 6
+        assert summary["filtered"] == 3
+        assert summary["relevance_matched"] == 3
+        assert summary["api_calls"] == 3
+        assert FakeTargetCountRedfoxClient.calls == [("浴缸", 0, "_4"), ("浴缸", 20, "_4"), ("浴缸", 40, "_4")]
+
+        with TestingSessionLocal() as db:
+            job = db.scalar(select(WechatOfficialCrawlJob).order_by(WechatOfficialCrawlJob.id.desc()))
+            assert job is not None
+            assert job.keyword == "浴缸"
+            assert job.requested_limit == 60
+            assert job.params_json["target_count"] == 60
+            assert job.params_json["max_pages"] == 3
     finally:
         app.dependency_overrides.pop(get_db, None)
 

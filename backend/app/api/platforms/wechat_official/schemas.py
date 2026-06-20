@@ -62,6 +62,8 @@ class WechatOfficialRedfoxConfigRequest(BaseModel):
 class WechatOfficialRedfoxKeywordCollectRequest(BaseModel):
     keyword: str = Field(min_length=1)
     pages: int = Field(default=1, ge=1, le=3)
+    target_count: int | None = Field(default=None, ge=1, le=50)
+    max_pages: int | None = Field(default=None, ge=1, le=5)
     sort_type: str = "_4"
     min_read_count: int = Field(default=100000, ge=0)
     save_snapshot: bool = True
