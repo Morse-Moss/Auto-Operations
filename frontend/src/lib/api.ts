@@ -1060,8 +1060,10 @@ export async function retryTask(taskId: number): Promise<TaskRecord> {
   return response.data;
 }
 
-export async function runDueTasks(platform = "xhs"): Promise<RunDueTasksResponse> {
-  const response = await http.post<RunDueTasksResponse>("/tasks/run-due", null, { params: { platform } });
+export async function runDueTasks(platform = "xhs", options?: { confirmRealPublish?: boolean }): Promise<RunDueTasksResponse> {
+  const response = await http.post<RunDueTasksResponse>("/tasks/run-due", null, {
+    params: { platform, confirm_real_publish: options?.confirmRealPublish === true },
+  });
   return response.data;
 }
 
@@ -1198,8 +1200,10 @@ export async function updatePublishJob(jobId: number, payload: PublishJobUpdateP
   return response.data;
 }
 
-export async function publishJobToCreator(jobId: number): Promise<PublishJob> {
-  const response = await http.post<PublishJob>(`/publish/jobs/${jobId}/publish`);
+export async function publishJobToCreator(jobId: number, options?: { confirmRealPublish?: boolean }): Promise<PublishJob> {
+  const response = await http.post<PublishJob>(`/publish/jobs/${jobId}/publish`, null, {
+    params: { confirm_real_publish: options?.confirmRealPublish === true },
+  });
   return response.data;
 }
 

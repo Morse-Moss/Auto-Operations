@@ -151,7 +151,18 @@ class Settings(BaseSettings):
         return Path("backend/app/storage")
 
 
+def _load_environment_overrides() -> Dict[str, str]:
+    fields = getattr(Settings, "model_fields", None) or getattr(Settings, "__fields__", {})
+    overrides: Dict[str, str] = {}
+    for field_name in fields:
+        env_name = str(field_name).upper()
+        if env_name in os.environ:
+            overrides[str(field_name)] = os.environ[env_name]
+    return overrides
+
+
 @lru_cache
 def get_settings() -> Settings:
-    yaml_values = _load_yaml_config()
-    return Settings(**yaml_values)
+    values = _load_yaml_config()
+    values.update(_load_environment_overrides())
+    return Settings(**values)

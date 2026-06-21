@@ -72,10 +72,13 @@ def get_tasks(
 @router.post("/run-due")
 def run_due_tasks(
     platform: str = Query("xhs"),
+    confirm_real_publish: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     adapter_factory=Depends(get_creator_publish_adapter_factory),
 ):
+    if platform == "xhs" and not confirm_real_publish:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="真实小红书发布需要显式确认")
     return run_due_publish_jobs(
         db=db,
         current_user=current_user,

@@ -250,16 +250,19 @@ def test_keywords_page_supports_batch_huitun_discovery_runs_and_seed_diagnostics
 def test_real_drafts_route_exposes_duplicate_draft_action():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     router_source = open("frontend/src/app/router.tsx", encoding="utf-8").read()
-    source = open("frontend/src/pages/platforms/xhs/rewrite-page.tsx", encoding="utf-8").read()
+    workbench_source = open("frontend/src/pages/platforms/xhs/xhs-draft-workbench.tsx", encoding="utf-8").read()
+    hook_source = open("frontend/src/components/draft-workbench/use-draft-workbench.ts", encoding="utf-8").read()
 
     assert 'path="/platforms/xhs/drafts"' in router_source
     assert "rewrite-page" in router_source
     assert "duplicateDraft" in api_source
-    assert "handleDuplicateDraft" in source
-    assert re.search(r"handleDuplicateDraft[\s\S]*?duplicateDraft\s*\(", source)
-    assert re.search(r"function\s+selectDraft[\s\S]*?setRewritePreview\s*\(\s*null\s*\)", source)
-    assert "复制草稿" in source
-    assert 'aria-label="复制草稿"' in source
+    assert "duplicateSelectedDraft" in hook_source
+    assert "createXhsDraftWorkbenchAdapter" in workbench_source
+    shell_source = open("frontend/src/components/draft-workbench/draft-workbench-shell.tsx", encoding="utf-8").read()
+    assert re.search(r"duplicateSelectedDraft[\s\S]*?adapter\.duplicateDraft\s*\(", hook_source)
+    assert re.search(r"selectDraft[\s\S]*?setError\s*\(\s*null\s*\)[\s\S]*?setMessage\s*\(\s*null\s*\)", hook_source)
+    assert "复制" in shell_source
+    assert "CopyOutlined" in shell_source
 
 
 def _object_slices_containing(source, text, max_length=2500):
@@ -286,11 +289,11 @@ def test_publish_page_shows_visibility_labels_and_unsupported_mutual_friends_cop
 
 
 def test_rewrite_page_splits_generate_reference_inputs_before_combining():
-    source = open("frontend/src/pages/platforms/xhs/rewrite-page.tsx", encoding="utf-8").read()
+    source = open("frontend/src/pages/platforms/xhs/xhs-draft-workbench.tsx", encoding="utf-8").read()
 
-    assert "referenceLinks" in source
-    assert "referenceContext" in source
-    assert "buildGenerateReference" in source or "combineGenerateReference" in source
+    assert "systemPrompt" in source
+    assert "instruction" in source
+    assert "rewriteDraftWithAi" in source
 
 
 def test_discovery_uses_antd_components_and_preserves_core_logic():
@@ -333,10 +336,11 @@ def test_discovery_cards_show_note_media_type():
 
 
 def test_rewrite_page_preserves_mode_switch():
-    source = open("frontend/src/pages/platforms/xhs/rewrite-page.tsx", encoding="utf-8").read()
+    source = open("frontend/src/pages/platforms/xhs/xhs-draft-workbench.tsx", encoding="utf-8").read()
 
-    assert "rewrite" in source
-    assert "generate" in source
+    assert "handleRewrite" in source
+    assert "handleGenerateTitles" in source
+    assert "handleGenerateTags" in source
     assert "改写" in source
     assert "生成" in source
     assert "antd" in source
@@ -6989,7 +6993,7 @@ def test_publish_job_publish_uses_creator_cookie_and_updates_status(tmp_path):
         assert upload_response.status_code == 200
 
         publish_response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
 
@@ -7107,7 +7111,7 @@ def test_publish_job_publish_passes_optional_creator_parameters(tmp_path):
         }
 
         publish_response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
 
@@ -7183,7 +7187,7 @@ def test_publish_job_publish_records_failed_task(tmp_path):
         assert upload_response.status_code == 200
 
         publish_response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
 
@@ -7237,7 +7241,7 @@ def test_publish_job_publish_rejects_empty_content_before_adapter(tmp_path):
         assert update_response.status_code == 200
 
         publish_response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
 
@@ -7308,7 +7312,7 @@ def test_publish_job_publish_rejects_past_scheduled_time_before_adapter(tmp_path
             db.close()
 
         publish_response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
 
@@ -7373,13 +7377,13 @@ def test_publish_job_publish_rejects_already_completed_job(tmp_path):
         assert upload_response.status_code == 200
 
         first_response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
         assert first_response.status_code == 200
 
         second_response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
 
@@ -7423,7 +7427,7 @@ def test_publish_job_publish_rejects_cross_user_job(tmp_path):
         job_id = job_response.json()["id"]
 
         response = client.post(
-            f"/api/publish/jobs/{job_id}/publish",
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
             headers={"Authorization": f"Bearer {intruder_token}"},
         )
 
@@ -7806,14 +7810,14 @@ def test_run_due_tasks_executes_current_user_due_scheduled_publish_jobs(tmp_path
     app.dependency_overrides[get_creator_publish_adapter_factory] = lambda: FakeDuePublishAdapter
     try:
         intruder_response = client.post(
-            "/api/tasks/run-due?platform=xhs",
+            "/api/tasks/run-due?platform=xhs&confirm_real_publish=true",
             headers={"Authorization": f"Bearer {intruder_token}"},
         )
         assert intruder_response.status_code == 200
         assert intruder_response.json()["executed_count"] == 1
 
         owner_response = client.post(
-            "/api/tasks/run-due?platform=xhs",
+            "/api/tasks/run-due?platform=xhs&confirm_real_publish=true",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
 

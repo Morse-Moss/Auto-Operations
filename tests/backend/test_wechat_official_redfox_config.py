@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.security import decrypt_text
 from backend.app.main import app
 from backend.app.models import WechatOfficialRedfoxConfig
+from backend.app.services import wechat_official_redfox_service as redfox_service
 
 client = TestClient(app)
 
@@ -118,5 +119,109 @@ def test_redfox_config_is_scoped_to_current_user(tmp_path):
         assert other_config.status_code == 200
         assert other_config.json()["configured"] is False
         assert "owner-redfox-key" not in str(other_config.json())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+class FakeValidRedfoxClient:
+    called = False
+
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        assert base_url == "https://redfox.hk"
+        assert api_key == "redfox-valid-key"
+
+    def validate_key(self) -> dict:
+        FakeValidRedfoxClient.called = True
+        return {"code": 2000, "data": {"list": []}}
+
+
+class FakeInvalidRedfoxClient:
+    called = False
+
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        assert base_url == "https://redfox.hk"
+        assert api_key == "redfox-invalid-key"
+
+    def validate_key(self) -> dict:
+        FakeInvalidRedfoxClient.called = True
+        raise redfox_service.RedfoxApiError("invalid key")
+
+
+def test_redfox_config_rejects_untrusted_base_url(tmp_path):
+    get_db, _ = _override_database(tmp_path)
+    try:
+        headers = _register("redfox-bad-base-url")
+        response = client.post(
+            "/api/wechat-official/redfox/config",
+            headers=headers,
+            json={"name": "Bad", "base_url": "http://127.0.0.1:8000", "api_key": "redfox-secret-key"},
+        )
+
+        assert response.status_code == 422
+        assert "Redfox base_url" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_config_normalizes_allowed_base_url(tmp_path):
+    get_db, _ = _override_database(tmp_path)
+    try:
+        headers = _register("redfox-normalize-base-url")
+        response = client.post(
+            "/api/wechat-official/redfox/config",
+            headers=headers,
+            json={"name": "RedFoxHub", "base_url": "https://redfox.hk/", "api_key": "redfox-secret-key"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["config"]["base_url"] == "https://redfox.hk"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_validate_config_calls_upstream_validation(tmp_path, monkeypatch):
+    get_db, _ = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeValidRedfoxClient, raising=False)
+    FakeValidRedfoxClient.called = False
+    try:
+        headers = _register("redfox-validate-valid")
+        created = client.post(
+            "/api/wechat-official/redfox/config",
+            headers=headers,
+            json={"name": "RedFoxHub", "base_url": "https://redfox.hk", "api_key": "redfox-valid-key"},
+        )
+        assert created.status_code == 200
+
+        response = client.post("/api/wechat-official/redfox/config/validate", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert response.json()["config"]["status"] == "valid"
+        assert FakeValidRedfoxClient.called is True
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_validate_config_marks_invalid_without_leaking_key(tmp_path, monkeypatch):
+    get_db, _ = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeInvalidRedfoxClient, raising=False)
+    FakeInvalidRedfoxClient.called = False
+    try:
+        headers = _register("redfox-validate-invalid")
+        created = client.post(
+            "/api/wechat-official/redfox/config",
+            headers=headers,
+            json={"name": "RedFoxHub", "base_url": "https://redfox.hk", "api_key": "redfox-invalid-key"},
+        )
+        assert created.status_code == 200
+
+        response = client.post("/api/wechat-official/redfox/config/validate", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is False
+        assert payload["config"]["status"] == "invalid"
+        assert FakeInvalidRedfoxClient.called is True
+        assert "redfox-invalid-key" not in str(payload)
     finally:
         app.dependency_overrides.pop(get_db, None)
