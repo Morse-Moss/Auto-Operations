@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from backend.app.models import AiDraft, WechatOfficialArticleSnapshot, WechatOfficialDraftSource
+from backend.app.models import AiDraft, WechatOfficialArticleSnapshot
 from backend.app.services.wechat_official_content_service import get_owned_content_article
 
 
@@ -53,8 +53,6 @@ class WechatOfficialDraftService:
         draft = AiDraft(user_id=user_id, platform="wechat_official", title=article.title, body=body, tags=[])
         self.db.add(draft)
         self.db.flush()
-        source = WechatOfficialDraftSource(draft_id=draft.id, article_id=article.id, source_type="rewrite", raw_json={"rewrite_params": payload})
-        self.db.add(source)
         raw = dict(article.raw_json or {})
         analysis["pool_status"] = "draft_ready"
         if template_key:
@@ -91,7 +89,6 @@ def serialize_draft(draft: AiDraft) -> dict[str, Any]:
         "title": draft.title,
         "body": draft.body,
         "tags": draft.tags or [],
-        "source_note_id": draft.source_note_id,
         "created_at": draft.created_at.isoformat() if draft.created_at else None,
     }
 
