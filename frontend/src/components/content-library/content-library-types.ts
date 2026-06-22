@@ -48,6 +48,8 @@ export type ContentLibraryCapabilities = {
   canTag: boolean;
   canExport: boolean;
   canReadComments: boolean;
+  canFilterAssets?: boolean;
+  canFilterComments?: boolean;
 };
 
 export type ContentLibraryEmptyState = {

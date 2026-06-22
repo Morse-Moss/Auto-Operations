@@ -52,6 +52,7 @@ import {
   updateWechatOfficialRecommendation,
   validateWechatOfficialRedfoxConfig,
 } from "../../lib/api";
+import { WechatOfficialContentLibraryPanel } from "./wechat-official-content-library-panel";
 import { WechatOfficialDraftWorkbench } from "./wechat-official-draft-workbench";
 
 import type {
@@ -747,7 +748,13 @@ export function WechatOfficialDashboard() {
           </Col>
         ) : null}
 
-        {showDiscovery || showLibrary ? (
+        {showLibrary ? (
+          <Col xs={24}>
+            <WechatOfficialContentLibraryPanel />
+          </Col>
+        ) : null}
+
+        {showDiscovery ? (
         <Col xs={24}>
           <Card
             title={showDiscovery ? "本次收集/已入库候选" : "公众号内容库"}

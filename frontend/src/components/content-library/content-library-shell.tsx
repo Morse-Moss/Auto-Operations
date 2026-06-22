@@ -38,21 +38,27 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
           <Col span={5}>
             <Input placeholder={adapter.labels.filterPlaceholder} value={controller.keywordFilter} onChange={(event) => controller.setKeywordFilter(event.target.value)} allowClear />
           </Col>
-          <Col span={4}>
-            <Select
-              value={controller.selectedTagFilter || undefined}
-              onChange={(value) => controller.setSelectedTagFilter(value ?? "")}
-              placeholder="全部标签"
-              allowClear
-              style={{ width: "100%" }}
-              options={controller.availableTags.map((tag) => ({ value: String(tag.id), label: tag.name }))}
-            />
-          </Col>
+          {adapter.capabilities.canTag ? (
+            <Col span={4}>
+              <Select
+                value={controller.selectedTagFilter || undefined}
+                onChange={(value) => controller.setSelectedTagFilter(value ?? "")}
+                placeholder="全部标签"
+                allowClear
+                style={{ width: "100%" }}
+                options={controller.availableTags.map((tag) => ({ value: String(tag.id), label: tag.name }))}
+              />
+            </Col>
+          ) : null}
           <Col span={4}>
             <Select value={controller.sortBy} onChange={controller.handleSortChange} style={{ width: "100%" }} options={adapter.sortOptions} />
           </Col>
-          <Col><Checkbox checked={controller.hasAssetsFilter} onChange={(event) => controller.setHasAssetsFilter(event.target.checked)}>有素材</Checkbox></Col>
-          <Col><Checkbox checked={controller.hasCommentsFilter} onChange={(event) => controller.setHasCommentsFilter(event.target.checked)}>有评论</Checkbox></Col>
+          {adapter.capabilities.canFilterAssets !== false ? (
+            <Col><Checkbox checked={controller.hasAssetsFilter} onChange={(event) => controller.setHasAssetsFilter(event.target.checked)}>有素材</Checkbox></Col>
+          ) : null}
+          {adapter.capabilities.canFilterComments !== false ? (
+            <Col><Checkbox checked={controller.hasCommentsFilter} onChange={(event) => controller.setHasCommentsFilter(event.target.checked)}>有评论</Checkbox></Col>
+          ) : null}
           <Col><Segmented value={controller.viewMode} onChange={(value) => controller.setViewMode(value as "card" | "table")} options={[{ label: "卡片", value: "card" }, { label: "表格", value: "table" }]} /></Col>
           <Col><Button onClick={controller.clearFilters}>重置</Button></Col>
           <Col><Button type="primary" onClick={() => void controller.refreshItems({ page: 1 })} loading={controller.isLoading}>筛选</Button></Col>

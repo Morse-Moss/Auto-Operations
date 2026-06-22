@@ -330,6 +330,37 @@ def test_library_page_preserves_delete_and_media_logic():
     assert 'referrerPolicy: "no-referrer"' in adapter_source
 
 
+def test_wechat_official_library_reuses_content_library_shell_without_publish_actions():
+    dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+    panel_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-panel.tsx", encoding="utf-8").read()
+    adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    shell_source = open("frontend/src/components/content-library/content-library-shell.tsx", encoding="utf-8").read()
+
+    assert "WechatOfficialContentLibraryPanel" in dashboard_source
+    assert "ContentLibraryShell" in panel_source
+    assert "useContentLibrary" in panel_source
+    assert "createWechatOfficialContentLibraryAdapter" in panel_source
+    assert "createWechatOfficialContentLibraryAdapter" in adapter_source
+    assert "fetchWechatOfficialContentLibrary" in adapter_source
+    assert "fetchWechatOfficialContentDetail" in adapter_source
+    assert "deleteWechatOfficialContentLibraryItem" in adapter_source
+    assert "createWechatOfficialDraft" in adapter_source
+    assert "createDraftFromItem" in adapter_source
+    assert "createDraftFromNote" not in adapter_source
+    assert "fetchDrafts" not in adapter_source
+    assert "sendToPublish" not in adapter_source
+    assert "publishJobToCreator" not in adapter_source
+    assert "uploadPublishAsset" not in adapter_source
+    assert "sendall" not in adapter_source.lower()
+    assert "canFilterAssets: false" in adapter_source
+    assert "canFilterComments: false" in adapter_source
+    assert "pool_status?: string" in api_source
+    assert "adapter.capabilities.canTag" in shell_source
+    assert "adapter.capabilities.canFilterAssets" in shell_source
+    assert "adapter.capabilities.canFilterComments" in shell_source
+
+
 def test_discovery_cards_show_note_media_type():
     source = open("frontend/src/pages/platforms/xhs/discovery-page.tsx", encoding="utf-8").read()
 

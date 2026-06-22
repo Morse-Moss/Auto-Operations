@@ -440,6 +440,7 @@ export async function fetchWechatOfficialContentLibrary(params?: {
   min_read_count?: number;
   low_follower_evidence?: boolean | string;
   recommendation_status?: string;
+  pool_status?: string;
   keyword?: string;
 }): Promise<WechatOfficialListResponse<WechatOfficialContentLibraryItem>> {
   const response = await http.get<WechatOfficialListResponse<WechatOfficialContentLibraryItem>>(
