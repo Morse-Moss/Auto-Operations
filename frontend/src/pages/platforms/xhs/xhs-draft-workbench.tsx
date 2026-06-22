@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Card, Collapse, Input, Space, Tag, Typography, message as antMessage } from "antd";
+import { Alert, Button, Card, Collapse, Empty, Input, Space, Tag, Typography, message as antMessage } from "antd";
 import { EditOutlined, LinkOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 
 import { DraftWorkbenchShell, useDraftWorkbench } from "../../../components/draft-workbench";
@@ -18,6 +18,13 @@ import type { SavedNote } from "../../../types";
 import { createXhsDraftWorkbenchAdapter } from "./xhs-draft-workbench-adapter";
 import type { RewriteTemplateKey } from "./rewrite-templates";
 import { DEFAULT_REWRITE_TEMPLATE_KEY, REWRITE_TEMPLATES } from "./rewrite-templates";
+import {
+  clearRewriteCandidate,
+  getRewriteCandidate,
+  setRewriteCandidate,
+  toRewriteCandidate,
+} from "./xhs-rewrite-candidates";
+import type { RewriteCandidateMap } from "./xhs-rewrite-candidates";
 
 const { Paragraph, Text } = Typography;
 const { TextArea } = Input;
@@ -43,9 +50,12 @@ export function XhsDraftsPage() {
   const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [isRewriting, setIsRewriting] = useState(false);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
+  const [rewriteCandidates, setRewriteCandidates] = useState<RewriteCandidateMap>({});
 
   const selectedDraft = controller.selectedDraft;
   const hasSourceNote = Boolean(selectedDraft?.source_note_id);
+  const activeRewriteTemplate = REWRITE_TEMPLATES[rewriteTemplate];
+  const activeRewriteCandidate = getRewriteCandidate(rewriteCandidates, rewriteTemplate);
 
   useEffect(() => {
     if (!selectedDraft?.source_note_id) {
@@ -76,21 +86,37 @@ export function XhsDraftsPage() {
     };
   }, [selectedDraft?.id, selectedDraft?.source_note_id]);
 
+  useEffect(() => {
+    setRewriteCandidates({});
+  }, [selectedDraft?.id]);
+
   async function handleRewrite() {
     if (!selectedDraft) return;
     setIsRewriting(true);
     try {
       await updateDraft(selectedDraft.id, { title: controller.title, body: controller.body, tags: controller.tags });
       const rewritten = await rewriteDraftWithAi({ draft_id: selectedDraft.id, instruction: `${systemPrompt}\n${instruction}` });
-      controller.setTitle(rewritten.title);
-      controller.setBody(rewritten.body);
-      controller.setTags(Array.isArray(rewritten.tags) ? rewritten.tags : []);
-      antMessage.success("AI 改写完成，请检查后保存。");
+      const candidate = toRewriteCandidate(rewritten, Date.now());
+      setRewriteCandidates((current) => setRewriteCandidate(current, rewriteTemplate, candidate));
+      antMessage.success("AI 改写候选已生成，点击采纳后才会覆盖中间草稿。");
     } catch (error) {
       antMessage.error(error instanceof Error ? error.message : "AI 改写失败");
     } finally {
       setIsRewriting(false);
     }
+  }
+
+  function handleAdoptRewriteCandidate() {
+    if (!activeRewriteCandidate) return;
+    controller.setTitle(activeRewriteCandidate.title);
+    controller.setBody(activeRewriteCandidate.body);
+    controller.setTags(activeRewriteCandidate.tags);
+    antMessage.success("已采纳到中间编辑区，请检查后保存。");
+  }
+
+  function handleDiscardRewriteCandidate() {
+    setRewriteCandidates((current) => clearRewriteCandidate(current, rewriteTemplate));
+    antMessage.success("已放弃当前模式候选。");
   }
 
   async function handleGenerateTitles() {
@@ -212,7 +238,7 @@ export function XhsDraftsPage() {
 
           <Space wrap>
             <Button onClick={() => void handleRewrite()} loading={isRewriting} icon={<ReloadOutlined />}>
-              AI 改写
+              {activeRewriteTemplate.buttonLabel}
             </Button>
             <Button onClick={() => void handleGenerateTitles()}>生成标题</Button>
             <Button onClick={() => void handleGenerateTags()}>生成标签</Button>
@@ -220,6 +246,57 @@ export function XhsDraftsPage() {
               送发布中心
             </Button>
           </Space>
+
+          {activeRewriteCandidate ? (
+            <Card
+              size="small"
+              title={`改写结果 · ${activeRewriteTemplate.label}`}
+              styles={{ body: { maxHeight: 420, overflow: "auto" } }}
+            >
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="候选结果尚未覆盖中间草稿"
+                  description="你可以和中间编辑区原文对比，确认后再点击采纳。"
+                />
+                <div>
+                  <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
+                    标题
+                  </Text>
+                  <Text strong>{activeRewriteCandidate.title || "未命名候选"}</Text>
+                </div>
+                <div>
+                  <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
+                    正文
+                  </Text>
+                  <Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+                    {activeRewriteCandidate.body || "暂无正文"}
+                  </Paragraph>
+                </div>
+                {activeRewriteCandidate.tags.length > 0 ? (
+                  <Space size={[4, 8]} wrap>
+                    {activeRewriteCandidate.tags.map((tag) => (
+                      <Tag key={tag.id || tag.name} color="blue">
+                        #{tag.name}
+                      </Tag>
+                    ))}
+                  </Space>
+                ) : null}
+                <Space wrap>
+                  <Button type="primary" aria-label="adopt rewrite candidate" onClick={handleAdoptRewriteCandidate}>
+                    采纳
+                  </Button>
+                  <Button aria-label="discard rewrite candidate" onClick={handleDiscardRewriteCandidate}>放弃</Button>
+                </Space>
+              </Space>
+            </Card>
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={`当前模式还没有候选，生成${activeRewriteTemplate.label}后可和中间草稿对比。`}
+            />
+          )}
         </Space>
       )}
     />
