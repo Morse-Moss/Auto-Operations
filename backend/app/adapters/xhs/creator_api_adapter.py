@@ -47,26 +47,21 @@ class XhsCreatorApiAdapter:
     @staticmethod
     def _resolve_file_data(file_path: str) -> bytes:
         import pathlib
-        raw_bytes: bytes | None = None
 
-        if file_path.startswith("http://") or file_path.startswith("https://"):
-            import requests
-            resp = requests.get(file_path, timeout=30, headers={"Referer": ""})
-            resp.raise_for_status()
-            raw_bytes = resp.content
-        elif file_path.startswith("/api/files/media/"):
-            from backend.app.core.config import get_settings
-            file_name = file_path.split("/")[-1]
-            local = pathlib.Path(get_settings().storage_dir) / "media" / file_name
-            if local.is_file():
-                raw_bytes = local.read_bytes()
-        else:
-            p = pathlib.Path(file_path)
-            if p.is_file():
-                raw_bytes = p.read_bytes()
+        media_prefix = "/api/files/media/"
+        if not file_path.startswith(media_prefix):
+            raise ValueError("Only server-managed media files can be uploaded to Creator")
 
-        if raw_bytes is None:
+        from backend.app.core.config import get_settings
+
+        file_name = file_path[len(media_prefix):]
+        if not file_name or file_name != pathlib.PurePosixPath(file_name).name or "\\" in file_name:
+            raise ValueError("Invalid media file name")
+
+        local = pathlib.Path(get_settings().storage_dir) / "media" / file_name
+        if not local.is_file():
             raise FileNotFoundError(f"素材文件不存在: {file_path}")
+        raw_bytes = local.read_bytes()
 
         lower = file_path.lower()
         if lower.endswith(".webp") or (len(raw_bytes) > 4 and raw_bytes[:4] == b"RIFF"):

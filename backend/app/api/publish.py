@@ -440,10 +440,13 @@ def upload_publish_asset(
 @router.post("/jobs/{job_id}/publish")
 def publish_job_to_creator(
     job_id: int,
+    confirm_real_publish: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     adapter_factory=Depends(get_creator_publish_adapter_factory),
 ):
+    if not confirm_real_publish:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="真实小红书发布需要显式确认")
     job = _get_owned_publish_job(db, current_user, job_id)
     if not job.platform_account_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先选择发布账号")

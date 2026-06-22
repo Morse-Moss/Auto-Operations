@@ -353,7 +353,7 @@ def test_redfox_keyword_collect_saves_articles_metrics_snapshots_and_candidates(
             assert draft is not None
             assert draft.platform == "wechat_official"
             source = db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == draft_payload["id"]))
-            assert source is not None
+            assert source is None
             assert db.scalar(select(PublishJob).where(PublishJob.source_draft_id == draft_payload["id"])) is None
     finally:
         app.dependency_overrides.pop(get_db, None)

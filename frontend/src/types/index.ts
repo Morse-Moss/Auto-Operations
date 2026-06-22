@@ -371,7 +371,7 @@ export type WechatOfficialCreateDraftPayload = {
   opening_angle?: string;
 };
 
-export type WechatOfficialDraft = Draft & {
+export type WechatOfficialDraft = Omit<Draft, "platform" | "source_note_id"> & {
   platform: "wechat_official";
 };
 

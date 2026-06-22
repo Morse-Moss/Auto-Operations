@@ -12,6 +12,7 @@ import {
   Card,
   Col,
   Empty,
+  Popconfirm,
   Progress,
   Row,
   Space,
@@ -136,7 +137,7 @@ export function TaskCenterPage() {
     setIsActionLoading(true);
     setMessage(null);
     try {
-      const result = await runDueTasks("xhs");
+      const result = await runDueTasks("xhs", { confirmRealPublish: true });
       setMessage(
         `到期任务执行完成：执行 ${result.executed_count} 个，失败 ${result.failed_count} 个。`
       );
@@ -221,13 +222,21 @@ export function TaskCenterPage() {
         description="抓取、AI、导出和发布任务的统一队列。"
         action={
           <Space>
-            <Button
-              icon={<ThunderboltOutlined />}
-              onClick={runDueXhsTasks}
+            <Popconfirm
+              title="确认执行到期真实发布任务？"
+              description="该操作会执行已到期的小红书发布任务，并可能向真实账号提交内容。"
+              okText="确认执行"
+              cancelText="取消"
+              onConfirm={runDueXhsTasks}
               disabled={isLoading || isActionLoading}
             >
-              执行到期任务
-            </Button>
+              <Button
+                icon={<ThunderboltOutlined />}
+                disabled={isLoading || isActionLoading}
+              >
+                执行到期任务
+              </Button>
+            </Popconfirm>
             <Button
               icon={<ReloadOutlined />}
               onClick={loadTasks}

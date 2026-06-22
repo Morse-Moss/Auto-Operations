@@ -243,7 +243,7 @@ export function XhsPublishPage() {
         location: location.trim() || null,
         is_private: privacyChoice === "private",
       });
-      const updated = await publishJobToCreator(selectedJob.id);
+      const updated = await publishJobToCreator(selectedJob.id, { confirmRealPublish: true });
       setJobs((current) => current.map((job) => (job.id === updated.id ? updated : job)));
       applyJob(updated);
       setMessage(updated.status === "scheduled" ? `发布任务 #${updated.id} 已定时。` : `发布任务 #${updated.id} 已提交。`);
@@ -402,7 +402,16 @@ export function XhsPublishPage() {
                           <Popconfirm title="确定删除此发布任务？" onConfirm={handleDeleteJob}>
                             <Button danger icon={<DeleteOutlined />}>删除</Button>
                           </Popconfirm>
-                          <Button type="primary" icon={<SendOutlined />} onClick={handlePublish} loading={isPublishing} disabled={!canPublish}>发布</Button>
+                          <Popconfirm
+                            title="确认执行真实小红书发布？"
+                            description="该操作会使用所选 Creator 账号向小红书提交内容。请确认账号、素材和可见性设置无误。"
+                            okText="确认发布"
+                            cancelText="取消"
+                            onConfirm={handlePublish}
+                            disabled={!canPublish || isPublishing}
+                          >
+                            <Button type="primary" icon={<SendOutlined />} loading={isPublishing} disabled={!canPublish}>发布</Button>
+                          </Popconfirm>
                         </Space>
                       </Col>
                     </Row>

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 import re
+from urllib.parse import urlparse
+
 import requests
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -77,13 +79,27 @@ class WechatOfficialRedfoxService:
             self.db.refresh(config)
             return {"ok": False, "config": serialize_redfox_config(config), "message": config.last_error}
 
-        decrypt_text(config.encrypted_api_key)
-        config.status = "valid"
+        try:
+            client = WechatOfficialRedfoxClient(base_url=config.base_url or DEFAULT_REDFOX_BASE_URL, api_key=decrypt_text(config.encrypted_api_key))
+            client.validate_key()
+        except requests.Timeout:
+            config.status = "invalid"
+            config.last_error = "Redfox 校验超时，请稍后重试"
+        except requests.RequestException:
+            config.status = "invalid"
+            config.last_error = "Redfox 网络请求失败，请检查网络或稍后重试"
+        except (RedfoxApiError, ValueError):
+            config.status = "invalid"
+            config.last_error = "Redfox API Key 无效或服务返回异常"
+        else:
+            config.status = "valid"
+            config.last_error = ""
         config.last_checked_at = shanghai_now()
-        config.last_error = ""
         self.db.commit()
         self.db.refresh(config)
-        return {"ok": True, "config": serialize_redfox_config(config), "message": "Redfox 配置可用"}
+        if config.status == "valid":
+            return {"ok": True, "config": serialize_redfox_config(config), "message": "Redfox 配置可用"}
+        return {"ok": False, "config": serialize_redfox_config(config), "message": config.last_error}
 
     def collect_articles(self, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         keyword = str(payload.get("keyword") or "").strip()
@@ -562,8 +578,11 @@ def _article_matches_keyword(article: dict[str, Any], tokens: list[str]) -> bool
 
 
 def _normalize_base_url(base_url: str) -> str:
-    cleaned = base_url.strip().rstrip("/")
-    return cleaned or DEFAULT_REDFOX_BASE_URL
+    cleaned = (base_url or DEFAULT_REDFOX_BASE_URL).strip().rstrip("/") or DEFAULT_REDFOX_BASE_URL
+    parsed = urlparse(cleaned)
+    if parsed.scheme != "https" or parsed.netloc != "redfox.hk" or parsed.path not in ("", "/"):
+        raise HTTPException(status_code=422, detail="Redfox base_url must be https://redfox.hk")
+    return DEFAULT_REDFOX_BASE_URL
 
 
 def _mask_api_key(encrypted_api_key: str) -> str:
