@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 import type { Draft } from "../../types";
 
+// Minimal shape the shared shell can render. Platform adapters may extend it,
+// but platform-specific semantics must stay outside the shared workbench core.
 export type DraftWorkbenchDraft = Pick<Draft, "id" | "title" | "body" | "tags" | "created_at">;
 
 export type DraftWorkbenchDraftPatch = {

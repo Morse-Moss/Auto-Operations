@@ -7,6 +7,7 @@ from typing import Any, Protocol
 import requests
 
 from backend.app.models import ModelConfig
+from backend.app.services.asset_storage_policy import validate_owned_media_file_name
 
 
 class TextAiClient(Protocol):
@@ -448,13 +449,10 @@ class RunningHubImageClient:
             raise ValueError("参考图必须来自媒体资产目录") from exc
 
         if owner_user_id is not None:
-            valid_prefixes = (
-                f"xhs-upload-u{owner_user_id}-",
-                f"xhs-asset-u{owner_user_id}-",
-                f"xhs-image-u{owner_user_id}-",
-            )
-            if not resolved.name.startswith(valid_prefixes):
-                raise ValueError("参考图文件不存在或无权访问")
+            try:
+                validate_owned_media_file_name(resolved.name, owner_user_id)
+            except ValueError:
+                raise ValueError("参考图文件不存在或无权访问") from None
         if not resolved.is_file():
             if owner_user_id is not None:
                 raise ValueError("参考图文件不存在或无权访问")

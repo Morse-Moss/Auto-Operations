@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field
 from backend.app.core.config import get_settings
 from backend.app.core.deps import get_current_user
 from backend.app.models import User
+from backend.app.services.asset_storage_policy import (
+    asset_owner_prefix,
+    validate_owned_export_file_name,
+    validate_owned_media_file_name,
+    valid_media_owner_prefixes,
+)
 from backend.app.services.image_util import compose_cover_image, resize_image_file
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -23,6 +29,7 @@ class ComposeImageRequest(BaseModel):
     height: int = Field(default=1440, ge=320, le=3200)
     background_color: str = Field(default="#fafaf8", max_length=16)
     accent_color: str = Field(default="#111111", max_length=16)
+    platform: str = "xhs"
 
 
 class ResizeImageRequest(BaseModel):
@@ -32,6 +39,7 @@ class ResizeImageRequest(BaseModel):
     mode: Literal["cover", "contain"] = "cover"
     format: Literal["png", "jpeg"] = "png"
     quality: int = Field(default=90, ge=40, le=100)
+    platform: str = "xhs"
 
 
 def _export_media_type(file_name: str) -> str:
@@ -44,17 +52,18 @@ def _media_dir() -> Path:
     return Path(get_settings().storage_dir) / "media"
 
 
-def _owner_media_prefix(current_user: User) -> str:
-    return f"xhs-image-u{current_user.id}-"
+def _owner_media_prefix(current_user: User, platform: str = "xhs") -> str:
+    try:
+        return asset_owner_prefix(platform, "image", current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid platform") from None
 
 
 def _validate_owner_media_name(file_name: str, current_user: User) -> str:
-    if Path(file_name).name != file_name or ".." in file_name:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found")
-    valid_prefixes = (_owner_media_prefix(current_user), f"xhs-asset-u{current_user.id}-", f"xhs-upload-u{current_user.id}-")
-    if not file_name.startswith(valid_prefixes):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found")
-    return file_name
+    try:
+        return validate_owned_media_file_name(file_name, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found") from None
 
 
 def _media_type(file_name: str) -> str:
@@ -85,32 +94,35 @@ def _serialize_media_file(*, file_name: str, width: int, height: int) -> dict:
 
 @router.get("/images")
 def list_user_images(current_user: User = Depends(get_current_user)):
-    prefix = f"xhs-upload-u{current_user.id}-"
+    prefixes = valid_media_owner_prefixes(current_user.id, kinds=("upload",))
     media_dir = _media_dir()
     image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
     files = []
     if media_dir.is_dir():
         for f in sorted(media_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            if f.name.startswith(prefix) and f.suffix.lower() in image_exts:
+            if f.name.startswith(prefixes) and f.suffix.lower() in image_exts:
                 files.append({"file_name": f.name, "url": f"/api/files/media/{f.name}", "size": f.stat().st_size})
     return {"items": files}
 
 
 @router.delete("/images/{file_name}")
 def delete_user_image(file_name: str, current_user: User = Depends(get_current_user)):
-    prefix = f"xhs-upload-u{current_user.id}-"
-    if Path(file_name).name != file_name or ".." in file_name or not file_name.startswith(prefix):
+    try:
+        safe_name = validate_owned_media_file_name(file_name, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found") from None
+    if not safe_name.startswith(valid_media_owner_prefixes(current_user.id, kinds=("upload",))):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    file_path = _media_dir() / file_name
+    file_path = _media_dir() / safe_name
     if not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
     file_path.unlink()
-    return {"file_name": file_name, "status": "deleted"}
+    return {"file_name": safe_name, "status": "deleted"}
 
 
 @router.post("/images/compose")
 def compose_image(payload: ComposeImageRequest, current_user: User = Depends(get_current_user)):
-    file_name = f"{_owner_media_prefix(current_user)}{uuid4().hex}.png"
+    file_name = f"{_owner_media_prefix(current_user, payload.platform)}{uuid4().hex}.png"
     output_path = _media_dir() / file_name
     compose_cover_image(
         output_path=output_path,
@@ -132,7 +144,7 @@ def resize_image(payload: ResizeImageRequest, current_user: User = Depends(get_c
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found")
 
     extension = "jpg" if payload.format == "jpeg" else "png"
-    file_name = f"{_owner_media_prefix(current_user)}{uuid4().hex}.{extension}"
+    file_name = f"{_owner_media_prefix(current_user, payload.platform)}{uuid4().hex}.{extension}"
     output_path = _media_dir() / file_name
     resize_image_file(
         source_path=source_path,
@@ -158,19 +170,17 @@ def download_media(file_name: str):
 
 @router.get("/exports/{file_name}")
 def download_export(file_name: str, current_user: User = Depends(get_current_user)):
-    if Path(file_name).name != file_name or ".." in file_name:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export file not found")
-
-    owner_prefixes = (f"xhs-notes-u{current_user.id}-", f"xhs-report-u{current_user.id}-")
-    if not file_name.startswith(owner_prefixes):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export file not found")
+    try:
+        safe_name = validate_owned_export_file_name(file_name, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export file not found") from None
 
     export_dir = Path(get_settings().storage_dir) / "exports"
-    file_path = export_dir / file_name
+    file_path = export_dir / safe_name
     if not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export file not found")
 
-    return FileResponse(file_path, filename=file_name, media_type=_export_media_type(file_name))
+    return FileResponse(file_path, filename=safe_name, media_type=_export_media_type(safe_name))
 
 
 ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".mov", ".avi", ".mkv"}
@@ -178,7 +188,7 @@ MAX_UPLOAD_SIZE = 100 * 1024 * 1024
 
 
 @router.post("/upload")
-async def upload_file(file: UploadFile, current_user: User = Depends(get_current_user)):
+async def upload_file(file: UploadFile, platform: str = "xhs", current_user: User = Depends(get_current_user)):
     if not file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件名不能为空")
     ext = Path(file.filename).suffix.lower()
@@ -190,7 +200,10 @@ async def upload_file(file: UploadFile, current_user: User = Depends(get_current
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件大小超过 100MB 限制")
 
     asset_type = "video" if ext in {".mp4", ".mov", ".avi", ".mkv"} else "image"
-    file_name = f"xhs-upload-u{current_user.id}-{uuid4().hex}{ext}"
+    try:
+        file_name = f"{asset_owner_prefix(platform, 'upload', current_user.id)}{uuid4().hex}{ext}"
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid platform") from None
     media_dir = _media_dir()
     media_dir.mkdir(parents=True, exist_ok=True)
     output_path = media_dir / file_name

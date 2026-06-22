@@ -317,14 +317,17 @@ def test_discovery_preserves_note_detail_and_media_logic():
 
 
 def test_library_page_preserves_delete_and_media_logic():
-    source = open("frontend/src/pages/platforms/xhs/library-page.tsx", encoding="utf-8").read()
+    page_source = open("frontend/src/pages/platforms/xhs/library-page.tsx", encoding="utf-8").read()
+    adapter_source = open("frontend/src/pages/platforms/xhs/xhs-content-library-adapter.ts", encoding="utf-8").read()
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
 
     assert "deleteSavedNote" in api_source
-    assert "handleDeleteNote" in source
-    assert "删除" in source
-    assert "function getSavedNoteCoverUrl" in source
-    assert 'referrerPolicy="no-referrer"' in source
+    assert "ContentLibraryShell" in page_source
+    assert "createXhsContentLibraryAdapter" in page_source
+    assert "deleteSavedNote" in adapter_source
+    assert "删除" in adapter_source
+    assert "function getSavedNoteCoverUrl" in adapter_source
+    assert 'referrerPolicy: "no-referrer"' in adapter_source
 
 
 def test_discovery_cards_show_note_media_type():

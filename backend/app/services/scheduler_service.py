@@ -516,38 +516,16 @@ def _execute_auto_task_background(db: Session, task: AutoTask) -> None:
     except Exception:
         pass
 
-    # Get Creator cookies
     creator_account = db.get(PlatformAccount, task.creator_account_id)
     if not creator_account:
         return
-    creator_cv = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == creator_account.id)
-        .order_by(AccountCookieVersion.created_at.desc())
-    ).first()
-    if not creator_cv:
-        return
-    creator_cookies = _scheduler_cookies_to_string(decrypt_text(creator_cv.encrypted_cookies))
 
-    # Upload images and create publish job
-    from backend.app.adapters.xhs.creator_api_adapter import XhsCreatorApiAdapter as AutoCreatorAdapter
-    creator_adapter = AutoCreatorAdapter(creator_cookies)
-
-    image_urls = (best.get("image_urls") or [])[:9]
-    file_infos = []
-    for url in image_urls:
-        if not url:
-            continue
-        try:
-            payload = creator_adapter.upload_media(url, "image")
-            file_infos.append(payload)
-        except Exception as exc:
-            logger.warning(f"Auto task {task.id} image upload failed: {exc}")
-
-    if not file_infos:
+    image_urls = [url for url in (best.get("image_urls") or [])[:9] if isinstance(url, str) and url]
+    if not image_urls:
         return
 
-    # Create publish job
+    # Create a publish job only. Background AutoTask execution must not upload or publish
+    # without an explicit action-level authorization path.
     job = PublishJob(
         user_id=task.user_id,
         platform_account_id=task.creator_account_id,
@@ -556,47 +534,20 @@ def _execute_auto_task_background(db: Session, task: AutoTask) -> None:
         title=draft.title,
         body=draft.body,
         publish_mode="immediate",
-        status="publishing",
+        status="pending",
     )
     db.add(job)
     db.flush()
 
-    for info in file_infos:
+    for url in image_urls:
         db.add(PublishAsset(
             publish_job_id=job.id,
             asset_type="image",
-            file_path="",
-            upload_status="uploaded",
-            creator_media_id=info.get("fileIds", ""),
-            creator_upload_info=json.dumps(info, ensure_ascii=False),
+            file_path=url,
+            upload_status="pending",
         ))
     db.flush()
 
-    # Publish via Creator API
-    try:
-        note_info = {
-            "title": job.title,
-            "desc": job.body,
-            "media_type": "image",
-            "image_file_infos": file_infos,
-            "type": 1,
-            "postTime": None,
-        }
-        result = creator_adapter.post_note(note_info)
-        job.status = "published"
-        job.external_note_id = ""
-        for key in ("note_id", "noteId", "id"):
-            v = result.get(key) or (result.get("data", {}) or {}).get(key)
-            if v:
-                job.external_note_id = str(v)
-                break
-        job.published_at = shanghai_now()
-    except Exception as exc:
-        job.status = "failed"
-        job.publish_error = str(exc)[:500]
-        logger.warning(f"Auto task {task.id} publish failed: {exc}")
-
-    task.total_published = (task.total_published or 0) + 1
     task.last_run_at = shanghai_now()
     logger.info(f"Auto task {task.id} executed: keyword={keyword}, job={job.id}, status={job.status}")
 

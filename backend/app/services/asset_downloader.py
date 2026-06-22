@@ -6,9 +6,10 @@ from uuid import uuid4
 from loguru import logger
 
 from backend.app.core.config import get_settings
+from backend.app.services.asset_storage_policy import asset_owner_prefix
 
 
-def download_asset_to_local(url: str, user_id: int, asset_type: str) -> str | None:
+def download_asset_to_local(url: str, user_id: int, asset_type: str, platform: str = "xhs") -> str | None:
     if not url or not url.startswith(("http://", "https://")):
         return None
     try:
@@ -19,7 +20,7 @@ def download_asset_to_local(url: str, user_id: int, asset_type: str) -> str | No
         if len(content) < 100:
             return None
         ext = _guess_extension(url, resp.headers.get("content-type", ""), asset_type)
-        file_name = f"xhs-asset-u{user_id}-{uuid4().hex}{ext}"
+        file_name = f"{asset_owner_prefix(platform, 'asset', user_id)}{uuid4().hex}{ext}"
         media_dir = Path(get_settings().storage_dir) / "media"
         media_dir.mkdir(parents=True, exist_ok=True)
         (media_dir / file_name).write_bytes(content)

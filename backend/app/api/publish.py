@@ -16,6 +16,7 @@ from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import AccountCookieVersion, PlatformAccount, PublishAsset, PublishJob, Task, User
 from backend.app.schemas.common import paginated
+from backend.app.services.publish_orchestration_service import PublishOrchestrationService
 
 router = APIRouter(prefix="/publish", tags=["publish"])
 
@@ -298,6 +299,15 @@ def update_publish_job(
     db.commit()
     db.refresh(job)
     return serialize_publish_job(job)
+
+
+@router.post("/jobs/{job_id}/dry-run")
+def dry_run_publish_job(
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return PublishOrchestrationService(db).dry_run(job_id=job_id, current_user=current_user)
 
 
 @router.post("/jobs/{job_id}/retry")
