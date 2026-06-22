@@ -220,6 +220,48 @@ def test_content_library_pool_status_filter_keeps_candidates_out_of_library_view
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_content_library_list_paginates_searches_author_and_validates_pool_status(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("content-library-pagination-user")
+        article_ids = [
+            _create_article(headers, title=f"入库文章 {index}", url=f"https://mp.weixin.qq.com/s/page-{index}", read_count=100000 + index)
+            for index in range(3)
+        ]
+        for article_id in article_ids:
+            update = client.patch(
+                f"/api/wechat-official/content-library/{article_id}/recommendation",
+                headers=headers,
+                json={"pool_status": "shortlisted"},
+            )
+            assert update.status_code == 200
+
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_ids[1])
+            assert article is not None
+            article.author_name = "目标公众号"
+            db.commit()
+
+        page_response = client.get("/api/wechat-official/content-library?pool_status=shortlisted&page=2&page_size=1", headers=headers)
+        assert page_response.status_code == 200
+        page_payload = page_response.json()
+        assert page_payload["total"] == 3
+        assert page_payload["page"] == 2
+        assert page_payload["page_size"] == 1
+        assert len(page_payload["items"]) == 1
+
+        author_response = client.get("/api/wechat-official/content-library?pool_status=shortlisted&keyword=目标公众号", headers=headers)
+        assert author_response.status_code == 200
+        author_payload = author_response.json()
+        assert author_payload["total"] == 1
+        assert author_payload["items"][0]["id"] == article_ids[1]
+
+        invalid = client.get("/api/wechat-official/content-library?pool_status=published", headers=headers)
+        assert invalid.status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 class FakeRedfoxDetailClient:
     def __init__(self, *, base_url: str, api_key: str) -> None:
         assert api_key == "refresh-secret"

@@ -1,5 +1,5 @@
 import { DeleteOutlined, FileTextOutlined, LinkOutlined, MessageOutlined, ReadOutlined, StarOutlined } from "@ant-design/icons";
-import { Button, Card, Checkbox, Col, Descriptions, Image, List, Row, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Descriptions, Image, List, Row, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import React from "react";
 
@@ -12,10 +12,12 @@ import type {
   ContentLibraryRenderContext,
 } from "../../components/content-library";
 import {
+  analyzeWechatOfficialHotspots,
   createWechatOfficialDraft,
   deleteWechatOfficialContentLibraryItem,
   fetchWechatOfficialContentDetail,
   fetchWechatOfficialContentLibrary,
+  refreshWechatOfficialContentDetail,
 } from "../../lib/api";
 import type {
   WechatOfficialArticleComment,
@@ -23,6 +25,7 @@ import type {
   WechatOfficialContentImage,
   WechatOfficialContentLibraryItem,
 } from "../../types";
+import type { WechatOfficialDraftTemplate } from "./wechat-official-draft-templates";
 
 const { Text, Paragraph } = Typography;
 const h = React.createElement;
@@ -216,6 +219,33 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
   const article = detail?.article || item.article;
   const analysis = detail?.analysis || article.analysis || {};
   const status = poolStatus(article);
+
+  const refreshDetail = async () => {
+    controller.setDetailError(null);
+    controller.setDetailActionMessage(null);
+    try {
+      const refreshed = await refreshWechatOfficialContentDetail(article.id);
+      controller.replaceSelectedItem(mapArticle(refreshed.article, refreshed));
+      await controller.refreshItems();
+      controller.setDetailActionMessage("正文、图片和评论已补全；未上传素材、未同步公众号后台、未发布或群发。");
+    } catch (error) {
+      controller.setDetailError(error instanceof Error ? error.message : "补全正文与素材失败。");
+    }
+  };
+
+  const analyzeHotspots = async () => {
+    controller.setDetailError(null);
+    controller.setDetailActionMessage(null);
+    try {
+      await analyzeWechatOfficialHotspots(article.id, {});
+      await controller.refreshSelectedItem();
+      await controller.refreshItems();
+      controller.setDetailActionMessage("爆点拆解已更新。若已配置默认文本模型则使用 AI，失败时自动回退模板拆解。");
+    } catch (error) {
+      controller.setDetailError(error instanceof Error ? error.message : "爆点拆解失败。");
+    }
+  };
+
   return h(Space, { direction: "vertical", size: 16, style: { width: "100%" } },
     h(Descriptions, { column: 1, size: "small", bordered: true },
       h(Descriptions.Item, { label: "标题" }, article.title),
@@ -227,9 +257,16 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
     ),
     h(Space, { wrap: true },
       item.article.article_url ? h(Button, { icon: h(LinkOutlined), href: item.article.article_url, target: "_blank", rel: "noreferrer" }, "原文") : null,
+      h(Button, { onClick: () => void refreshDetail() }, "补全正文与素材"),
+      h(Button, { onClick: () => void analyzeHotspots() }, "拆解爆点"),
       h(Button, { type: "primary", loading: controller.isCreatingDraft, onClick: () => void controller.createDraft("rewrite") }, "生成公众号草稿"),
       h(Button, { danger: true, icon: h(DeleteOutlined), onClick: () => void controller.deleteItem(item) }, "删除"),
     ),
+    h(Alert, {
+      showIcon: true,
+      type: "info",
+      message: "补全正文与素材会调用 Redfox 并写入本地正文、图片、评论和指标；不会上传素材、同步公众号后台、发布或群发。",
+    }),
     h(Card, { size: "small", title: "正文图片" },
       detail?.images?.length
         ? h(Image.PreviewGroup, null,
@@ -269,7 +306,7 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
   );
 }
 
-export function createWechatOfficialContentLibraryAdapter(navigate: WechatOfficialNavigate): ContentLibraryAdapter<WechatOfficialContentLibraryViewItem> {
+export function createWechatOfficialContentLibraryAdapter(navigate: WechatOfficialNavigate, selectedTemplate: WechatOfficialDraftTemplate): ContentLibraryAdapter<WechatOfficialContentLibraryViewItem> {
   return {
     platform: "wechat_official",
     pageTitle: "公众号内容库",
@@ -342,16 +379,14 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
       const response = await fetchWechatOfficialContentLibrary({
         keyword: filters.q,
         pool_status: "shortlisted",
+        page: filters.page,
+        page_size: filters.page_size,
       });
-      const page = response.page ?? filters.page ?? 1;
-      const pageSize = response.page_size ?? filters.page_size ?? 20;
-      const mappedItems = response.items.map((article) => mapArticle(article));
-      const pageItems = response.page ? mappedItems : mappedItems.slice((page - 1) * pageSize, page * pageSize);
       return {
         total: response.total,
-        page,
-        page_size: pageSize,
-        items: pageItems,
+        page: response.page ?? filters.page ?? 1,
+        page_size: response.page_size ?? filters.page_size ?? 20,
+        items: response.items.map((article) => mapArticle(article)),
       };
     },
     async loadItem(itemId) {
@@ -387,13 +422,8 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
     },
     async createDraftFromItem(item, _intent: ContentLibraryDraftIntent) {
       const draft = await createWechatOfficialDraft(item.id, {
-        rewrite_style: "保留原文结构，提炼可复用观点",
-        target_audience: "公众号读者",
-        call_to_action: "关注后续更新",
-        template_key: "content_library_rewrite",
-        template_name: "内容库二创",
-        template_instruction: "按公众号读者可读的结构生成二创底稿。",
-        opening_angle: item.detail?.analysis.hotspot_breakdown?.reuse_angle || item.article.analysis?.hotspot_breakdown?.reuse_angle || "从原文爆点提炼可复用观点",
+        ...selectedTemplate,
+        opening_angle: item.detail?.analysis.hotspot_breakdown?.reuse_angle || item.article.analysis?.hotspot_breakdown?.reuse_angle || selectedTemplate.opening_angle,
       });
       return { id: draft.id };
     },

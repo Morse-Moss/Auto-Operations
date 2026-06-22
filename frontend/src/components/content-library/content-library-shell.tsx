@@ -1,5 +1,6 @@
 import { BookOutlined, CheckSquareOutlined, DeleteOutlined, DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Checkbox, Col, Drawer, Empty, Input, Pagination, Popconfirm, Row, Segmented, Select, Space, Spin, Statistic, Typography } from "antd";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { ContentLibraryAdapter, ContentLibraryController, ContentLibraryItem } from "./content-library-types";
@@ -9,9 +10,10 @@ const { Title, Text } = Typography;
 export type ContentLibraryShellProps<TItem extends ContentLibraryItem> = {
   adapter: ContentLibraryAdapter<TItem>;
   controller: ContentLibraryController<TItem>;
+  toolbarExtras?: ReactNode;
 };
 
-export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter, controller }: ContentLibraryShellProps<TItem>) {
+export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter, controller, toolbarExtras }: ContentLibraryShellProps<TItem>) {
   const emptyState = adapter.emptyState;
 
   return (
@@ -22,7 +24,11 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
           <Text type="secondary">{adapter.pageDescription}</Text>
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} onClick={() => void controller.refreshItems()} loading={controller.isLoading}>刷新</Button>
+          <Space wrap>
+            {toolbarExtras}
+            {adapter.renderToolbarExtras?.({ controller })}
+            <Button icon={<ReloadOutlined />} onClick={() => void controller.refreshItems()} loading={controller.isLoading}>刷新</Button>
+          </Space>
         </Col>
       </Row>
 

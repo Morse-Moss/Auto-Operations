@@ -130,6 +130,10 @@ export type ContentLibraryDetailRenderContext<TItem extends ContentLibraryItem =
   item: TItem;
 };
 
+export type ContentLibraryToolbarRenderContext<TItem extends ContentLibraryItem = ContentLibraryItem> = {
+  controller: ContentLibraryController<TItem>;
+};
+
 export type ContentLibraryAdapter<TItem extends ContentLibraryItem = ContentLibraryItem> = {
   platform: PlatformId;
   pageTitle: string;
@@ -156,6 +160,7 @@ export type ContentLibraryAdapter<TItem extends ContentLibraryItem = ContentLibr
   exportItems(itemIds: number[], format: ContentLibraryExportFormat): Promise<ContentLibraryExportResponse>;
   downloadExport(exportFile: ContentLibraryExportResponse): Promise<void>;
   getCopyText(item: TItem): string;
+  renderToolbarExtras?(context: ContentLibraryToolbarRenderContext<TItem>): ReactNode;
   renderCardGrid(context: ContentLibraryRenderContext<TItem>): ReactNode;
   renderTable(context: ContentLibraryRenderContext<TItem>): ReactNode;
   renderDetail(context: ContentLibraryDetailRenderContext<TItem>): ReactNode;
@@ -205,6 +210,7 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   setBatchTagId(value: string): void;
   setBatchActionMessage(value: string | null): void;
   setDetailActionMessage(value: string | null): void;
+  setDetailError(value: string | null): void;
   refreshItems(overrideFilters?: ContentLibraryFilters): Promise<void>;
   refreshTags(): Promise<void>;
   clearFilters(): void;
@@ -215,6 +221,8 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   setSelectedItemIds(itemIds: number[]): void;
   clearSelection(): void;
   openDetail(item: TItem): Promise<void>;
+  refreshSelectedItem(): Promise<TItem | null>;
+  replaceSelectedItem(item: TItem): void;
   closeDetail(): void;
   copySelectedItem(): Promise<void>;
   createDraft(intent: ContentLibraryDraftIntent): Promise<void>;

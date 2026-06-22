@@ -159,6 +159,29 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     }
   }, [adapter, resetComments]);
 
+  const refreshSelectedItem = useCallback(async () => {
+    if (!selectedItem) return null;
+    setIsDetailLoading(true);
+    setDetailError(null);
+    try {
+      const [detail, assets] = await Promise.all([adapter.loadItem(selectedItem.id), adapter.loadAssets(selectedItem.id)]);
+      setSelectedItem(detail);
+      setSelectedAssets(assets.items);
+      setItems((current) => current.map((item) => item.id === detail.id ? detail : item));
+      return detail;
+    } catch {
+      setDetailError(adapter.messages.detailLoadError);
+      return null;
+    } finally {
+      setIsDetailLoading(false);
+    }
+  }, [adapter, selectedItem]);
+
+  const replaceSelectedItem = useCallback((item: TItem) => {
+    setSelectedItem(item);
+    setItems((current) => current.map((entry) => entry.id === item.id ? item : entry));
+  }, []);
+
   const closeDetail = useCallback(() => {
     setIsDetailOpen(false);
     setSelectedItem(null);
@@ -438,6 +461,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setBatchTagId,
     setBatchActionMessage,
     setDetailActionMessage,
+    setDetailError,
     refreshItems,
     refreshTags,
     clearFilters,
@@ -448,6 +472,8 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setSelectedItemIds,
     clearSelection,
     openDetail,
+    refreshSelectedItem,
+    replaceSelectedItem,
     closeDetail,
     copySelectedItem,
     createDraft,

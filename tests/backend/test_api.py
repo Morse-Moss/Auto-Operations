@@ -336,6 +336,7 @@ def test_wechat_official_library_reuses_content_library_shell_without_publish_ac
     adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     shell_source = open("frontend/src/components/content-library/content-library-shell.tsx", encoding="utf-8").read()
+    controller_source = open("frontend/src/components/content-library/use-content-library.ts", encoding="utf-8").read()
 
     assert "WechatOfficialContentLibraryPanel" in dashboard_source
     assert "ContentLibraryShell" in panel_source
@@ -345,8 +346,14 @@ def test_wechat_official_library_reuses_content_library_shell_without_publish_ac
     assert "fetchWechatOfficialContentLibrary" in adapter_source
     assert "fetchWechatOfficialContentDetail" in adapter_source
     assert "deleteWechatOfficialContentLibraryItem" in adapter_source
+    assert "refreshWechatOfficialContentDetail" in adapter_source
+    assert "analyzeWechatOfficialHotspots" in adapter_source
     assert "createWechatOfficialDraft" in adapter_source
     assert "createDraftFromItem" in adapter_source
+    assert "WECHAT_DRAFT_TEMPLATES" in panel_source
+    assert "renderToolbarExtras" in shell_source
+    assert "refreshSelectedItem" in controller_source
+    assert "refreshSelectedItem" in adapter_source
     assert "createDraftFromNote" not in adapter_source
     assert "fetchDrafts" not in adapter_source
     assert "sendToPublish" not in adapter_source
@@ -359,6 +366,51 @@ def test_wechat_official_library_reuses_content_library_shell_without_publish_ac
     assert "adapter.capabilities.canTag" in shell_source
     assert "adapter.capabilities.canFilterAssets" in shell_source
     assert "adapter.capabilities.canFilterComments" in shell_source
+    assert "wechat" not in shell_source.lower()
+    assert "Redfox" not in shell_source
+    assert "hotspot" not in shell_source.lower()
+    assert "preview send" not in adapter_source.lower()
+    assert "sendPreview" not in adapter_source
+    assert "previewWechat" not in adapter_source
+    assert "PublishJob" not in adapter_source
+    assert '"/publish/jobs' not in adapter_source
+    assert '"/publish/assets' not in adapter_source
+
+
+def test_wechat_official_discovery_is_candidate_only_and_delegates_operations_to_library():
+    dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+    discovery_source = open("frontend/src/pages/wechat-official/wechat-official-discovery-panel.tsx", encoding="utf-8").read()
+    library_adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
+
+    assert "WechatOfficialDiscoveryPanel" in dashboard_source
+    assert "WechatOfficialContentLibraryPanel" in dashboard_source
+    assert "collectWechatOfficialRedfoxArticles" not in dashboard_source
+    assert "collectWechatOfficialRedfoxAccount" not in dashboard_source
+    assert "importWechatOfficialRedfoxUrl" not in dashboard_source
+    assert "updateWechatOfficialRecommendation" not in dashboard_source
+    assert "deleteWechatOfficialContentLibraryItem" not in dashboard_source
+    assert "refreshWechatOfficialContentDetail" not in dashboard_source
+    assert "analyzeWechatOfficialHotspots" not in dashboard_source
+    assert "createWechatOfficialDraft" not in dashboard_source
+    assert "dryRunWechatOfficialDraft" not in dashboard_source
+    assert "collectWechatOfficialRedfoxArticles" in discovery_source
+    assert "collectWechatOfficialRedfoxAccount" in discovery_source
+    assert "importWechatOfficialRedfoxUrl" in discovery_source
+    assert "updateWechatOfficialRecommendation" in discovery_source
+    assert "deleteWechatOfficialContentLibraryItem" in discovery_source
+    assert "去内容库" in discovery_source
+    assert "补全正文" not in discovery_source
+    assert "refreshWechatOfficialContentDetail" not in discovery_source
+    assert "analyzeWechatOfficialHotspots" not in discovery_source
+    assert "createWechatOfficialDraft" not in discovery_source
+    assert "dryRunWechatOfficialDraft" not in discovery_source
+    assert "PublishJob" not in discovery_source
+    assert "sendall" not in discovery_source.lower()
+    assert "sendToPublish" not in discovery_source
+    assert "uploadPublishAsset" not in discovery_source
+    assert "refreshWechatOfficialContentDetail" in library_adapter_source
+    assert "analyzeWechatOfficialHotspots" in library_adapter_source
+    assert "createWechatOfficialDraft" in library_adapter_source
 
 
 def test_discovery_cards_show_note_media_type():

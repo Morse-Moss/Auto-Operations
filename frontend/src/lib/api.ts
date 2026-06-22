@@ -442,6 +442,8 @@ export async function fetchWechatOfficialContentLibrary(params?: {
   recommendation_status?: string;
   pool_status?: string;
   keyword?: string;
+  page?: number;
+  page_size?: number;
 }): Promise<WechatOfficialListResponse<WechatOfficialContentLibraryItem>> {
   const response = await http.get<WechatOfficialListResponse<WechatOfficialContentLibraryItem>>(
     "/wechat-official/content-library",

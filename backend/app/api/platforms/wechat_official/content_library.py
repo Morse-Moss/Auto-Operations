@@ -24,6 +24,8 @@ def list_content_library(
     recommendation_status: Optional[str] = None,
     pool_status: Optional[str] = None,
     keyword: Optional[str] = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -36,6 +38,8 @@ def list_content_library(
             "recommendation_status": recommendation_status,
             "pool_status": pool_status,
             "keyword": keyword,
+            "page": page,
+            "page_size": page_size,
         },
     )
 

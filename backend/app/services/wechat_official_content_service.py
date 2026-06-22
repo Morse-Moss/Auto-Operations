@@ -52,6 +52,12 @@ class WechatOfficialContentService:
         self.db = db
 
     def list_content(self, user_id: int, filters: dict[str, Any]) -> dict[str, Any]:
+        pool_status = filters.get("pool_status")
+        if pool_status is not None and pool_status not in POOL_STATUSES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pool_status")
+
+        page = max(1, int(filters.get("page") or 1))
+        page_size = max(1, min(100, int(filters.get("page_size") or 20)))
         articles = self.db.scalars(select(WechatOfficialArticle).order_by(WechatOfficialArticle.updated_at.desc(), WechatOfficialArticle.id.desc())).all()
         items = []
         for article in articles:
@@ -69,13 +75,15 @@ class WechatOfficialContentService:
                 continue
             if filters.get("recommendation_status") and analysis.get("recommendation_status") != filters["recommendation_status"]:
                 continue
-            if filters.get("pool_status") and _pool_status(analysis) != filters["pool_status"]:
+            if pool_status and _pool_status(analysis) != pool_status:
                 continue
             keyword = str(filters.get("keyword") or "").strip()
-            if keyword and keyword not in article.title and keyword not in article.digest:
+            if keyword and not _matches_keyword(article, keyword):
                 continue
             items.append(serialize_article(article, latest_metric=metric_payload, analysis=analysis))
-        return {"items": items, "total": len(items)}
+        total = len(items)
+        start = (page - 1) * page_size
+        return {"items": items[start : start + page_size], "total": total, "page": page, "page_size": page_size}
 
     def update_recommendation(self, user_id: int, article_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         article = WechatOfficialCrawlService(self.db)._get_owned_article(user_id, article_id)
@@ -227,6 +235,12 @@ def _validate_analysis_payload(payload: dict[str, Any]) -> None:
 
 def _pool_status(analysis: dict[str, Any]) -> str:
     return str(analysis.get("pool_status") or analysis.get("recommendation_status") or "candidate")
+
+
+def _matches_keyword(article: WechatOfficialArticle, keyword: str) -> bool:
+    normalized = keyword.casefold()
+    fields = [article.title, article.digest, article.author_name]
+    return any(normalized in str(value or "").casefold() for value in fields)
 
 
 def _serialize_snapshot_detail(snapshot: WechatOfficialArticleSnapshot) -> dict[str, Any]:
