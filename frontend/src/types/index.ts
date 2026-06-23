@@ -171,10 +171,20 @@ export type WechatOfficialCrawlAccount = {
 
 export type WechatOfficialCrawlJob = {
   id: number;
+  account_id?: number | null;
+  proxy_node_id?: number | null;
+  keyword?: string | null;
   status: "running" | "succeeded" | "failed" | string;
+  source?: "redfox" | "backend" | string;
   requested_limit: number;
   fetched_count: number;
   saved_count: number;
+  error_message?: string;
+  params?: Record<string, unknown>;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type WechatOfficialArticleMetric = {
@@ -458,6 +468,19 @@ export type WechatOfficialRedfoxCollectResponse = {
   summary: WechatOfficialRedfoxCollectSummary;
   job: WechatOfficialCrawlJob & { source?: string };
   items: WechatOfficialContentLibraryItem[];
+};
+
+export type WechatOfficialRedfoxCollectJobListResponse = {
+  items: WechatOfficialCrawlJob[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type WechatOfficialRedfoxCollectJobDetail = {
+  job: WechatOfficialCrawlJob;
+  items: WechatOfficialContentLibraryItem[];
+  total: number;
 };
 
 export type Paginated<T> = {

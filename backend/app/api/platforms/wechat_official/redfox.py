@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from backend.app.api.platforms.wechat_official.schemas import (
@@ -30,6 +32,22 @@ def save_redfox_config(payload: WechatOfficialRedfoxConfigRequest, current_user:
 @router.post("/config/validate")
 def validate_redfox_config(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return WechatOfficialRedfoxService(db).validate_config(current_user.id)
+
+
+@router.get("/collect/jobs")
+def list_redfox_collect_jobs(
+    source_label: Optional[str] = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return WechatOfficialRedfoxService(db).list_collect_jobs(current_user.id, {"source_label": source_label, "page": page, "page_size": page_size})
+
+
+@router.get("/collect/jobs/{job_id}")
+def get_redfox_collect_job(job_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WechatOfficialRedfoxService(db).get_collect_job(current_user.id, job_id)
 
 
 @router.post("/collect/articles")

@@ -190,7 +190,24 @@ def serialize_crawl_account(account: WechatOfficialCrawlAccount) -> dict[str, An
 
 
 def serialize_crawl_job(job: WechatOfficialCrawlJob) -> dict[str, Any]:
-    return {"id": job.id, "status": job.status, "requested_limit": job.requested_limit, "fetched_count": job.fetched_count, "saved_count": job.saved_count}
+    params = job.params_json if isinstance(job.params_json, dict) else {}
+    return {
+        "id": job.id,
+        "account_id": job.account_id,
+        "proxy_node_id": job.proxy_node_id,
+        "keyword": job.keyword,
+        "status": job.status,
+        "source": job.source,
+        "requested_limit": job.requested_limit,
+        "fetched_count": job.fetched_count,
+        "saved_count": job.saved_count,
+        "error_message": job.error_message,
+        "params": params,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
 
 
 def serialize_article(article: WechatOfficialArticle, *, latest_metric: dict[str, Any] | None, analysis: dict[str, Any]) -> dict[str, Any]:

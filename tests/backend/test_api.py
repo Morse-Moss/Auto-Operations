@@ -495,6 +495,40 @@ def test_wechat_official_discovery_is_candidate_only_and_delegates_operations_to
     assert "createWechatOfficialDraft" in library_adapter_source
 
 
+def test_wechat_official_redfox_collect_jobs_frontend_contract():
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    discovery_source = open("frontend/src/pages/wechat-official/wechat-official-discovery-panel.tsx", encoding="utf-8").read()
+
+    assert "fetchWechatOfficialRedfoxCollectJobs" in api_source
+    assert '"/wechat-official/redfox/collect/jobs"' in api_source
+    assert "fetchWechatOfficialRedfoxCollectJob" in api_source
+    assert "`/wechat-official/redfox/collect/jobs/${jobId}`" in api_source
+    assert "job_id?: number" in api_source
+
+    assert "export type WechatOfficialRedfoxCollectJobListResponse" in types_source
+    assert "export type WechatOfficialRedfoxCollectJobDetail" in types_source
+    assert "params?: Record<string, unknown>" in types_source
+    assert "started_at?: string | null" in types_source
+    assert "finished_at?: string | null" in types_source
+
+    assert "采集记录" in discovery_source
+    assert "selectedJobId" in discovery_source
+    assert "setSelectedJobId" in discovery_source
+    assert "fetchWechatOfficialRedfoxCollectJobs" in discovery_source
+    assert "job_id: effectiveJobId ?? undefined" in discovery_source
+    assert "查看全部候选" in discovery_source or "清除批次" in discovery_source
+    assert "批次 #" in discovery_source
+
+    assert "PublishJob" not in discovery_source
+    assert "sendall" not in discovery_source.lower()
+    assert "sendToPublish" not in discovery_source
+    assert "uploadPublishAsset" not in discovery_source
+    assert "refreshWechatOfficialContentDetail" not in discovery_source
+    assert "analyzeWechatOfficialHotspots" not in discovery_source
+    assert "createWechatOfficialDraft" not in discovery_source
+
+
 def test_discovery_cards_show_note_media_type():
     source = open("frontend/src/pages/platforms/xhs/discovery-page.tsx", encoding="utf-8").read()
 

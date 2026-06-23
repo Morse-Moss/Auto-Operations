@@ -14,6 +14,7 @@ from backend.app.models import (
     WechatOfficialArticleMetric,
     WechatOfficialArticleSnapshot,
     WechatOfficialCrawlAccount,
+    WechatOfficialCrawlJob,
 )
 from backend.app.services import wechat_official_content_service
 from backend.app.services import wechat_official_redfox_service as redfox_service
@@ -258,6 +259,65 @@ def test_content_library_list_paginates_searches_author_and_validates_pool_statu
 
         invalid = client.get("/api/wechat-official/content-library?pool_status=published", headers=headers)
         assert invalid.status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_filters_by_job_id_for_owned_articles(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("content-library-job-filter-user")
+        first_id = _create_article(headers, title="第一批文章", url="https://mp.weixin.qq.com/s/job-filter-1", read_count=120000)
+        second_id = _create_article(headers, title="第二批文章", url="https://mp.weixin.qq.com/s/job-filter-2", read_count=130000)
+
+        with TestingSessionLocal() as db:
+            first = db.get(WechatOfficialArticle, first_id)
+            second = db.get(WechatOfficialArticle, second_id)
+            assert first is not None
+            assert second is not None
+
+            first_job = WechatOfficialCrawlJob(
+                account_id=first.account_id,
+                keyword="第一批",
+                status="succeeded",
+                source="redfox",
+                requested_limit=1,
+                fetched_count=1,
+                saved_count=1,
+                params_json={"source": "redfox_keyword", "api_calls": 1},
+            )
+            second_job = WechatOfficialCrawlJob(
+                account_id=second.account_id,
+                keyword="第二批",
+                status="succeeded",
+                source="redfox",
+                requested_limit=1,
+                fetched_count=1,
+                saved_count=1,
+                params_json={"source": "redfox_keyword", "api_calls": 1},
+            )
+            db.add(first_job)
+            db.add(second_job)
+            db.flush()
+            first.job_id = first_job.id
+            second.job_id = second_job.id
+            db.commit()
+            first_job_id = first_job.id
+            second_job_id = second_job.id
+
+        first_response = client.get(f"/api/wechat-official/content-library?job_id={first_job_id}", headers=headers)
+        assert first_response.status_code == 200
+        assert first_response.json()["total"] == 1
+        assert first_response.json()["items"][0]["id"] == first_id
+        assert first_response.json()["items"][0]["job_id"] == first_job_id
+
+        second_response = client.get(f"/api/wechat-official/content-library?job_id={second_job_id}", headers=headers)
+        assert second_response.status_code == 200
+        assert second_response.json()["total"] == 1
+        assert second_response.json()["items"][0]["id"] == second_id
+
+        invalid = client.get("/api/wechat-official/content-library?job_id=0", headers=headers)
+        assert invalid.status_code == 422
     finally:
         app.dependency_overrides.pop(get_db, None)
 

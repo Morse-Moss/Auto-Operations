@@ -58,9 +58,12 @@ class WechatOfficialContentService:
 
         page = max(1, int(filters.get("page") or 1))
         page_size = max(1, min(100, int(filters.get("page_size") or 20)))
+        job_id = filters.get("job_id")
         articles = self.db.scalars(select(WechatOfficialArticle).order_by(WechatOfficialArticle.updated_at.desc(), WechatOfficialArticle.id.desc())).all()
         items = []
         for article in articles:
+            if job_id is not None and article.job_id != int(job_id):
+                continue
             if not self._is_owned(user_id, article):
                 continue
             latest_metric = self._latest_metric(article.id)

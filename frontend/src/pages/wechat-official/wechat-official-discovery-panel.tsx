@@ -30,12 +30,14 @@ import {
   collectWechatOfficialRedfoxArticles,
   deleteWechatOfficialContentLibraryItem,
   fetchWechatOfficialContentLibrary,
+  fetchWechatOfficialRedfoxCollectJobs,
   importWechatOfficialRedfoxUrl,
   updateWechatOfficialRecommendation,
 } from "../../lib/api";
 
 import type {
   WechatOfficialContentLibraryItem,
+  WechatOfficialCrawlJob,
   WechatOfficialPoolStatus,
   WechatOfficialRedfoxCollectResponse,
 } from "../../types";
@@ -83,6 +85,7 @@ type BatchKeywordResult = {
   keyword: string;
   status: "succeeded" | "failed";
   summary?: WechatOfficialRedfoxCollectResponse["summary"];
+  job?: WechatOfficialRedfoxCollectResponse["job"];
   error?: string;
 };
 
@@ -149,6 +152,33 @@ function candidateSummary(article: WechatOfficialContentLibraryItem): string {
   return article.digest || article.article_url || "暂无摘要";
 }
 
+function collectJobParam(job: WechatOfficialCrawlJob, key: string): unknown {
+  return job.params?.[key];
+}
+
+function jobSourceLabel(job: WechatOfficialCrawlJob): string {
+  const source = String(collectJobParam(job, "source") || "");
+  if (source === "redfox_keyword") return "关键词";
+  if (source === "redfox_account") return "公众号";
+  if (source === "redfox_url") return "URL";
+  return "Redfox";
+}
+
+function formatJobTime(job: WechatOfficialCrawlJob): string {
+  return job.finished_at || job.started_at || job.created_at || "";
+}
+
+function jobSummary(job: WechatOfficialCrawlJob): string {
+  const details = [`拉取 ${job.fetched_count}`, `保存 ${job.saved_count}`];
+  const apiCalls = collectJobParam(job, "api_calls");
+  const matched = collectJobParam(job, "relevance_matched");
+  const filtered = collectJobParam(job, "filtered");
+  if (apiCalls !== undefined) details.push(`API ${String(apiCalls)}`);
+  if (matched !== undefined) details.push(`相关 ${String(matched)}`);
+  if (filtered !== undefined) details.push(`过滤 ${String(filtered)}`);
+  return details.join(" / ");
+}
+
 export function WechatOfficialDiscoveryPanel() {
   const [items, setItems] = useState<WechatOfficialContentLibraryItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -156,6 +186,9 @@ export function WechatOfficialDiscoveryPanel() {
   const [mode, setMode] = useState<RedfoxMode>("keyword");
   const [poolFilter, setPoolFilter] = useState<string>("all");
   const [lastCollectResult, setLastCollectResult] = useState<WechatOfficialRedfoxCollectResponse | null>(null);
+  const [jobs, setJobs] = useState<WechatOfficialCrawlJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [batchResults, setBatchResults] = useState<BatchKeywordResult[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selectedArticle, setSelectedArticle] = useState<WechatOfficialContentLibraryItem | null>(null);
@@ -169,21 +202,38 @@ export function WechatOfficialDiscoveryPanel() {
   const batchTargetCount = Number(Form.useWatch("target_count", batchForm) || DEFAULT_TARGET_COUNT);
   const batchMaxPages = Number(Form.useWatch("max_pages", batchForm) || DEFAULT_MAX_PAGES);
 
-  const refreshCandidates = useCallback(async () => {
+  const refreshCandidates = useCallback(async (jobIdOverride?: number | null) => {
     setLoading(true);
     try {
-      const response = await fetchWechatOfficialContentLibrary({ page_size: 100 });
+      const effectiveJobId = jobIdOverride === undefined ? selectedJobId : jobIdOverride;
+      const response = await fetchWechatOfficialContentLibrary({ page_size: 100, job_id: effectiveJobId ?? undefined });
       setItems(response.items);
     } catch (error) {
       message.error(apiErrorMessage(error, "候选文章读取失败"));
     } finally {
       setLoading(false);
     }
+  }, [selectedJobId]);
+
+  const refreshJobs = useCallback(async () => {
+    setJobsLoading(true);
+    try {
+      const response = await fetchWechatOfficialRedfoxCollectJobs({ page_size: 20 });
+      setJobs(response.items);
+    } catch (error) {
+      message.error(apiErrorMessage(error, "采集记录读取失败"));
+    } finally {
+      setJobsLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     void refreshCandidates();
   }, [refreshCandidates]);
+
+  useEffect(() => {
+    void refreshJobs();
+  }, [refreshJobs]);
 
   const discoveryItems = useMemo(
     () => items.filter((item) => {
@@ -222,6 +272,16 @@ export function WechatOfficialDiscoveryPanel() {
     setDetailOpen(true);
   };
 
+  const selectCollectJob = (job: WechatOfficialCrawlJob) => {
+    setSelectedJobId(job.id);
+    void refreshCandidates(job.id);
+  };
+
+  const clearCollectJobFilter = () => {
+    setSelectedJobId(null);
+    void refreshCandidates(null);
+  };
+
   const handleKeywordCollect = () => runAction("collect-keyword", "关键词爆文收集完成", async () => {
     const values = await keywordForm.validateFields();
     const response = await collectWechatOfficialRedfoxArticles({
@@ -233,7 +293,9 @@ export function WechatOfficialDiscoveryPanel() {
       save_snapshot: true,
     });
     setLastCollectResult(response);
-    await refreshCandidates();
+    setSelectedJobId(response.job.id);
+    await refreshJobs();
+    await refreshCandidates(response.job.id);
   });
 
   const handleBatchCollect = () => runAction("collect-batch", "批量关键词计划执行完成", async () => {
@@ -251,14 +313,21 @@ export function WechatOfficialDiscoveryPanel() {
           min_read_count: values.min_read_count ?? DEFAULT_MIN_READ,
           save_snapshot: true,
         });
-        results.push({ keyword, status: "succeeded", summary: response.summary });
+        results.push({ keyword, status: "succeeded", summary: response.summary, job: response.job });
         setLastCollectResult(response);
       } catch (error) {
         results.push({ keyword, status: "failed", error: error instanceof Error ? error.message : "收集失败" });
       }
       setBatchResults([...results]);
     }
-    await refreshCandidates();
+    const lastSuccess = [...results].reverse().find((item) => item.status === "succeeded" && item.job);
+    if (lastSuccess?.job?.id) {
+      setSelectedJobId(lastSuccess.job.id);
+      await refreshCandidates(lastSuccess.job.id);
+    } else {
+      await refreshCandidates();
+    }
+    await refreshJobs();
     if (results.some((item) => item.status === "failed")) message.warning("部分关键词收集失败，已保留成功结果。");
   });
 
@@ -276,7 +345,9 @@ export function WechatOfficialDiscoveryPanel() {
       save_snapshot: true,
     });
     setLastCollectResult(response);
-    await refreshCandidates();
+    setSelectedJobId(response.job.id);
+    await refreshJobs();
+    await refreshCandidates(response.job.id);
   });
 
   const handleUrlImport = () => runAction("import-url", "文章 URL 已作为候选保存", async () => {
@@ -287,7 +358,9 @@ export function WechatOfficialDiscoveryPanel() {
       save_snapshot: true,
     });
     setLastCollectResult(response);
-    await refreshCandidates();
+    setSelectedJobId(response.job.id);
+    await refreshJobs();
+    await refreshCandidates(response.job.id);
   });
 
   const handleShortlist = (article: WechatOfficialContentLibraryItem) => runAction(`status-${article.id}-shortlisted`, "已入库，可去内容库继续补素材、拆解和生成草稿", async () => {
@@ -403,11 +476,49 @@ export function WechatOfficialDiscoveryPanel() {
       </Card>
 
       <Card
+        title="采集记录"
+        style={cardStyle}
+        extra={(
+          <Space wrap>
+            {selectedJobId ? <Button onClick={clearCollectJobFilter}>查看全部候选</Button> : null}
+            <Button loading={jobsLoading} onClick={() => void refreshJobs()}>刷新记录</Button>
+          </Space>
+        )}
+      >
+        {jobs.length === 0 ? (
+          <Alert showIcon type="info" message="暂无采集记录" description="完成 Redfox 采集后，这里会显示可追溯批次；点击批次可筛选候选池。" />
+        ) : (
+          <List
+            loading={jobsLoading}
+            dataSource={jobs}
+            renderItem={(job) => (
+              <List.Item
+                onClick={() => selectCollectJob(job)}
+                style={{ cursor: "pointer", background: selectedJobId === job.id ? "rgba(22,119,255,.12)" : undefined, paddingInline: 12 }}
+              >
+                <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                  <Space wrap>
+                    <Tag color={statusColor(job.status)}>{job.status}</Tag>
+                    <Tag color="blue">{jobSourceLabel(job)}</Tag>
+                    <Text strong>{job.keyword || `Job #${job.id}`}</Text>
+                    <Text type="secondary">批次 #{job.id}</Text>
+                  </Space>
+                  <Text type="secondary">{jobSummary(job)}{formatJobTime(job) ? ` · ${formatJobTime(job)}` : ""}</Text>
+                </Space>
+              </List.Item>
+            )}
+          />
+        )}
+      </Card>
+
+      <Card
         title="候选发现池"
         style={cardStyle}
         extra={(
           <Space wrap>
+            {selectedJobId ? <Tag color="processing">批次 #{selectedJobId}</Tag> : null}
             <Select value={poolFilter} onChange={setPoolFilter} style={{ width: 140 }} options={[{ value: "all", label: "全部状态" }, ...POOL_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }))]} />
+            {selectedJobId ? <Button onClick={clearCollectJobFilter}>清除批次</Button> : null}
             <Button loading={loading} onClick={() => void refreshCandidates()}>刷新候选</Button>
             <Link to="/platforms/wechat-official/library"><Button type="primary">去内容库</Button></Link>
           </Space>

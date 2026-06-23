@@ -115,6 +115,8 @@ import type {
   WechatOfficialQrLoginSession,
   WechatOfficialRecommendationUpdatePayload,
   WechatOfficialRedfoxAccountCollectPayload,
+  WechatOfficialRedfoxCollectJobDetail,
+  WechatOfficialRedfoxCollectJobListResponse,
   WechatOfficialRedfoxCollectResponse,
   WechatOfficialRedfoxConfigPayload,
   WechatOfficialRedfoxConfigResponse,
@@ -382,6 +384,23 @@ export async function importWechatOfficialRedfoxUrl(
   return response.data;
 }
 
+export async function fetchWechatOfficialRedfoxCollectJobs(params?: {
+  source_label?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<WechatOfficialRedfoxCollectJobListResponse> {
+  const response = await http.get<WechatOfficialRedfoxCollectJobListResponse>(
+    "/wechat-official/redfox/collect/jobs",
+    { params }
+  );
+  return response.data;
+}
+
+export async function fetchWechatOfficialRedfoxCollectJob(jobId: number): Promise<WechatOfficialRedfoxCollectJobDetail> {
+  const response = await http.get<WechatOfficialRedfoxCollectJobDetail>(`/wechat-official/redfox/collect/jobs/${jobId}`);
+  return response.data;
+}
+
 export async function testWechatOfficialProxy(
   proxyId: number,
   payload: WechatOfficialProxyTestPayload
@@ -447,6 +466,7 @@ export async function fetchWechatOfficialContentLibrary(params?: {
   recommendation_status?: string;
   pool_status?: string;
   keyword?: string;
+  job_id?: number;
   page?: number;
   page_size?: number;
 }): Promise<WechatOfficialListResponse<WechatOfficialContentLibraryItem>> {

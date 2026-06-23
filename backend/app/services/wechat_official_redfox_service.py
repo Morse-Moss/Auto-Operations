@@ -25,7 +25,7 @@ from backend.app.models import (
     WechatOfficialRedfoxConfig,
 )
 from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
-from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_metric
+from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_crawl_job, serialize_metric
 from backend.app.services.wechat_official_redfox_client import RedfoxApiError, WechatOfficialRedfoxClient
 
 DEFAULT_REDFOX_BASE_URL = "https://redfox.hk"
@@ -34,6 +34,7 @@ DEFAULT_TARGET_COUNT = 10
 MAX_TARGET_COUNT = 50
 MAX_PAGES = 3
 MAX_KEYWORD_AUTO_PAGES = 5
+COLLECT_SOURCE_LABELS = {"redfox_keyword", "redfox_account", "redfox_url"}
 
 
 class WechatOfficialRedfoxService:
@@ -100,6 +101,59 @@ class WechatOfficialRedfoxService:
         if config.status == "valid":
             return {"ok": True, "config": serialize_redfox_config(config), "message": "Redfox 配置可用"}
         return {"ok": False, "config": serialize_redfox_config(config), "message": config.last_error}
+
+    def list_collect_jobs(self, user_id: int, filters: dict[str, Any]) -> dict[str, Any]:
+        page = max(1, int(filters.get("page") or 1))
+        page_size = max(1, min(100, int(filters.get("page_size") or 20)))
+        source_label = str(filters.get("source_label") or "").strip()
+        owned_job_ids = (
+            select(WechatOfficialArticle.job_id)
+            .join(WechatOfficialCrawlAccount, WechatOfficialArticle.account_id == WechatOfficialCrawlAccount.id)
+            .where(WechatOfficialCrawlAccount.user_id == user_id, WechatOfficialArticle.job_id.is_not(None))
+            .distinct()
+        )
+        jobs = self.db.scalars(
+            select(WechatOfficialCrawlJob)
+            .where(WechatOfficialCrawlJob.source == "redfox", WechatOfficialCrawlJob.id.in_(owned_job_ids))
+            .order_by(WechatOfficialCrawlJob.created_at.desc(), WechatOfficialCrawlJob.id.desc())
+        ).all()
+        items = []
+        for job in jobs:
+            params = job.params_json if isinstance(job.params_json, dict) else {}
+            label = str(params.get("source") or "")
+            if label not in COLLECT_SOURCE_LABELS:
+                continue
+            if source_label and label != source_label:
+                continue
+            items.append(serialize_crawl_job(job))
+        total = len(items)
+        start = (page - 1) * page_size
+        return {"items": items[start : start + page_size], "total": total, "page": page, "page_size": page_size}
+
+    def get_collect_job(self, user_id: int, job_id: int) -> dict[str, Any]:
+        job = self.db.get(WechatOfficialCrawlJob, job_id)
+        if job is None or job.source != "redfox":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Redfox collect job not found")
+        params = job.params_json if isinstance(job.params_json, dict) else {}
+        if str(params.get("source") or "") not in COLLECT_SOURCE_LABELS:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Redfox collect job not found")
+        articles = self.db.scalars(
+            select(WechatOfficialArticle)
+            .join(WechatOfficialCrawlAccount, WechatOfficialArticle.account_id == WechatOfficialCrawlAccount.id)
+            .where(
+                WechatOfficialArticle.job_id == job_id,
+                WechatOfficialCrawlAccount.user_id == user_id,
+            )
+            .order_by(WechatOfficialArticle.updated_at.desc(), WechatOfficialArticle.id.desc())
+        ).all()
+        if not articles:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Redfox collect job not found")
+        items = []
+        for article in articles:
+            latest_metric = self._latest_metric(article.id)
+            analysis = dict((article.raw_json or {}).get("analysis") or {})
+            items.append(serialize_article(article, latest_metric=serialize_metric(latest_metric) if latest_metric else None, analysis=analysis))
+        return {"job": serialize_crawl_job(job), "items": items, "total": len(items)}
 
     def collect_articles(self, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         keyword = str(payload.get("keyword") or "").strip()
@@ -351,7 +405,7 @@ class WechatOfficialRedfoxService:
             summary.update(summary_extra)
         return {
             "summary": summary,
-            "job": {"id": job.id, "source": job.source, "status": job.status},
+            "job": serialize_crawl_job(job),
             "items": items,
         }
 
