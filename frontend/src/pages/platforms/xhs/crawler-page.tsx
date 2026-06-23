@@ -10,7 +10,7 @@ import {
   SearchOutlined,
   SettingOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Form, Input, InputNumber, Radio, Row, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Form, Input, InputNumber, Radio, Row, Select, Space, Spin, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -419,7 +419,7 @@ export function XhsCrawlerPage() {
       setProgressMsg(null);
     } catch (err: unknown) {
       const axiosErr = err as { message?: string };
-      setError(axiosErr?.message || "关键词组采集失败");
+      setError(axiosErr?.message || "按关键词组采集失败");
     }
     finally { setIsRunning(false); }
   }
@@ -508,13 +508,47 @@ export function XhsCrawlerPage() {
         </Col>
       </Row>
 
-      <Card style={{ marginBottom: 24 }}>
+      <Tabs
+        defaultActiveKey="xhs"
+        items={[
+          {
+            key: "huitun",
+            label: "灰豚热词采集",
+            children: (
+              <Card>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="灰豚热词采集"
+                  description="灰豚用于发现热词和候选关键词，结果会导入关键词组，不直接进入内容库。"
+                  style={{ marginBottom: 16 }}
+                />
+                <Space wrap>
+                  <Link to="/platforms/xhs/keywords"><Button type="primary">去导入灰豚热词</Button></Link>
+                  <Text type="secondary">获取灰豚候选词、手工导入灰豚热词和关键词组管理统一在热词页完成。</Text>
+                </Space>
+              </Card>
+            ),
+          },
+          {
+            key: "xhs",
+            label: "小红书站内采集",
+            children: (
+              <>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="小红书站内采集"
+                  description="小红书站内采集用于按关键词组或临时关键词搜索抓取笔记内容，结果可保存到内容库。"
+                  style={{ marginBottom: 16 }}
+                />
+                <Card style={{ marginBottom: 24 }}>
         <Form layout="vertical" onFinish={() => void handleRun()}>
           <Alert
             type="info"
             showIcon
             message="选择采集通道"
-            description="关键词组适合计划内批量采集；手动关键词适合临时验证选题。系统会低频搜索、获取详情，只保存有效内容，并在结束后汇总保存和跳过原因。"
+            description="关键词组适合计划内批量采集；临时关键词搜索适合临时验证选题。系统会低频搜索、获取详情，只保存有效内容，并在结束后汇总保存和跳过原因。"
             style={{ marginBottom: 16 }}
           />
 
@@ -537,8 +571,8 @@ export function XhsCrawlerPage() {
             <Col xs={24} md={16}>
               <Form.Item label="采集通道">
                 <Radio.Group value={crawlChannel} onChange={(e) => handleChannelChange(e.target.value as CrawlChannel)}>
-                  <Radio.Button value="keyword_group">关键词组采集</Radio.Button>
-                  <Radio.Button value="manual_keyword">手动关键词</Radio.Button>
+                  <Radio.Button value="keyword_group">按关键词组采集</Radio.Button>
+                  <Radio.Button value="manual_keyword">临时关键词搜索</Radio.Button>
                 </Radio.Group>
               </Form.Item>
             </Col>
@@ -596,7 +630,7 @@ export function XhsCrawlerPage() {
                   <Alert
                     type="success"
                     showIcon
-                    message="手动关键词采集"
+                    message="临时关键词搜索采集"
                     description="输入一个关键词后，系统会按搜索结果抓取详情。适合临时验证选题、探索新关键词。"
                     style={{ marginBottom: 16 }}
                   />
@@ -725,7 +759,7 @@ export function XhsCrawlerPage() {
 
           {isKeywordGroupMode ? (
             <Text type="secondary" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
-              关键词组采集会按既有规则自动保存有效内容；此手动开关不影响关键词组模式。
+              按关键词组采集会按既有规则自动保存有效内容；此手动开关不影响关键词组模式。
             </Text>
           ) : null}
           {!isKeywordGroupMode && mode !== "comments" && saveToLibraryChecked ? (
@@ -791,6 +825,11 @@ export function XhsCrawlerPage() {
           />
         )}
       </Card>
+              </>
+            ),
+          },
+        ]}
+      />
     </div>
   );
 }

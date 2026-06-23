@@ -39,6 +39,11 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
   const [selectedTagFilter, setSelectedTagFilter] = useState("");
   const [hasAssetsFilter, setHasAssetsFilter] = useState(false);
   const [hasCommentsFilter, setHasCommentsFilter] = useState(false);
+  const [feishuPushStatusFilter, setFeishuPushStatusFilter] = useState("");
+  const [analysisStatusFilter, setAnalysisStatusFilter] = useState("");
+  const [contentTypeFilter, setContentTypeFilter] = useState("");
+  const [reuseValueFilter, setReuseValueFilter] = useState("");
+  const [reusableModelFilter, setReusableModelFilter] = useState("");
   const [sortBy, setSortBy] = useState(adapter.defaultSortBy);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(adapter.pageSize);
@@ -68,6 +73,11 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
       tag_id: selectedTagFilter ? Number(selectedTagFilter) : undefined,
       has_assets: hasAssetsFilter || undefined,
       has_comments: hasCommentsFilter || undefined,
+      feishu_push_status: feishuPushStatusFilter || undefined,
+      analysis_status: analysisStatusFilter || undefined,
+      content_type: contentTypeFilter || undefined,
+      reuse_value: reuseValueFilter || undefined,
+      reusable_model: reusableModelFilter || undefined,
       sort_by: sortBy,
       page,
       page_size: pageSize,
@@ -86,7 +96,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     } finally {
       setIsLoading(false);
     }
-  }, [adapter, hasAssetsFilter, hasCommentsFilter, keywordFilter, page, pageSize, selectedTagFilter, sortBy]);
+  }, [adapter, analysisStatusFilter, contentTypeFilter, feishuPushStatusFilter, hasAssetsFilter, hasCommentsFilter, keywordFilter, page, pageSize, reusableModelFilter, reuseValueFilter, selectedTagFilter, sortBy]);
 
   const refreshTags = useCallback(async () => {
     try {
@@ -107,8 +117,13 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setSelectedTagFilter("");
     setHasAssetsFilter(false);
     setHasCommentsFilter(false);
+    setFeishuPushStatusFilter("");
+    setAnalysisStatusFilter("");
+    setContentTypeFilter("");
+    setReuseValueFilter("");
+    setReusableModelFilter("");
     setPage(1);
-    void refreshItems({ q: undefined, tag_id: undefined, has_assets: undefined, has_comments: undefined, page: 1 });
+    void refreshItems({ q: undefined, tag_id: undefined, has_assets: undefined, has_comments: undefined, feishu_push_status: undefined, analysis_status: undefined, content_type: undefined, reuse_value: undefined, reusable_model: undefined, page: 1 });
   }, [refreshItems]);
 
   const handleSortChange = useCallback((nextSortBy: ContentLibraryFilters["sort_by"]) => {
@@ -442,6 +457,11 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     selectedTagFilter,
     hasAssetsFilter,
     hasCommentsFilter,
+    feishuPushStatusFilter,
+    analysisStatusFilter,
+    contentTypeFilter,
+    reuseValueFilter,
+    reusableModelFilter,
     sortBy,
     page,
     pageSize,
@@ -456,6 +476,11 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setSelectedTagFilter,
     setHasAssetsFilter,
     setHasCommentsFilter,
+    setFeishuPushStatusFilter,
+    setAnalysisStatusFilter,
+    setContentTypeFilter,
+    setReuseValueFilter,
+    setReusableModelFilter,
     setViewMode,
     setNewTagName,
     setBatchTagId,

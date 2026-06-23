@@ -1,11 +1,11 @@
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, hash_password
 from backend.app.main import app
-from backend.app.models import Note, User
+from backend.app.models import Note, NoteAnalysisResult, User
 
 client = TestClient(app)
 
@@ -96,5 +96,54 @@ def test_notes_library_sorts_by_interaction_metrics_and_paginates(tmp_path):
         collects_response = client.get("/api/notes", headers=headers, params={"platform": "xhs", "sort_by": "collects", "page_size": 3})
         assert collects_response.status_code == 200
         assert collects_response.json()["items"][0]["note_id"] == "note-collect-top"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_notes_library_filters_by_feishu_analysis_fields(tmp_path):
+    SessionLocal = _override_database(tmp_path)
+    try:
+        user_id = _create_user_and_notes(SessionLocal)
+        db = SessionLocal()
+        try:
+            note = db.scalar(select(Note).where(Note.note_id == "note-like-top"))
+            result = NoteAnalysisResult(
+                user_id=user_id,
+                note_id=note.id,
+                source="feishu",
+                analysis_status="已完成",
+                content_type="种草",
+                reuse_value="可直接改写",
+                reusable_models=["问题驱动模型", "场景种草模型"],
+                push_status="synced",
+            )
+            db.add(result)
+            db.commit()
+        finally:
+            db.close()
+        headers = {"Authorization": f"Bearer {create_access_token(user_id)}"}
+
+        response = client.get(
+            "/api/notes",
+            headers=headers,
+            params={
+                "platform": "xhs",
+                "feishu_push_status": "synced",
+                "analysis_status": "已完成",
+                "content_type": "种草",
+                "reuse_value": "可直接改写",
+                "reusable_model": "问题驱动模型",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        item = payload["items"][0]
+        assert item["note_id"] == "note-like-top"
+        assert item["feishu_sync"]["push_status"] == "synced"
+        assert item["analysis_result"]["analysis_status"] == "已完成"
+        assert item["analysis_result"]["content_type"] == "种草"
+        assert "问题驱动模型" in item["analysis_result"]["reusable_models"]
     finally:
         app.dependency_overrides.pop(get_db, None)
