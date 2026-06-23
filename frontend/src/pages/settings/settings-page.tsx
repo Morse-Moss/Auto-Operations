@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { ApiOutlined, HeartOutlined, SafetyCertificateOutlined, WarningOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Col, Form, Image, Input, message, Row, Space, Switch, Typography } from "antd";
+import { ApiOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Col, Form, Input, message, Row, Space, Switch, Typography } from "antd";
 
 import { PageHeader } from "../../components/layout/app-shell";
 import { ensureFeishuFields, fetchFeishuConfig, saveFeishuConfig, testFeishuConnection } from "../../lib/api";
 import type { FeishuIntegrationConfigPayload } from "../../types";
 
-const { Paragraph, Text } = Typography;
+const { Paragraph } = Typography;
 
 type FeishuConfigFormValues = FeishuIntegrationConfigPayload;
 
@@ -97,27 +97,6 @@ export function SettingsPage() {
           </Card>
         </Col>
 
-        <Col xs={24} lg={12}>
-          <Card
-            title={<span><WarningOutlined style={{ marginRight: 8, color: "#faad14" }} />项目声明</span>}
-          >
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 12 }}
-              message="Spider_XHS 为开源学习项目，仅供技术研究和个人学习使用"
-            />
-            <Paragraph>
-              <ul style={{ paddingLeft: 20, margin: 0 }}>
-                <li><Text strong>禁止任何形式的商业化使用</Text>，包括但不限于出售、转卖、收费服务</li>
-                <li><Text strong>禁止用于任何违法违规活动</Text>，包括但不限于数据贩卖、恶意爬取、侵犯隐私</li>
-                <li>使用者需自行承担因使用本项目产生的一切法律责任</li>
-                <li>请遵守小红书平台的用户协议和相关法律法规</li>
-              </ul>
-            </Paragraph>
-          </Card>
-        </Col>
-
         <Col xs={24}>
           <Card title={<span><ApiOutlined style={{ marginRight: 8, color: "#1677ff" }} />飞书集成</span>}>
             <Alert
@@ -166,38 +145,6 @@ export function SettingsPage() {
                 <Button onClick={handleEnsureFeishuFields} loading={isEnsuringFields}>自动补字段</Button>
               </Space>
             </Form>
-          </Card>
-        </Col>
-
-        <Col xs={24}>
-          <Card
-            title={<span><HeartOutlined style={{ marginRight: 8, color: "#ff4d4f" }} />为爱发电</span>}
-          >
-            <Paragraph>
-              本项目完全开源免费，如果对你有帮助，欢迎请作者喝杯咖啡 :)
-            </Paragraph>
-            <Row gutter={24} justify="center">
-              <Col>
-                <div style={{ textAlign: "center" }}>
-                  <Image
-                    src="/api/files/media/wx_pay.png"
-                    width={200}
-                    fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iIzFmMWYxZiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjOGM4YzhjIiBmb250LXNpemU9IjE0Ij7lvq7kv6HmlK/ku5g8L3RleHQ+PC9zdmc+"
-                  />
-                  <Text type="secondary" style={{ display: "block", marginTop: 8 }}>微信支付</Text>
-                </div>
-              </Col>
-              <Col>
-                <div style={{ textAlign: "center" }}>
-                  <Image
-                    src="/api/files/media/zfb_pay.jpg"
-                    width={200}
-                    fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iIzFmMWYxZiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjOGM4YzhjIiBmb250LXNpemU9IjE0Ij7mlK/ku5jlrp3mlK/ku5g8L3RleHQ+PC9zdmc+"
-                  />
-                  <Text type="secondary" style={{ display: "block", marginTop: 8 }}>支付宝</Text>
-                </div>
-              </Col>
-            </Row>
           </Card>
         </Col>
       </Row>
