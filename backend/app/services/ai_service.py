@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
+from PIL import Image
 import requests
 
 from backend.app.models import ModelConfig
@@ -96,6 +97,7 @@ class ImageAiClient(Protocol):
         api_key: str,
         prompt: str,
         reference_images: list[str] | None = None,
+        aspect_ratio: str | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -296,6 +298,7 @@ RUNNINGHUB_TEXT_TO_IMAGE_WEBAPP_ID = "2046760522573418497"
 RUNNINGHUB_IMAGE_TO_IMAGE_WEBAPP_ID = "2046794946094571522"
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_DEFAULT_ASPECT_RATIO = "3:4"
+RUNNINGHUB_SUPPORTED_ASPECT_RATIOS = {"1:1", "3:4", "4:3", "9:16", "16:9"}
 RUNNINGHUB_DEFAULT_RESOLUTION = "1k"
 RUNNINGHUB_TEXT_PROMPT_NODE_ID = "136"
 RUNNINGHUB_IMAGE_PROMPT_NODE_ID = "4"
@@ -314,14 +317,14 @@ class RunningHubImageClient:
         return (model_config.base_url or RUNNINGHUB_DEFAULT_BASE_URL).rstrip("/")
 
     @staticmethod
-    def build_text_to_image_node_info_list(prompt: str) -> list[dict[str, Any]]:
+    def build_text_to_image_node_info_list(prompt: str, aspect_ratio: str | None = None) -> list[dict[str, Any]]:
         return [
             {"nodeId": RUNNINGHUB_TEXT_PROMPT_NODE_ID, "fieldName": "prompt", "fieldValue": prompt},
-            {"nodeId": RUNNINGHUB_TEXT_PROMPT_NODE_ID, "fieldName": "aspectRatio", "fieldValue": RUNNINGHUB_DEFAULT_ASPECT_RATIO},
+            {"nodeId": RUNNINGHUB_TEXT_PROMPT_NODE_ID, "fieldName": "aspectRatio", "fieldValue": RunningHubImageClient._normalize_aspect_ratio(aspect_ratio)},
         ]
 
     @staticmethod
-    def build_image_to_image_node_info_list(*, prompt: str, uploaded_filenames: list[str]) -> list[dict[str, Any]]:
+    def build_image_to_image_node_info_list(*, prompt: str, uploaded_filenames: list[str], aspect_ratio: str | None = None) -> list[dict[str, Any]]:
         max_images = len(RUNNINGHUB_IMAGE_INPUT_NODES)
         if not uploaded_filenames:
             raise ValueError("参考图生图至少需要 1 张参考图")
@@ -333,7 +336,7 @@ class RunningHubImageClient:
             node_info.append({"nodeId": node_id, "fieldName": "image", "fieldValue": filename})
         node_info.extend([
             {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "prompt", "fieldValue": prompt},
-            {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "aspectRatio", "fieldValue": RUNNINGHUB_DEFAULT_ASPECT_RATIO},
+            {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "aspectRatio", "fieldValue": RunningHubImageClient._normalize_aspect_ratio(aspect_ratio)},
             {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "resolution", "fieldValue": RUNNINGHUB_DEFAULT_RESOLUTION},
         ])
         return node_info
@@ -361,6 +364,7 @@ class RunningHubImageClient:
         prompt: str,
         reference_images: list[str] | None = None,
         owner_user_id: int | None = None,
+        aspect_ratio: str | None = None,
     ) -> dict[str, Any]:
         base_url = self._validate(model_config=model_config, api_key=api_key)
         refs = [item for item in (reference_images or []) if str(item).strip()]
@@ -368,12 +372,14 @@ class RunningHubImageClient:
             max_images = len(RUNNINGHUB_IMAGE_INPUT_NODES)
             if len(refs) > max_images:
                 raise ValueError(f"当前 RunningHub 图生图工作流最多支持 {max_images} 张参考图")
+            first_ref_path = self._resolve_local_image_path(refs[0], owner_user_id=owner_user_id)
+            resolved_aspect_ratio = self._resolve_aspect_ratio(aspect_ratio, reference_path=first_ref_path)
             filenames = [self._upload_reference_image(base_url=base_url, api_key=api_key, image_ref=ref, owner_user_id=owner_user_id) for ref in refs]
             webapp_id = RUNNINGHUB_IMAGE_TO_IMAGE_WEBAPP_ID
-            node_info = self.build_image_to_image_node_info_list(prompt=prompt, uploaded_filenames=filenames)
+            node_info = self.build_image_to_image_node_info_list(prompt=prompt, uploaded_filenames=filenames, aspect_ratio=resolved_aspect_ratio)
         else:
             webapp_id = RUNNINGHUB_TEXT_TO_IMAGE_WEBAPP_ID
-            node_info = self.build_text_to_image_node_info_list(prompt)
+            node_info = self.build_text_to_image_node_info_list(prompt, aspect_ratio=aspect_ratio)
 
         task_payload = self._run_ai_app(base_url=base_url, api_key=api_key, webapp_id=webapp_id, node_info_list=node_info)
         task_id = ((task_payload.get("data") or {}).get("taskId") if isinstance(task_payload, dict) else None)
@@ -429,6 +435,37 @@ class RunningHubImageClient:
             message = self._message_from_payload(payload)
             raise ValueError(f"RunningHub 参考图上传失败: {message}")
         raise ValueError("RunningHub upload response missing filename")
+
+    @staticmethod
+    def _normalize_aspect_ratio(aspect_ratio: str | None) -> str:
+        value = (aspect_ratio or "").strip().lower()
+        if not value or value == "auto":
+            return RUNNINGHUB_DEFAULT_ASPECT_RATIO
+        if value not in RUNNINGHUB_SUPPORTED_ASPECT_RATIOS:
+            raise ValueError(f"不支持的图片比例: {aspect_ratio}")
+        return value
+
+    @classmethod
+    def _resolve_aspect_ratio(cls, aspect_ratio: str | None, *, reference_path: Path | None = None) -> str:
+        value = (aspect_ratio or "").strip().lower()
+        if value and value != "auto":
+            return cls._normalize_aspect_ratio(value)
+        if reference_path is None:
+            return RUNNINGHUB_DEFAULT_ASPECT_RATIO
+        with Image.open(reference_path) as image:
+            width, height = image.size
+        if width <= 0 or height <= 0:
+            return RUNNINGHUB_DEFAULT_ASPECT_RATIO
+        ratio = width / height
+        if ratio >= 1.55:
+            return "16:9"
+        if ratio >= 1.12:
+            return "4:3"
+        if ratio > 0.88:
+            return "1:1"
+        if ratio > 0.62:
+            return "3:4"
+        return "9:16"
 
     @staticmethod
     def _resolve_local_image_path(image_ref: str, *, owner_user_id: int | None = None) -> Path:
@@ -568,6 +605,7 @@ class OpenAICompatibleImageClient:
         prompt: str,
         reference_images: list[str] | None = None,
         owner_user_id: int | None = None,
+        aspect_ratio: str | None = None,
     ) -> dict[str, Any]:
         self._validate(model_config=model_config, api_key=api_key)
         endpoint = f"{model_config.base_url.rstrip('/')}/images/generations"

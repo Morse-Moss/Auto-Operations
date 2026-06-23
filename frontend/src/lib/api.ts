@@ -884,7 +884,10 @@ export async function duplicateDraft(draftId: number): Promise<Draft> {
   return response.data;
 }
 
-export async function updateDraft(draftId: number, payload: { title?: string; body?: string; tags?: { id?: string; name: string }[] }): Promise<Draft> {
+export async function updateDraft(
+  draftId: number,
+  payload: { draft_name?: string; title?: string; body?: string; tags?: { id?: string; name: string }[] },
+): Promise<Draft> {
   const response = await http.patch<Draft>(`/drafts/${draftId}`, payload);
   return response.data;
 }

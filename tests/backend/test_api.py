@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 from datetime import datetime, timedelta
@@ -5806,7 +5807,7 @@ def test_ai_rewrite_note_requires_owned_draft_and_default_text_model(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_ai_rewrite_note_uses_default_text_model_and_updates_owned_draft(tmp_path):
+def test_ai_rewrite_note_returns_preview_candidate_without_overwriting_owned_draft(tmp_path):
     from backend.app.api.ai import get_text_ai_client
 
     class FakeTextAiClient:
@@ -5823,7 +5824,7 @@ def test_ai_rewrite_note_uses_default_text_model_and_updates_owned_draft(tmp_pat
                     "instruction": instruction,
                 }
             )
-            return f"改写结果：{title} / {instruction}"
+            return f"{title}\n\n改写结果：{title} / {instruction}"
 
     fake_client = FakeTextAiClient()
     db_dependency = _override_database(tmp_path)
@@ -5852,6 +5853,13 @@ def test_ai_rewrite_note_uses_default_text_model_and_updates_owned_draft(tmp_pat
             json={"platform": "xhs", "title": "爆款标题", "body": "原始正文"},
         )
         draft_id = draft_response.json()["id"]
+        tag_response = client.patch(
+            f"/api/drafts/{draft_id}",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"tags": [{"name": "种草"}, {"name": "种草"}, {"name": "探店"}]},
+        )
+        assert tag_response.status_code == 200
+        assert tag_response.json()["body"] == "原始正文"
 
         rewrite_response = client.post(
             "/api/ai/rewrite-note",
@@ -5861,7 +5869,9 @@ def test_ai_rewrite_note_uses_default_text_model_and_updates_owned_draft(tmp_pat
         assert rewrite_response.status_code == 200
         rewritten = rewrite_response.json()
         assert rewritten["id"] == draft_id
+        assert rewritten["title"] == "爆款标题"
         assert rewritten["body"] == "改写结果：爆款标题 / 更适合小红书种草"
+        assert rewritten["tags"] == [{"name": "种草"}, {"name": "探店"}]
         assert fake_client.calls == [
             {
                 "model_name": "gpt-rewrite-test",
@@ -5876,7 +5886,10 @@ def test_ai_rewrite_note_uses_default_text_model_and_updates_owned_draft(tmp_pat
             "/api/drafts?platform=xhs",
             headers={"Authorization": f"Bearer {owner_token}"},
         )
-        assert list_response.json()["items"][0]["body"] == "改写结果：爆款标题 / 更适合小红书种草"
+        persisted = list_response.json()["items"][0]
+        assert persisted["title"] == "爆款标题"
+        assert persisted["body"] == "原始正文"
+        assert persisted["tags"] == [{"name": "种草"}, {"name": "探店"}]
 
         tasks_response = client.get(
             "/api/tasks?platform=xhs",
@@ -5891,6 +5904,12 @@ def test_ai_rewrite_note_uses_default_text_model_and_updates_owned_draft(tmp_pat
         assert task["progress"] == 100
         assert task["payload"]["draft_id"] == draft_id
         assert task["payload"]["model_config_id"] == model_response.json()["id"]
+        assert task["payload"]["preview_only"] is True
+        assert task["payload"]["result"] == {
+            "title": "爆款标题",
+            "body": "改写结果：爆款标题 / 更适合小红书种草",
+            "tags": [{"name": "种草"}, {"name": "探店"}],
+        }
     finally:
         app.dependency_overrides.pop(get_text_ai_client, None)
         app.dependency_overrides.pop(db_dependency, None)
@@ -6111,6 +6130,75 @@ def test_runninghub_upload_reference_image_accepts_filename_even_when_code_diffe
     assert filename == "openapi/ref.png"
 
 
+def test_runninghub_uses_landscape_aspect_ratio_from_first_reference_image(tmp_path, monkeypatch):
+    from backend.app.core import config as config_module
+    from backend.app.models import ModelConfig
+    from backend.app.services.ai_service import RunningHubImageClient
+    from PIL import Image
+
+    media_dir = tmp_path / "storage" / "media"
+    media_dir.mkdir(parents=True)
+    ref = media_dir / "xhs-upload-u1-landscape.png"
+    Image.new("RGB", (1440, 1080), (255, 255, 255)).save(ref)
+    monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"))
+
+    class FakeResponse:
+        status_code = 200
+        encoding = "utf-8"
+        apparent_encoding = "utf-8"
+
+        def __init__(self, content: bytes):
+            self.content = content
+            self.text = content.decode("utf-8")
+
+        def raise_for_status(self):
+            pass
+
+    class FakeSession:
+        def __init__(self):
+            self.run_payload = None
+
+        def post(self, url, **kwargs):
+            if url.endswith("/openapi/v2/media/upload/binary"):
+                return FakeResponse(b'{"code":0,"data":{"filename":"openapi/landscape.png"}}')
+            if url.endswith("/task/openapi/ai-app/run"):
+                self.run_payload = kwargs["json"]
+                return FakeResponse(b'{"code":0,"data":{"taskId":"task-1"}}')
+            if url.endswith("/task/openapi/status"):
+                return FakeResponse(b'{"code":0,"data":"SUCCESS"}')
+            if url.endswith("/task/openapi/outputs"):
+                return FakeResponse(b'{"code":0,"data":[{"fileUrl":"https://cdn.example.test/output.png"}]}')
+            raise AssertionError(f"unexpected url: {url}")
+
+    fake_session = FakeSession()
+    config = ModelConfig(provider="runninghub-ai-app", model_name="runninghub-image-g", base_url="https://www.runninghub.cn")
+    client_instance = RunningHubImageClient(session=fake_session, poll_interval_seconds=0, max_poll_attempts=1)
+
+    client_instance.generate_image(
+        model_config=config,
+        api_key="sk-test",
+        prompt="测试",
+        reference_images=["/api/files/media/xhs-upload-u1-landscape.png"],
+        owner_user_id=1,
+        aspect_ratio="auto",
+    )
+
+    assert fake_session.run_payload is not None
+    aspect_ratio_nodes = [
+        item for item in fake_session.run_payload["nodeInfoList"]
+        if item["fieldName"] == "aspectRatio"
+    ]
+    assert aspect_ratio_nodes == [{"nodeId": "4", "fieldName": "aspectRatio", "fieldValue": "4:3"}]
+
+
+def test_runninghub_text_to_image_keeps_default_portrait_aspect_ratio():
+    from backend.app.services.ai_service import RunningHubImageClient
+
+    node_info = RunningHubImageClient.build_text_to_image_node_info_list("测试")
+
+    assert {"nodeId": "136", "fieldName": "aspectRatio", "fieldValue": "3:4"} in node_info
+
+
 def test_runninghub_rejects_too_many_reference_images_before_upload(tmp_path, monkeypatch):
     from backend.app.core import config as config_module
     from backend.app.models import ModelConfig
@@ -6166,12 +6254,40 @@ def test_runninghub_default_wait_window_allows_long_image_jobs():
 def test_frontend_ai_image_generate_uses_async_task_polling_for_long_runninghub_jobs():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     page_source = open("frontend/src/pages/platforms/xhs/image-studio-page.tsx", encoding="utf-8").read()
+    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
 
     assert "generate-async" in api_source
     assert "startImageGenerationTask" in page_source
     assert "fetchTask" in page_source
     assert "图片生成任务已提交" in page_source
     assert "图片生成任务仍在运行" in page_source
+    assert "aspect_ratio" in types_source
+    assert "aspect_ratio: aspectRatio" in page_source
+    assert "跟随参考图" in page_source
+    assert "横屏 4:3" in page_source
+
+
+def test_image_studio_publish_handoff_uses_server_managed_generated_asset_and_blocks_reference_limit():
+    page_source = open("frontend/src/pages/platforms/xhs/image-studio-page.tsx", encoding="utf-8").read()
+
+    assert "asset_file_path: generatedPreview" not in page_source
+    assert "generatedPublishMediaPath" in page_source
+    assert "referenceLimitReached" in page_source
+    assert "已达上限" in page_source
+    assert 'cursor: referenceLimitReached ? "not-allowed" : "pointer"' in page_source
+
+
+def test_image_studio_draft_context_requires_explicit_handoff_and_fresh_timestamp():
+    page_source = open("frontend/src/pages/platforms/xhs/image-studio-page.tsx", encoding="utf-8").read()
+    context_source = open("frontend/src/pages/platforms/xhs/xhs-image-studio-context.ts", encoding="utf-8").read()
+
+    assert "useLocation" in page_source
+    assert 'searchParams.get("from") === "draft"' in page_source
+    assert "navigate(\"/platforms/xhs/image-studio\", { replace: true })" in page_source
+    assert "loadImageStudioDraftContext({ requireFresh: true })" in page_source
+    assert "created_at" in context_source
+    assert "IMAGE_STUDIO_DRAFT_CONTEXT_TTL_MS" in context_source
+    assert "Date.now()" in context_source
 
 
 def test_runninghub_resolve_local_image_path_enforces_owned_media_prefixes(tmp_path, monkeypatch):
@@ -6219,6 +6335,42 @@ def test_ai_image_routes_require_authentication(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_generated_image_media_storage_rejects_content_type_spoofed_bytes(tmp_path, monkeypatch):
+    import backend.app.api.ai as ai_api
+
+    monkeypatch.setattr(ai_api, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"), raising=False)
+
+    with pytest.raises(ValueError, match="不是受支持的图片格式"):
+        ai_api._store_generated_image_bytes(1, b"not an image", content_type="image/png")
+
+    media_dir = tmp_path / "storage" / "media"
+    assert not media_dir.exists() or list(media_dir.iterdir()) == []
+
+
+def test_download_public_http_image_rejects_private_resolved_ip(monkeypatch):
+    import backend.app.api.ai as ai_api
+
+    def fake_getaddrinfo(hostname, port, *args, **kwargs):
+        return [(ai_api.socket.AF_INET, ai_api.socket.SOCK_STREAM, 6, "", ("127.0.0.1", int(port or 80)))]
+
+    monkeypatch.setattr(ai_api.socket, "getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ValueError, match="内网地址"):
+        ai_api._download_public_http_image("http://example.test/spoof.png")
+
+
+def test_download_public_http_image_rejects_non_global_resolved_ip(monkeypatch):
+    import backend.app.api.ai as ai_api
+
+    def fake_getaddrinfo(hostname, port, *args, **kwargs):
+        return [(ai_api.socket.AF_INET, ai_api.socket.SOCK_STREAM, 6, "", ("100.64.0.1", int(port or 80)))]
+
+    monkeypatch.setattr(ai_api.socket, "getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ValueError, match="内网地址"):
+        ai_api._download_public_http_image("http://example.test/spoof.png")
+
+
 def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_path, monkeypatch):
     import backend.app.api.ai as ai_api
     from backend.app.api.ai import get_image_ai_client
@@ -6231,21 +6383,30 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
             self.calls.append(("generate_cover", model_config.model_name, api_key, prompt, size, style))
             return {"url": "https://cdn.example.test/cover.png", "raw": {"seed": 1}}
 
-        def generate_image(self, *, model_config, api_key, prompt, reference_images=None, owner_user_id=None):
-            self.calls.append(("generate_image", model_config.model_name, api_key, prompt, reference_images, owner_user_id))
-            return {"url": "https://cdn.example.test/generated.png", "raw": {"seed": 2}}
+        def generate_image(self, *, model_config, api_key, prompt, reference_images=None, owner_user_id=None, aspect_ratio=None):
+            self.calls.append(("generate_image", model_config.model_name, api_key, prompt, reference_images, owner_user_id, aspect_ratio))
+            return {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "raw": {"seed": 2}}
 
         def describe_image(self, *, model_config, api_key, image_url, instruction):
             self.calls.append(("describe_image", model_config.model_name, api_key, image_url, instruction))
             return "这是一张低卡早餐封面"
 
     fake_client = FakeImageAiClient()
+    downloaded_urls = []
+    valid_png_bytes = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+
+    def fake_checked_download(url):
+        downloaded_urls.append(url)
+        return valid_png_bytes, "image/png"
+
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("ai-image-owner")
     intruder_token = _register_and_get_access_token("ai-image-intruder")
     try:
         app.dependency_overrides[get_image_ai_client] = lambda: fake_client
         monkeypatch.setattr(ai_api, "SessionLocal", app.dependency_overrides[db_dependency].sessionmaker)
+        monkeypatch.setattr(ai_api, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"), raising=False)
+        monkeypatch.setattr(ai_api, "_download_public_http_image", fake_checked_download)
         model_response = client.post(
             "/api/model-configs",
             headers={"Authorization": f"Bearer {owner_token}"},
@@ -6268,7 +6429,10 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
         )
         assert generate_response.status_code == 200
         generated = generate_response.json()
-        assert generated["file_path"] == "https://cdn.example.test/cover.png"
+        assert re.match(r"^/api/files/media/xhs-image-u\d+-[0-9a-f]{32}\.png$", generated["file_path"])
+        cover_media_file_name = generated["file_path"].removeprefix("/api/files/media/")
+        assert (tmp_path / "storage" / "media" / cover_media_file_name).is_file()
+        assert downloaded_urls == ["https://cdn.example.test/cover.png"]
         assert generated["prompt"] == "低卡早餐封面"
         assert generated["model_name"] == "image-generate-test"
 
@@ -6292,7 +6456,7 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
         async_response = client.post(
             "/api/ai/images/generate-async",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"prompt": "异步生成测试", "reference_images": ["https://cdn.example.test/ref.png"], "save_to_assets": True},
+            json={"prompt": "异步生成测试", "reference_images": ["https://cdn.example.test/ref.png"], "save_to_assets": True, "aspect_ratio": "4:3"},
         )
         assert async_response.status_code == 200
         async_payload = async_response.json()
@@ -6301,8 +6465,11 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
         assert task_detail_response.status_code == 200
         task_detail = task_detail_response.json()
         assert task_detail["status"] == "completed"
-        assert task_detail["payload"]["result"]["url"] == "https://cdn.example.test/generated.png"
-        assert task_detail["payload"]["result"]["asset"]["file_path"] == "https://cdn.example.test/generated.png"
+        assert task_detail["payload"]["result"]["url"].startswith("data:image/png;base64,")
+        generated_asset_path = task_detail["payload"]["result"]["asset"]["file_path"]
+        assert re.match(r"^/api/files/media/xhs-image-u\d+-[0-9a-f]{32}\.png$", generated_asset_path)
+        media_file_name = generated_asset_path.removeprefix("/api/files/media/")
+        assert (tmp_path / "storage" / "media" / media_file_name).is_file()
 
         tasks_response = client.get("/api/tasks?platform=xhs", headers={"Authorization": f"Bearer {owner_token}"})
         assert tasks_response.status_code == 200
@@ -6310,9 +6477,70 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
         assert task_types == ["ai_image_generate", "ai_image_describe", "ai_image_generate_cover"]
         assert fake_client.calls == [
             ("generate_cover", "image-generate-test", "sk-image-secret", "低卡早餐封面", "1024x1024", "clean"),
-            ("describe_image", "image-generate-test", "sk-image-secret", "https://cdn.example.test/cover.png", "描述卖点"),
-            ("generate_image", "image-generate-test", "sk-image-secret", "异步生成测试", ["https://cdn.example.test/ref.png"], None),
+            ("describe_image", "image-generate-test", "sk-image-secret", generated["file_path"], "描述卖点"),
+            ("generate_image", "image-generate-test", "sk-image-secret", "异步生成测试", ["https://cdn.example.test/ref.png"], None, "4:3"),
         ]
+    finally:
+        app.dependency_overrides.pop(get_image_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_ai_image_generate_asset_import_failure_returns_clear_failure(tmp_path, monkeypatch):
+    import backend.app.api.ai as ai_api
+    from backend.app.api.ai import get_image_ai_client
+
+    class InvalidAssetImageClient:
+        def generate_image(self, *, model_config, api_key, prompt, reference_images=None, owner_user_id=None, aspect_ratio=None):
+            return {"url": "not-a-valid-image-reference", "raw": {"seed": 3}}
+
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("ai-image-import-failure-owner")
+    tolerant_client = TestClient(app, raise_server_exceptions=False)
+    try:
+        app.dependency_overrides[get_image_ai_client] = lambda: InvalidAssetImageClient()
+        monkeypatch.setattr(ai_api, "SessionLocal", app.dependency_overrides[db_dependency].sessionmaker)
+        monkeypatch.setattr(ai_api, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"), raising=False)
+        model_response = client.post(
+            "/api/model-configs",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "name": "Default Invalid Image",
+                "model_type": "image",
+                "provider": "openai-compatible",
+                "model_name": "image-import-failure-test",
+                "base_url": "https://api.example.test/v1",
+                "api_key": "sk-image-secret",
+                "is_default": True,
+            },
+        )
+        assert model_response.status_code == 200
+
+        sync_response = tolerant_client.post(
+            "/api/ai/images/generate",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"prompt": "同步资产导入失败", "save_to_assets": True},
+        )
+        assert sync_response.status_code == 400
+        assert sync_response.json()["detail"] == "生成图片结果必须是媒体资产、HTTP(S) 图片或 base64 图片"
+
+        assets_response = client.get("/api/ai/images/assets", headers={"Authorization": f"Bearer {owner_token}"})
+        assert assets_response.status_code == 200
+        assert assets_response.json()["total"] == 0
+
+        async_response = tolerant_client.post(
+            "/api/ai/images/generate-async",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"prompt": "异步资产导入失败", "save_to_assets": True},
+        )
+        assert async_response.status_code == 200
+        async_payload = async_response.json()
+        task_detail_response = client.get(f"/api/tasks/{async_payload['task_id']}", headers={"Authorization": f"Bearer {owner_token}"})
+        assert task_detail_response.status_code == 200
+        task_detail = task_detail_response.json()
+        assert task_detail["status"] == "failed"
+        assert task_detail["progress"] == 100
+        assert task_detail["payload"]["error"] == "生成图片结果必须是媒体资产、HTTP(S) 图片或 base64 图片"
+        assert "asset_id" not in task_detail["payload"]
     finally:
         app.dependency_overrides.pop(get_image_ai_client, None)
         app.dependency_overrides.pop(db_dependency, None)

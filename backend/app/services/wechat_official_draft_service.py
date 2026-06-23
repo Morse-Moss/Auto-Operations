@@ -86,6 +86,7 @@ def serialize_draft(draft: AiDraft) -> dict[str, Any]:
     return {
         "id": draft.id,
         "platform": draft.platform,
+        "draft_name": draft.draft_name or "",
         "title": draft.title,
         "body": draft.body,
         "tags": draft.tags or [],

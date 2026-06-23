@@ -30,7 +30,10 @@ export function createXhsDraftWorkbenchAdapter(): DraftWorkbenchAdapter<Draft> {
       const intent = payload?.intent === "publish" ? "publish" : "rewrite";
       return createDraftFromNote({ platform: "xhs", source_note_id: sourceId, intent });
     },
-    getListSubtitle: (draft) => formatDraftTime(draft.created_at),
+    getListSubtitle: (draft) => {
+      const time = formatDraftTime(draft.created_at);
+      return draft.draft_name && draft.title ? `发布标题：${draft.title} · ${time}` : time;
+    },
     getEmptyState: () => ({
       title: "还没有草稿",
       description: "先去内容库挑一篇笔记，或者用现有草稿复制一份继续写。",

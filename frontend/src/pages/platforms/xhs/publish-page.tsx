@@ -31,8 +31,8 @@ import {
 } from "antd";
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
@@ -91,6 +91,11 @@ const visibilityOptions = [
 
 export function XhsPublishPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const queryJobIdParam = searchParams.get("jobId");
+  const queryJobId = queryJobIdParam ? Number(queryJobIdParam) : null;
+  const selectedJobIdRef = useRef<number | null>(null);
+  const didSkipInitialQueryEffectRef = useRef(false);
   const [jobs, setJobs] = useState<PublishJob[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [assets, setAssets] = useState<PublishAsset[]>([]);
@@ -134,8 +139,13 @@ export function XhsPublishPage() {
     return value.split(/[,\n，]/).map((item) => item.trim()).filter(Boolean);
   }
 
+  function updateSelectedJobId(jobId: number | null) {
+    selectedJobIdRef.current = jobId;
+    setSelectedJobId(jobId);
+  }
+
   function applyJob(job: PublishJob) {
-    setSelectedJobId(job.id);
+    updateSelectedJobId(job.id);
     setPublishMode(job.publish_mode === "scheduled" ? "scheduled" : "immediate");
     setScheduledAt(toLocalInputValue(job.scheduled_at));
     setTopicsText((job.publish_options?.topics ?? []).join("，"));
@@ -170,19 +180,34 @@ export function XhsPublishPage() {
     }
   }
 
-  async function loadJobs() {
+  function clearJobIdQueryParam() {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("jobId");
+      return next;
+    }, { replace: true });
+  }
+
+  async function loadJobs(requestedJobId: number | null = queryJobId) {
     setIsLoading(true);
     setError(null);
     try {
       const result = await fetchPublishJobs("xhs");
       setJobs(result.items);
       if (result.items.length > 0) {
-        const current = selectedJobId ? result.items.find((job) => job.id === selectedJobId) : null;
-        const nextJob = current ?? result.items[0];
+        const queryJob = requestedJobId !== null && Number.isFinite(requestedJobId)
+          ? result.items.find((job) => job.id === requestedJobId)
+          : null;
+        const currentSelectedJobId = selectedJobIdRef.current;
+        const current = currentSelectedJobId ? result.items.find((job) => job.id === currentSelectedJobId) : null;
+        const nextJob = queryJob ?? current ?? result.items[0];
         applyJob(nextJob);
+        if (queryJob) {
+          clearJobIdQueryParam();
+        }
         await loadAssets(nextJob.id);
       } else {
-        setSelectedJobId(null);
+        updateSelectedJobId(null);
         setAssets([]);
       }
     } catch {
@@ -253,7 +278,7 @@ export function XhsPublishPage() {
       try {
         const refreshed = await fetchPublishJob(selectedJob.id);
         setJobs((current) => current.map((job) => (job.id === refreshed.id ? refreshed : job)));
-        setSelectedJobId(refreshed.id);
+        updateSelectedJobId(refreshed.id);
       } catch { /* keep original error */ }
     } finally {
       setIsPublishing(false);
@@ -267,7 +292,7 @@ export function XhsPublishPage() {
     try {
       await deletePublishJob(selectedJob.id);
       setJobs((current) => current.filter((j) => j.id !== selectedJob.id));
-      setSelectedJobId(null);
+      updateSelectedJobId(null);
       setAssets([]);
       setSelectedAccountId(null);
       setMessage("发布任务已删除。");
@@ -282,6 +307,16 @@ export function XhsPublishPage() {
     void loadAccounts();
   }, []);
 
+  useEffect(() => {
+    if (!didSkipInitialQueryEffectRef.current) {
+      didSkipInitialQueryEffectRef.current = true;
+      return;
+    }
+    if (queryJobId !== null && Number.isFinite(queryJobId)) {
+      void loadJobs(queryJobId);
+    }
+  }, [queryJobIdParam]);
+
   const scheduledDayjs: Dayjs | null = scheduledAt ? dayjs(scheduledAt) : null;
 
   return (
@@ -291,7 +326,7 @@ export function XhsPublishPage() {
         title="发布中心"
         description="预览草稿内容，配置发布参数后触发 Creator 发布。内容修改请前往草稿工坊。"
         action={
-          <Button icon={<ReloadOutlined />} onClick={loadJobs} loading={isLoading}>
+          <Button icon={<ReloadOutlined />} onClick={() => void loadJobs()} loading={isLoading}>
             刷新
           </Button>
         }

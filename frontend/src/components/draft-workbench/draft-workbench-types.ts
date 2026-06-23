@@ -4,9 +4,10 @@ import type { Draft } from "../../types";
 
 // Minimal shape the shared shell can render. Platform adapters may extend it,
 // but platform-specific semantics must stay outside the shared workbench core.
-export type DraftWorkbenchDraft = Pick<Draft, "id" | "title" | "body" | "tags" | "created_at">;
+export type DraftWorkbenchDraft = Pick<Draft, "id" | "draft_name" | "title" | "body" | "tags" | "created_at">;
 
 export type DraftWorkbenchDraftPatch = {
+  draft_name?: string;
   title: string;
   body: string;
   tags: Draft["tags"];
@@ -52,6 +53,7 @@ export type DraftWorkbenchController<TDraft extends DraftWorkbenchDraft = DraftW
   drafts: TDraft[];
   selectedDraftId: number | null;
   selectedDraft: TDraft | null;
+  draftName: string;
   title: string;
   body: string;
   tags: NonNullable<Draft["tags"]>;
@@ -59,6 +61,7 @@ export type DraftWorkbenchController<TDraft extends DraftWorkbenchDraft = DraftW
   error: string | null;
   message: string | null;
   selectDraft(draftId: number): void;
+  setDraftName(draftName: string): void;
   setTitle(title: string): void;
   setBody(body: string): void;
   setTags(tags: NonNullable<Draft["tags"]>): void;

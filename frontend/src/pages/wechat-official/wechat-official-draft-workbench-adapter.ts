@@ -21,6 +21,7 @@ export function createWechatOfficialDraftWorkbenchAdapter(): DraftWorkbenchAdapt
     loadDrafts: async () => (await fetchDrafts("wechat_official")).items.map((draft) => ({
       id: draft.id,
       platform: "wechat_official",
+      draft_name: draft.draft_name,
       title: draft.title,
       body: draft.body,
       tags: draft.tags,
@@ -31,6 +32,7 @@ export function createWechatOfficialDraftWorkbenchAdapter(): DraftWorkbenchAdapt
       return {
         id: draft.id,
         platform: "wechat_official",
+        draft_name: draft.draft_name,
         title: draft.title,
         body: draft.body,
         tags: draft.tags,
@@ -42,6 +44,7 @@ export function createWechatOfficialDraftWorkbenchAdapter(): DraftWorkbenchAdapt
       return {
         id: draft.id,
         platform: "wechat_official",
+        draft_name: draft.draft_name,
         title: draft.title,
         body: draft.body,
         tags: draft.tags,

@@ -12,6 +12,7 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
   const [drafts, setDrafts] = useState<TDraft[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<number | null>(null);
   const [title, setTitle] = useState("");
+  const [draftName, setDraftName] = useState("");
   const [body, setBody] = useState("");
   const [tags, setTags] = useState<NonNullable<DraftWorkbenchDraftPatch["tags"]>>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -27,12 +28,14 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
     if (!draft) {
       setSelectedDraftId(null);
       setTitle("");
+      setDraftName("");
       setBody("");
       setTags([]);
       return;
     }
     setSelectedDraftId(draft.id);
     setTitle(draft.title);
+    setDraftName(draft.draft_name ?? "");
     setBody(draft.body);
     setTags(Array.isArray(draft.tags) ? draft.tags : []);
   }, []);
@@ -79,7 +82,7 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
     setIsLoading(true);
     setError(null);
     try {
-      const updated = await adapter.saveDraft(selectedDraft.id, { title, body, tags });
+      const updated = await adapter.saveDraft(selectedDraft.id, { draft_name: draftName, title, body, tags });
       setDrafts((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       syncDraftState(updated);
       setMessage(`草稿 #${updated.id} 已保存。`);
@@ -88,7 +91,7 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
     } finally {
       setIsLoading(false);
     }
-  }, [adapter, body, selectedDraft, syncDraftState, tags, title]);
+  }, [adapter, body, draftName, selectedDraft, syncDraftState, tags, title]);
 
   const duplicateSelectedDraft = useCallback(async () => {
     if (!selectedDraft || !adapter.duplicateDraft) {
@@ -169,6 +172,7 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
     drafts,
     selectedDraftId,
     selectedDraft,
+    draftName,
     title,
     body,
     tags,
@@ -176,6 +180,7 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
     error,
     message,
     selectDraft,
+    setDraftName,
     setTitle,
     setBody,
     setTags,

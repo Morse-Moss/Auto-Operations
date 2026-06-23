@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -7,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, hash_password
 from backend.app.main import app
-from backend.app.models import AiDraft, DraftAsset, Note, PlatformAccount, User
+from backend.app.models import AiDraft, DraftAsset, Note, PlatformAccount, PublishAsset, PublishJob, User
 
 client = TestClient(app)
 
@@ -92,6 +94,315 @@ def create_original_draft_with_assets(db, user: User) -> AiDraft:
     db.commit()
     db.refresh(draft)
     return draft
+
+
+def test_create_update_and_list_draft_uses_internal_draft_name(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-name-owner")
+            headers = auth_headers(owner)
+            db.commit()
+        finally:
+            db.close()
+
+        create_response = client.post(
+            "/api/drafts",
+            headers=headers,
+            json={
+                "platform": "xhs",
+                "draft_name": "浴缸案例图替换 - A版",
+                "title": "卫生间浴缸怎么选？",
+                "body": "正文",
+            },
+        )
+        assert create_response.status_code == 200
+        created = create_response.json()
+        assert created["draft_name"] == "浴缸案例图替换 - A版"
+        assert created["title"] == "卫生间浴缸怎么选？"
+
+        update_response = client.patch(
+            f"/api/drafts/{created['id']}",
+            headers=headers,
+            json={"draft_name": "浴缸案例图替换 - B版"},
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["draft_name"] == "浴缸案例图替换 - B版"
+        assert update_response.json()["title"] == "卫生间浴缸怎么选？"
+
+        list_response = client.get("/api/drafts", headers=headers, params={"platform": "xhs"})
+        assert list_response.status_code == 200
+        assert list_response.json()["items"][0]["draft_name"] == "浴缸案例图替换 - B版"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_update_draft_normalizes_repeated_title_and_markdown_symbols(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-normalize-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="旧标题", body="旧正文", tags=[])
+            db.add(draft)
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.patch(
+            f"/api/drafts/{draft_id}",
+            headers=headers,
+            json={
+                "title": "SaaS 工具怎么选？",
+                "body": "# SaaS 工具怎么选？\n\n**重点**\n- 第一条",
+                "tags": [{"name": "工具"}, {"name": "工具"}],
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["title"] == "SaaS 工具怎么选？"
+        assert payload["body"] == "重点\n第一条"
+        assert payload["tags"] == [{"name": "工具"}]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_update_wechat_official_draft_preserves_markdown_body_and_tags(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-wechat-preserve-owner")
+            body = "# 公众号标题\n\n**重点**\n- 第一条"
+            tags = [{"name": "公众号"}, {"name": "公众号"}]
+            draft = AiDraft(user_id=owner.id, platform="wechat_official", title="公众号标题", body=body, tags=tags)
+            db.add(draft)
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.patch(
+            f"/api/drafts/{draft_id}",
+            headers=headers,
+            json={"title": "公众号标题", "body": body, "tags": tags},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["title"] == "公众号标题"
+        assert payload["body"] == body
+        assert "# 公众号标题" in payload["body"]
+        assert "**重点**" in payload["body"]
+        assert "- 第一条" in payload["body"]
+        assert payload["tags"] == tags
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_uses_normalized_content(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-normalize-owner")
+            draft = AiDraft(
+                user_id=owner.id,
+                platform="xhs",
+                title="SaaS 工具怎么选？",
+                body="SaaS 工具怎么选？\n\n正文第一段",
+                tags=[{"name": "SaaS"}, {"name": "SaaS"}],
+            )
+            db.add(draft)
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(f"/api/drafts/{draft_id}/send-to-publish", headers=headers, json={"publish_mode": "immediate"})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["title"] == "SaaS 工具怎么选？"
+        assert payload["body"] == "正文第一段"
+        assert payload["publish_options"]["draft_tags"] == [{"name": "SaaS"}]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_accepts_current_user_existing_managed_media_path(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-generated-image-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            file_name = f"xhs-image-u{owner.id}-generated-cover.png"
+            (media_dir / file_name).write_bytes(b"fake-image")
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_path": f"/api/files/media/{file_name}"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "pending"
+        assert payload["source_draft_id"] == draft_id
+
+        db = SessionLocal()
+        try:
+            publish_assets = db.scalars(select(PublishAsset).where(PublishAsset.publish_job_id == payload["id"])).all()
+            assert len(publish_assets) == 1
+            assert publish_assets[0].asset_type == "image"
+            assert publish_assets[0].file_path == f"/api/files/media/{file_name}"
+            assert publish_assets[0].upload_status == "pending"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_wrong_user_managed_media_path_before_creating_job(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-wrong-user-asset-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            file_name = f"xhs-image-u{owner.id + 999}-generated-cover.png"
+            (media_dir / file_name).write_bytes(b"fake-image")
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_path": f"/api/files/media/{file_name}"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be a current-user managed media file"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_missing_managed_media_path_before_creating_job(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    (storage_dir / "media").mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-missing-asset-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            file_name = f"xhs-image-u{owner.id}-missing-cover.png"
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_path": f"/api/files/media/{file_name}"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path media file not found"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_non_media_asset_file_path_before_creating_job(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-invalid-asset-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_path": "https://cdn.example.test/generated-cover.png"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must start with /api/files/media/"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_duplicate_draft_copies_internal_name_with_copy_suffix(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-name-duplicate-owner")
+            original = create_original_draft_with_assets(db, owner)
+            original.draft_name = "浴缸案例图替换"
+            db.commit()
+            original_id = original.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(f"/api/drafts/{original_id}/duplicate", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["draft_name"] == "浴缸案例图替换 副本"
+        assert payload["title"] == "原始草稿 - 副本"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 def test_duplicate_draft_copies_owned_draft_and_asset_references(tmp_path):

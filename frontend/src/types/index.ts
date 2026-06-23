@@ -945,6 +945,7 @@ export type SaveNotesResponse = {
 export type Draft = {
   id: number;
   platform: PlatformId;
+  draft_name?: string;
   title: string;
   body: string;
   tags?: { id?: string; name: string }[];
@@ -954,7 +955,8 @@ export type Draft = {
 
 export type CreateDraftPayload = {
   platform: "xhs";
-  source_note_id?: number;
+  source_note_id?: number | null;
+  draft_name?: string;
   title?: string;
   body?: string;
   intent?: "rewrite" | "publish" | string;
@@ -1033,6 +1035,7 @@ export type GenerateImagePayload = {
   prompt: string;
   reference_images?: string[];
   save_to_assets?: boolean;
+  aspect_ratio?: "auto" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
 };
 
 export type GenerateImageResult = {
@@ -1338,6 +1341,7 @@ export type SendDraftToPublishPayload = {
   location?: string | null;
   privacy_type?: 0 | 1 | null;
   is_private?: boolean | null;
+  asset_file_path?: string | null;
 };
 
 export type PublishJobUpdatePayload = {

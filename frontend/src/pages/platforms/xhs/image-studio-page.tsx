@@ -3,6 +3,7 @@ import {
   FileImageOutlined,
   InboxOutlined,
   LinkOutlined,
+  SendOutlined,
   PictureOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -21,6 +22,7 @@ import {
   Input,
   Modal,
   Row,
+  Select,
   Space,
   Spin,
   Tabs,
@@ -28,7 +30,8 @@ import {
   Typography,
   Upload,
 } from "antd";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
@@ -38,17 +41,25 @@ import {
   fetchGeneratedImageAssets,
   fetchTask,
   fetchUserImages,
+  sendDraftToPublish,
   startImageGenerationTask,
   uploadAssetFile,
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { GeneratedImageAsset, GenerateImageResult, TaskRecord, UserImageFile } from "../../../types";
+import {
+  clearImageStudioDraftContext,
+  loadImageStudioDraftContext,
+  type XhsImageStudioCandidateImage,
+  type XhsImageStudioDraftContext,
+} from "./xhs-image-studio-context";
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
 const RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT = 2;
 const IMAGE_GENERATION_POLL_INTERVAL_MS = 3000;
 const IMAGE_GENERATION_MAX_POLLS = 220;
+type ImageAspectRatio = "auto" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
 
 function isRenderableImage(value: string): boolean {
   return (
@@ -57,6 +68,14 @@ function isRenderableImage(value: string): boolean {
     value.startsWith("data:image/") ||
     value.startsWith("/api/")
   );
+}
+
+function isServerManagedMediaPath(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith("/api/files/media/");
+}
+
+function generatedPublishMediaPath(result: GenerateImageResult): string | null {
+  return isServerManagedMediaPath(result.asset?.file_path) ? result.asset.file_path : null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -81,11 +100,34 @@ function taskErrorMessage(task: TaskRecord): string {
   return typeof error === "string" && error ? error : "AI 图片生成失败，请检查任务详情。";
 }
 
+function buildDraftImagePrompt(context: XhsImageStudioDraftContext): string {
+  const title = context.title.trim();
+  const body = context.body.replace(/\s+/g, " ").trim();
+  const bodyExcerpt = body.length > 180 ? `${body.slice(0, 180)}...` : body;
+  const tags = context.tags.map((tag) => tag.name.trim()).filter(Boolean).slice(0, 6);
+  return [
+    "为这篇小红书草稿生成一张可直接发布的封面/首图。",
+    title ? `标题：${title}` : "",
+    bodyExcerpt ? `正文要点：${bodyExcerpt}` : "",
+    tags.length > 0 ? `标签：${tags.map((tag) => `#${tag}`).join(" ")}` : "",
+    "风格要求：真实、有生活感、构图干净，适合小红书图文笔记。",
+  ].filter(Boolean).join("\n");
+}
+
+function candidateImageSourceLabel(source: XhsImageStudioCandidateImage["source"]): string {
+  if (source === "draft_asset") return "草稿素材";
+  if (source === "source_note") return "原笔记案例图";
+  return "手动添加";
+}
+
 export function XhsImageStudioPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [assets, setAssets] = useState<GeneratedImageAsset[]>([]);
   const [userImages, setUserImages] = useState<UserImageFile[]>([]);
   const [prompt, setPrompt] = useState("");
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  const [aspectRatio, setAspectRatio] = useState<ImageAspectRatio>("auto");
   const [imageUrl, setImageUrl] = useState("");
   const [description, setDescription] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -96,6 +138,18 @@ export function XhsImageStudioPage() {
   const [refPickerOpen, setRefPickerOpen] = useState(false);
   const [saveToAssets, setSaveToAssets] = useState(true);
   const [generatedPreview, setGeneratedPreview] = useState<string | null>(null);
+  const [generatedMediaPath, setGeneratedMediaPath] = useState<string | null>(null);
+  const [draftContext, setDraftContext] = useState<XhsImageStudioDraftContext | null>(null);
+  const [isSendingPublish, setIsSendingPublish] = useState(false);
+
+  const draftReferenceUrls = useMemo(
+    () => (draftContext?.candidate_images ?? [])
+      .map((image) => image.url)
+      .filter((url, index, urls) => urls.indexOf(url) === index)
+      .slice(0, RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT),
+    [draftContext],
+  );
+  const referenceLimitReached = referenceImages.length >= RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT;
 
   // For the reference picker modal: which callback mode
   const [pickerMode, setPickerMode] = useState<"reference" | "describe">(
@@ -129,12 +183,14 @@ export function XhsImageStudioPage() {
     setError(null);
     setMessage(null);
     setGeneratedPreview(null);
+    setGeneratedMediaPath(null);
     try {
       const startedTask = await startImageGenerationTask({
         prompt: prompt.trim(),
         reference_images:
           referenceImages.length > 0 ? referenceImages : undefined,
         save_to_assets: saveToAssets,
+        aspect_ratio: aspectRatio,
       });
       setMessage(`图片生成任务已提交（#${startedTask.task_id}），正在后台生成...`);
 
@@ -146,7 +202,9 @@ export function XhsImageStudioPage() {
           if (!result) {
             throw new Error("图片任务已完成，但结果为空。请到任务中心查看详情。");
           }
-          setGeneratedPreview(result.url);
+          const mediaPath = generatedPublishMediaPath(result);
+          setGeneratedPreview(mediaPath ?? result.url);
+          setGeneratedMediaPath(mediaPath);
           if (result.asset) {
             setAssets((prev) => [result.asset!, ...prev]);
           } else {
@@ -249,6 +307,55 @@ export function XhsImageStudioPage() {
     return false; // prevent antd auto-upload
   }
 
+  function handleClearDraftContext() {
+    clearImageStudioDraftContext();
+    setDraftContext(null);
+    setMessage("已清除草稿上下文，当前图片工坊内容不会再自动关联草稿。");
+  }
+
+  async function handleSendGeneratedToPublish() {
+    if (!draftContext || !generatedMediaPath) return;
+    setIsSendingPublish(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const job = await sendDraftToPublish(draftContext.draft_id, {
+        publish_mode: "immediate",
+        asset_file_path: generatedMediaPath,
+      });
+      clearImageStudioDraftContext();
+      setDraftContext(null);
+      setMessage(`已创建发布中心待发布任务 #${job.id}，不会自动发布。`);
+      navigate(`/platforms/xhs/publish?jobId=${job.id}`);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "送发布中心失败，请稍后重试。";
+      setError(detail);
+    } finally {
+      setIsSendingPublish(false);
+    }
+  }
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const shouldLoadDraftContext = searchParams.get("from") === "draft";
+    if (!shouldLoadDraftContext) return;
+    const context = loadImageStudioDraftContext({ requireFresh: true });
+    navigate("/platforms/xhs/image-studio", { replace: true });
+    if (!context) {
+      setMessage("草稿上下文已过期，请从草稿工坊重新进入图片工坊。");
+      return;
+    }
+    setDraftContext(context);
+    setPrompt((current) => (current.trim() ? current : buildDraftImagePrompt(context)));
+    setReferenceImages((current) => {
+      if (current.length > 0) return current;
+      return context.candidate_images
+        .map((image) => image.url)
+        .filter((url, index, urls) => urls.indexOf(url) === index)
+        .slice(0, RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT);
+    });
+  }, [location.search, navigate]);
+
   useEffect(() => {
     void loadAssets();
   }, []);
@@ -289,6 +396,72 @@ export function XhsImageStudioPage() {
           onClose={() => setMessage(null)}
           style={{ marginBottom: 16 }}
         />
+      )}
+
+      {draftContext && (
+        <Card
+          size="small"
+          title={
+            <Space>
+              <InboxOutlined /> 来自草稿
+            </Space>
+          }
+          extra={
+            <Button size="small" type="link" onClick={handleClearDraftContext}>
+              清除关联
+            </Button>
+          }
+          style={{ marginBottom: 16, borderColor: "#7c4d12", background: "linear-gradient(135deg, rgba(124,77,18,0.18), rgba(20,20,20,0.72))" }}
+        >
+          <Row gutter={[16, 12]}>
+            <Col xs={24} md={15}>
+              <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  草稿 #{draftContext.draft_id}{draftContext.draft_name ? ` · ${draftContext.draft_name}` : ""}
+                </Text>
+                <Text strong>{draftContext.title || "未命名草稿"}</Text>
+                <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: "展开" }} style={{ marginBottom: 0 }}>
+                  {draftContext.body || "草稿正文为空。"}
+                </Paragraph>
+                {draftContext.tags.length > 0 && (
+                  <Space size={4} wrap>
+                    {draftContext.tags.map((tag) => (
+                      <Tag key={`${tag.id ?? tag.name}-${tag.name}`} color="gold">#{tag.name}</Tag>
+                    ))}
+                  </Space>
+                )}
+              </Space>
+            </Col>
+            <Col xs={24} md={9}>
+              <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  候选图 {draftContext.candidate_images.length} 张；已带入 {draftReferenceUrls.length} 张参考图（上限 {RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT} 张）
+                </Text>
+                <Space size={8} wrap>
+                  {draftContext.candidate_images.slice(0, 4).map((image, index) => (
+                    <div key={`${image.url}-${index}`} style={{ width: 56 }}>
+                      <div style={{ height: 56, borderRadius: 6, overflow: "hidden", background: "#1a1a1a", border: "1px solid #3b2a12" }}>
+                        {isRenderableImage(image.url) ? (
+                          <img src={image.url} alt={`candidate-${index}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : (
+                          <PictureOutlined style={{ fontSize: 20, color: "#666", margin: 18 }} />
+                        )}
+                      </div>
+                      <Text type="secondary" ellipsis style={{ display: "block", fontSize: 10, marginTop: 2 }}>
+                        {candidateImageSourceLabel(image.source)}
+                      </Text>
+                    </div>
+                  ))}
+                </Space>
+                {draftReferenceUrls.length > 0 && referenceImages.length === 0 && (
+                  <Button size="small" onClick={() => setReferenceImages(draftReferenceUrls)}>
+                    使用候选图作为参考图
+                  </Button>
+                )}
+              </Space>
+            </Col>
+          </Row>
+        </Card>
       )}
 
       {/* ---- Top Row: Two tool cards ---- */}
@@ -387,23 +560,56 @@ export function XhsImageStudioPage() {
                 ))}
                 {/* Add placeholder */}
                 <div
-                  onClick={() => openRefPicker("reference")}
+                  onClick={() => {
+                    if (!referenceLimitReached) openRefPicker("reference");
+                  }}
+                  aria-disabled={referenceLimitReached}
+                  title={referenceLimitReached ? `已达上限：最多 ${RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT} 张参考图` : "添加参考图"}
                   style={{
                     width: 60,
                     height: 60,
                     borderRadius: 4,
-                    border: "1px dashed #444",
+                    border: referenceLimitReached ? "1px dashed #5a3a1a" : "1px dashed #444",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    cursor: "pointer",
-                    background: "#1a1a1a",
+                    cursor: referenceLimitReached ? "not-allowed" : "pointer",
+                    background: referenceLimitReached ? "rgba(90,58,26,0.18)" : "#1a1a1a",
+                    color: referenceLimitReached ? "#b08a55" : "#666",
+                    fontSize: referenceLimitReached ? 11 : 20,
+                    textAlign: "center",
+                    padding: referenceLimitReached ? 4 : 0,
+                    lineHeight: 1.2,
                   }}
                 >
-                  <PlusOutlined style={{ fontSize: 20, color: "#666" }} />
+                  {referenceLimitReached ? "已达上限" : <PlusOutlined style={{ fontSize: 20, color: "#666" }} />}
                 </div>
               </Space>
             </div>
+
+            <Row gutter={[8, 8]} align="middle" style={{ marginBottom: 12 }}>
+              <Col>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  画幅比例
+                </Text>
+              </Col>
+              <Col flex="auto">
+                <Select<ImageAspectRatio>
+                  value={aspectRatio}
+                  onChange={setAspectRatio}
+                  disabled={isGenerating}
+                  style={{ minWidth: 180 }}
+                  options={[
+                    { value: "auto", label: "跟随参考图" },
+                    { value: "3:4", label: "小红书竖图 3:4" },
+                    { value: "4:3", label: "横屏 4:3" },
+                    { value: "1:1", label: "方图 1:1" },
+                    { value: "16:9", label: "宽屏 16:9" },
+                    { value: "9:16", label: "长竖屏 9:16" },
+                  ]}
+                />
+              </Col>
+            </Row>
 
             {/* Controls row */}
             <Row
@@ -422,7 +628,7 @@ export function XhsImageStudioPage() {
               <Col>
                 <Space>
                   <Button
-                    onClick={() => { setPrompt(""); setReferenceImages([]); setGeneratedPreview(null); setSaveToAssets(true); }}
+                    onClick={() => { setPrompt(""); setReferenceImages([]); setAspectRatio("auto"); setGeneratedPreview(null); setGeneratedMediaPath(null); setSaveToAssets(true); }}
                     disabled={isGenerating}
                   >
                     重置
@@ -461,20 +667,33 @@ export function XhsImageStudioPage() {
                     alt="generated"
                     style={{ maxHeight: 240, objectFit: "contain" }}
                   />
-                  {!saveToAssets && (
-                    <Button
-                      size="small"
-                      type="link"
-                      onClick={() => {
-                        // Re-generate with save flag
-                        setSaveToAssets(true);
-                        setMessage("下次生成将自动保存到 AI 资产。");
-                      }}
-                      style={{ marginTop: 8 }}
-                    >
-                      保存到 AI 资产
-                    </Button>
-                  )}
+                  <Space style={{ marginTop: 8 }} wrap>
+                    {draftContext && (
+                      <Button
+                        type="primary"
+                        icon={<SendOutlined />}
+                        onClick={handleSendGeneratedToPublish}
+                        loading={isSendingPublish}
+                        disabled={isGenerating || !generatedMediaPath}
+                        title={generatedMediaPath ? undefined : "生成图需要先保存为服务器媒体资产"}
+                      >
+                        用这张图送发布中心
+                      </Button>
+                    )}
+                    {!saveToAssets && (
+                      <Button
+                        size="small"
+                        type="link"
+                        onClick={() => {
+                          // Re-generate with save flag
+                          setSaveToAssets(true);
+                          setMessage("下次生成将自动保存到 AI 资产。");
+                        }}
+                      >
+                        保存到 AI 资产
+                      </Button>
+                    )}
+                  </Space>
                 </div>
               </div>
             )}

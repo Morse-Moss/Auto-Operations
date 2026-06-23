@@ -243,6 +243,7 @@ def _serialize_draft(draft: AiDraft) -> dict:
     return {
         "id": draft.id,
         "platform": draft.platform,
+        "draft_name": draft.draft_name or "",
         "title": draft.title,
         "body": draft.body,
         "source_note_id": draft.source_note_id,

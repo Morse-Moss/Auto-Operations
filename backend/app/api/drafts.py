@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,10 +11,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.models import AiDraft, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User
 from backend.app.schemas.common import paginated
+from backend.app.services.asset_storage_policy import asset_owner_prefix
+from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
 
@@ -21,12 +25,14 @@ router = APIRouter(prefix="/drafts", tags=["drafts"])
 class DraftCreateRequest(BaseModel):
     platform: str = Field(pattern="^xhs$")
     source_note_id: Optional[int] = None
+    draft_name: str = Field(default="", max_length=256)
     title: str = ""
     body: str = ""
     intent: str = Field(default="publish", max_length=32)
 
 
 class DraftUpdateRequest(BaseModel):
+    draft_name: Optional[str] = Field(default=None, max_length=256)
     title: Optional[str] = None
     body: Optional[str] = None
     tags: Optional[list[dict]] = None
@@ -40,6 +46,7 @@ class DraftSendToPublishRequest(BaseModel):
     location: Optional[str] = None
     privacy_type: Optional[int] = Field(default=None, ge=0, le=1)
     is_private: Optional[bool] = None
+    asset_file_path: Optional[str] = Field(default=None, max_length=2048)
 
 
 def _clean_topics(topics: Optional[list[str]]) -> list[str]:
@@ -64,16 +71,43 @@ def _build_publish_options(payload: DraftSendToPublishRequest) -> dict[str, Any]
     return options
 
 
+def _validate_handoff_asset_file_path(file_path: str, current_user: User) -> None:
+    media_prefix = "/api/files/media/"
+    if not file_path.startswith(media_prefix):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path must start with /api/files/media/")
+    file_name = file_path[len(media_prefix):]
+    if not file_name or file_name != PurePosixPath(file_name).name or "\\" in file_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path must be a server-managed media file path")
+    try:
+        expected_prefix = asset_owner_prefix("xhs", "image", current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path must be a current-user managed media file") from None
+    if not file_name.startswith(expected_prefix):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path must be a current-user managed media file")
+    media_file = Path(get_settings().storage_dir) / "media" / file_name
+    if not media_file.is_file():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path media file not found")
+
+
 def _serialize_draft(draft: AiDraft) -> dict:
     return {
         "id": draft.id,
         "platform": draft.platform,
+        "draft_name": draft.draft_name or "",
         "title": draft.title,
         "body": draft.body,
         "tags": draft.tags or [],
         "source_note_id": draft.source_note_id,
         "created_at": draft.created_at.isoformat(),
     }
+
+
+def _apply_normalized_content(draft: AiDraft) -> None:
+    normalized = normalize_xhs_generated_content(draft.title, draft.body, draft.tags or [])
+    draft.title = normalized.title
+    draft.body = normalized.body
+    draft.tags = normalized.tags
+    flag_modified(draft, "tags")
 
 
 def _serialize_publish_job(job: PublishJob) -> dict:
@@ -152,11 +186,14 @@ def create_draft(
     draft = AiDraft(
         user_id=current_user.id,
         platform=payload.platform,
+        draft_name=(payload.draft_name or "").strip(),
         title=payload.title or (source_note.title if source_note else ""),
         body=payload.body or (source_note.content if source_note else ""),
         tags=tags,
         source_note_id=source_note.id if source_note else None,
     )
+    if draft.platform == "xhs":
+        _apply_normalized_content(draft)
     db.add(draft)
     db.flush()
 
@@ -201,6 +238,13 @@ def send_draft_to_publish(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Platform account not found")
         account_id = account.id
 
+    handoff_asset_file_path = (payload.asset_file_path or "").strip()
+    if handoff_asset_file_path:
+        _validate_handoff_asset_file_path(handoff_asset_file_path, current_user)
+
+    if draft.platform == "xhs":
+        _apply_normalized_content(draft)
+
     options = _build_publish_options(payload)
     if draft.tags:
         options["draft_tags"] = draft.tags
@@ -220,21 +264,31 @@ def send_draft_to_publish(
     db.add(job)
     db.flush()
 
-    draft_assets = db.scalars(
-        select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
-    ).all()
-    for da in draft_assets:
-        if da.local_path:
-            file_path = f"/api/files/media/{da.local_path}"
-        else:
-            file_path = da.url
-        pa = PublishAsset(
-            publish_job_id=job.id,
-            asset_type=da.asset_type,
-            file_path=file_path,
-            upload_status="pending",
+    if handoff_asset_file_path:
+        db.add(
+            PublishAsset(
+                publish_job_id=job.id,
+                asset_type="image",
+                file_path=handoff_asset_file_path,
+                upload_status="pending",
+            )
         )
-        db.add(pa)
+    else:
+        draft_assets = db.scalars(
+            select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
+        ).all()
+        for da in draft_assets:
+            if da.local_path:
+                file_path = f"/api/files/media/{da.local_path}"
+            else:
+                file_path = da.url
+            pa = PublishAsset(
+                publish_job_id=job.id,
+                asset_type=da.asset_type,
+                file_path=file_path,
+                upload_status="pending",
+            )
+            db.add(pa)
 
     db.commit()
     db.refresh(job)
@@ -254,6 +308,7 @@ def duplicate_draft(
     duplicated = AiDraft(
         user_id=current_user.id,
         platform=draft.platform,
+        draft_name=f"{draft.draft_name} 副本" if draft.draft_name else "",
         title=f"{draft.title} - 副本",
         body=draft.body,
         tags=json.loads(json.dumps(draft.tags, ensure_ascii=False)) if draft.tags is not None else None,
@@ -290,6 +345,8 @@ def update_draft(
     if draft is None or draft.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
 
+    if payload.draft_name is not None:
+        draft.draft_name = payload.draft_name.strip()
     if payload.title is not None:
         draft.title = payload.title
     if payload.body is not None:
@@ -297,6 +354,8 @@ def update_draft(
     if payload.tags is not None:
         draft.tags = list(payload.tags)
         flag_modified(draft, "tags")
+    if draft.platform == "xhs" and {"title", "body", "tags"} & payload.model_fields_set:
+        _apply_normalized_content(draft)
 
     db.commit()
     db.refresh(draft)

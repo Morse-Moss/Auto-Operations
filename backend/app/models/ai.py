@@ -33,6 +33,7 @@ class AiDraft(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     platform: Mapped[str] = mapped_column(String(32), index=True)
+    draft_name: Mapped[str] = mapped_column(String(256), default="")
     title: Mapped[str] = mapped_column(String(256), default="")
     body: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)

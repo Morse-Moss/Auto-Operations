@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.app.core.time import shanghai_now
 from backend.app.models.keyword_group import KeywordGroup
 from backend.app.models.note import Note, NoteComment
+from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 MINIMUM_THRESHOLDS = {
     "valid_notes": 10,
@@ -535,7 +536,15 @@ class XhsAnalysisCenterService:
                     f"风险提醒：{self._draft_text(card.get('risk_warning', ''))}",
                 ]
             )
-            draft = AiDraft(user_id=user_id, platform="xhs", title=title, body=body, tags=tags, source_note_id=None)
+            normalized = normalize_xhs_generated_content(title, body, tags)
+            draft = AiDraft(
+                user_id=user_id,
+                platform="xhs",
+                title=normalized.title,
+                body=normalized.body,
+                tags=normalized.tags,
+                source_note_id=None,
+            )
             self.db.add(draft)
             drafts.append(draft)
         self.db.commit()

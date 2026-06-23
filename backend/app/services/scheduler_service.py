@@ -30,6 +30,7 @@ from backend.app.models import (
     Task,
     User,
 )
+from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 
 def _cookies_to_string(value: str) -> str:
@@ -523,6 +524,11 @@ def _execute_auto_task_background(db: Session, task: AutoTask) -> None:
     image_urls = [url for url in (best.get("image_urls") or [])[:9] if isinstance(url, str) and url]
     if not image_urls:
         return
+
+    normalized_content = normalize_xhs_generated_content(draft.title, draft.body, draft.tags or [])
+    draft.title = normalized_content.title
+    draft.body = normalized_content.body
+    draft.tags = normalized_content.tags
 
     # Create a publish job only. Background AutoTask execution must not upload or publish
     # without an explicit action-level authorization path.

@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import ipaddress
 import re
+import socket
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal, Optional
+from urllib.parse import urlparse
+from uuid import uuid4
+
+import urllib3
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app.core.config import get_settings
 from backend.app.core.database import SessionLocal, get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
@@ -16,8 +26,18 @@ from backend.app.core.time import shanghai_now
 from backend.app.models import AiDraft, AiGeneratedAsset, ModelConfig, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
+from backend.app.services.asset_storage_policy import asset_owner_prefix
+from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+GENERATED_IMAGE_MAX_IMPORT_SIZE = 20 * 1024 * 1024
+GENERATED_IMAGE_ALLOWED_MEDIA_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 
 class RewriteNoteRequest(BaseModel):
@@ -60,6 +80,7 @@ class GenerateImageRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
     reference_images: list[str] = Field(default_factory=list)
     save_to_assets: bool = True
+    aspect_ratio: Literal["auto", "1:1", "3:4", "4:3", "9:16", "16:9"] = "auto"
 
 
 class DescribeImageRequest(BaseModel):
@@ -79,8 +100,10 @@ def _serialize_draft(draft: AiDraft) -> dict:
     return {
         "id": draft.id,
         "platform": draft.platform,
+        "draft_name": draft.draft_name or "",
         "title": draft.title,
         "body": draft.body,
+        "tags": draft.tags or [],
         "source_note_id": draft.source_note_id,
         "created_at": draft.created_at.isoformat(),
     }
@@ -150,6 +173,204 @@ def _serialize_generated_asset(asset: AiGeneratedAsset) -> dict[str, Any]:
         "file_path": asset.file_path,
         "created_at": asset.created_at.isoformat(),
     }
+
+
+def _media_dir() -> Path:
+    return Path(get_settings().storage_dir) / "media"
+
+
+def _generated_image_media_name(user_id: int, extension: str) -> str:
+    try:
+        prefix = asset_owner_prefix("xhs", "image", user_id)
+    except ValueError as exc:  # pragma: no cover - constant platform/kind should stay valid.
+        raise ValueError("Invalid media owner") from exc
+    return f"{prefix}{uuid4().hex}{extension}"
+
+
+def _image_extension_from_content_type(content_type: str | None) -> str:
+    media_type = (content_type or "").split(";", 1)[0].strip().lower()
+    extension = GENERATED_IMAGE_ALLOWED_MEDIA_TYPES.get(media_type)
+    if not extension:
+        raise ValueError("生成图片格式不支持保存到媒体资产")
+    return extension
+
+
+def _image_content_type_from_bytes(content: bytes) -> str:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(content) >= 12 and content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    raise ValueError("生成图片内容不是受支持的图片格式")
+
+
+def _is_public_ip_address(value: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return bool(ip.is_global) and not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _resolve_public_http_image_url(url: str) -> tuple[Any, str, str, int]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("生成图片 URL 不支持保存到媒体资产")
+    if parsed.username or parsed.password:
+        raise ValueError("生成图片 URL 不支持用户信息")
+    if not _is_public_ip_address(parsed.hostname):
+        try:
+            addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError("生成图片 URL 无法解析") from exc
+        public_ips = []
+        for address in addresses:
+            ip_text = str(address[4][0])
+            if not _is_public_ip_address(ip_text):
+                raise ValueError("生成图片 URL 不允许指向内网地址")
+            if ip_text not in public_ips:
+                public_ips.append(ip_text)
+        if not public_ips:
+            raise ValueError("生成图片 URL 无法解析")
+        resolved_host = public_ips[0]
+    else:
+        resolved_host = parsed.hostname
+    if not _is_public_ip_address(resolved_host):
+        raise ValueError("生成图片 URL 不允许指向内网地址")
+    return parsed, parsed.hostname, resolved_host, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+def _assert_public_http_image_url(url: str) -> None:
+    _resolve_public_http_image_url(url)
+
+
+def _download_public_http_image(url: str) -> tuple[bytes, str]:
+    parsed, original_host, resolved_host, port = _resolve_public_http_image_url(url)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    pool_class = urllib3.HTTPSConnectionPool if parsed.scheme == "https" else urllib3.HTTPConnectionPool
+    pool_kwargs: dict[str, Any] = {"timeout": 30.0, "retries": False}
+    headers = {"Host": original_host}
+    if parsed.scheme == "https":
+        pool_kwargs.update({"assert_hostname": original_host, "server_hostname": original_host})
+    pool = pool_class(resolved_host, port=port, **pool_kwargs)
+    try:
+        response = pool.request("GET", path, headers=headers, preload_content=False, redirect=False)
+        try:
+            if response.status >= 400:
+                raise ValueError("生成图片 URL 下载失败，无法保存到媒体资产")
+            if 300 <= response.status < 400:
+                raise ValueError("生成图片 URL 不允许重定向")
+            content_type = response.headers.get("content-type")
+            _image_extension_from_content_type(content_type)
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(8192)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > GENERATED_IMAGE_MAX_IMPORT_SIZE:
+                    raise ValueError("生成图片超过 20MB，无法保存到媒体资产")
+                chunks.append(chunk)
+            content = b"".join(chunks)
+            detected_content_type = _image_content_type_from_bytes(content)
+            declared_extension = _image_extension_from_content_type(content_type)
+            detected_extension = _image_extension_from_content_type(detected_content_type)
+            if declared_extension != detected_extension:
+                raise ValueError("生成图片内容与声明格式不一致")
+            return content, detected_content_type
+        finally:
+            response.release_conn()
+    except urllib3.exceptions.HTTPError as exc:
+        raise ValueError("生成图片 URL 下载失败，无法保存到媒体资产") from exc
+    finally:
+        pool.close()
+
+
+def _store_generated_image_bytes(user_id: int, content: bytes, *, content_type: str | None) -> str:
+    if not content:
+        raise ValueError("生成图片内容为空")
+    if len(content) > GENERATED_IMAGE_MAX_IMPORT_SIZE:
+        raise ValueError("生成图片超过 20MB，无法保存到媒体资产")
+    detected_content_type = _image_content_type_from_bytes(content)
+    if content_type:
+        declared_extension = _image_extension_from_content_type(content_type)
+        detected_extension = _image_extension_from_content_type(detected_content_type)
+        if declared_extension != detected_extension:
+            raise ValueError("生成图片内容与声明格式不一致")
+    extension = _image_extension_from_content_type(detected_content_type)
+    media_dir = _media_dir()
+    media_dir.mkdir(parents=True, exist_ok=True)
+    file_name = _generated_image_media_name(user_id, extension)
+    output_path = (media_dir / file_name).resolve()
+    output_path.write_bytes(content)
+    return f"/api/files/media/{file_name}"
+
+
+def _import_generated_image_to_media(image_ref: str, *, user_id: int) -> str:
+    value = (image_ref or "").strip()
+    if not value:
+        raise ValueError("生成图片结果为空，无法保存到媒体资产")
+    if value.startswith("/api/files/media/"):
+        return value
+    if value.startswith("data:image/"):
+        header, separator, encoded = value.partition(",")
+        if not separator:
+            raise ValueError("生成图片 data URL 格式无效")
+        match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64$", header, re.IGNORECASE)
+        if not match:
+            raise ValueError("生成图片 data URL 仅支持 base64 图片")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("生成图片 data URL 无法解码") from exc
+        return _store_generated_image_bytes(user_id, content, content_type=match.group(1))
+    if not value.startswith(("http://", "https://")):
+        try:
+            content = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("生成图片结果必须是媒体资产、HTTP(S) 图片或 base64 图片") from None
+        return _store_generated_image_bytes(user_id, content, content_type=_image_content_type_from_bytes(content))
+    if value.startswith(("http://", "https://")):
+        content, content_type = _download_public_http_image(value)
+        return _store_generated_image_bytes(user_id, content, content_type=content_type)
+    raise ValueError("生成图片结果必须是媒体资产、HTTP(S) 图片或 base64 图片")
+
+
+def _create_generated_image_asset(
+    *,
+    db: Session,
+    user_id: int,
+    prompt: str,
+    model_config: ModelConfig,
+    params: dict[str, Any],
+    source_url: str,
+    draft_id: int | None = None,
+) -> AiGeneratedAsset:
+    file_path = _import_generated_image_to_media(source_url, user_id=user_id)
+    asset = AiGeneratedAsset(
+        user_id=user_id,
+        draft_id=draft_id,
+        prompt=prompt,
+        model_name=model_config.model_name,
+        params=params,
+        file_path=file_path,
+    )
+    db.add(asset)
+    db.flush()
+    return asset
 
 
 def _recorded_text_task(
@@ -260,6 +481,7 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
                     prompt=str(payload.get("prompt") or ""),
                     reference_images=[str(item) for item in refs],
                     owner_user_id=current_user_id,
+                    aspect_ratio=str(payload.get("aspect_ratio") or "auto"),
                 )
             else:
                 result = image_client.generate_image(
@@ -267,6 +489,7 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
                     api_key=api_key,
                     prompt=str(payload.get("prompt") or ""),
                     reference_images=[str(item) for item in refs] or None,
+                    aspect_ratio=str(payload.get("aspect_ratio") or "auto"),
                 )
         except ValueError as exc:
             redacted_error = _redact_sensitive_text(str(exc), [api_key])
@@ -287,19 +510,29 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
 
         response_data: dict[str, Any] = {"url": result.get("url") or "", "raw": result.get("raw")}
         if bool(payload.get("save_to_assets", True)):
-            asset = AiGeneratedAsset(
-                user_id=current_user_id,
-                prompt=str(payload.get("prompt") or ""),
-                model_name=model_config.model_name,
-                params={
-                    "provider": model_config.provider,
-                    "reference_images": refs,
-                    "raw": result.get("raw"),
-                },
-                file_path=result.get("url") or "",
-            )
-            db.add(asset)
-            db.flush()
+            try:
+                asset = _create_generated_image_asset(
+                    db=db,
+                    user_id=current_user_id,
+                    prompt=str(payload.get("prompt") or ""),
+                    model_config=model_config,
+                    params={
+                        "provider": model_config.provider,
+                        "reference_images": refs,
+                        "aspect_ratio": str(payload.get("aspect_ratio") or "auto"),
+                        "raw": result.get("raw"),
+                        "source_url": result.get("url"),
+                    },
+                    source_url=result.get("url") or "",
+                )
+            except ValueError as exc:
+                redacted_error = _redact_sensitive_text(str(exc), [api_key])
+                task.status = "failed"
+                task.progress = 100
+                task.finished_at = shanghai_now()
+                task.payload = {**(task.payload or {}), "error": redacted_error}
+                db.commit()
+                return
             response_data["asset"] = _serialize_generated_asset(asset)
             task.payload = {**(task.payload or {}), "result": response_data, "asset_id": asset.id}
         else:
@@ -338,11 +571,27 @@ def rewrite_note(
             instruction=payload.instruction,
         ),
     )
-    draft.body = rewritten_body
-    task.payload = {**(task.payload or {}), "result_draft_id": draft.id, "result_length": len(rewritten_body)}
+    normalized = normalize_xhs_generated_content(draft.title, rewritten_body, draft.tags or [])
+    candidate = {
+        **_serialize_draft(draft),
+        "title": normalized.title,
+        "body": normalized.body,
+        "tags": normalized.tags,
+    }
+    task.payload = {
+        **(task.payload or {}),
+        "source_draft_id": draft.id,
+        "preview_only": True,
+        "result": {
+            "title": normalized.title,
+            "body": normalized.body,
+            "tags": normalized.tags,
+        },
+        "result_length": len(normalized.body),
+        "normalization_warnings": normalized.warnings,
+    }
     db.commit()
-    db.refresh(draft)
-    return _serialize_draft(draft)
+    return candidate
 
 
 @router.post("/generate-note")
@@ -518,16 +767,29 @@ def generate_cover(
         ),
         sensitive_values=[api_key],
     )
-    asset = AiGeneratedAsset(
-        user_id=current_user.id,
-        draft_id=payload.draft_id,
-        prompt=payload.prompt,
-        model_name=model_config.model_name,
-        params={"provider": model_config.provider, "size": payload.size, "style": payload.style, "raw": result.get("raw")},
-        file_path=result.get("url") or "",
-    )
-    db.add(asset)
-    db.flush()
+    try:
+        asset = _create_generated_image_asset(
+            db=db,
+            user_id=current_user.id,
+            draft_id=payload.draft_id,
+            prompt=payload.prompt,
+            model_config=model_config,
+            params={
+                "provider": model_config.provider,
+                "size": payload.size,
+                "style": payload.style,
+                "raw": result.get("raw"),
+                "source_url": result.get("url"),
+            },
+            source_url=result.get("url") or "",
+        )
+    except ValueError as exc:
+        redacted_error = _redact_sensitive_text(str(exc), [api_key])
+        task.status = "failed"
+        task.progress = 100
+        task.payload = {**(task.payload or {}), "error": redacted_error}
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
     task.payload = {**(task.payload or {}), "asset_id": asset.id}
     db.commit()
     db.refresh(asset)
@@ -557,37 +819,48 @@ def generate_image(
                 prompt=payload.prompt,
                 reference_images=reference_images,
                 owner_user_id=current_user.id,
+                aspect_ratio=payload.aspect_ratio,
             )
         return image_client.generate_image(
             model_config=model_config,
             api_key=api_key,
             prompt=payload.prompt,
             reference_images=reference_images,
+            aspect_ratio=payload.aspect_ratio,
         )
 
     task, result = _recorded_image_task(
         db=db,
         current_user=current_user,
         task_type="ai_image_generate",
-        payload={"model_config_id": model_config.id, "prompt": payload.prompt, "reference_images": payload.reference_images},
+        payload={"model_config_id": model_config.id, "prompt": payload.prompt, "reference_images": payload.reference_images, "aspect_ratio": payload.aspect_ratio},
         action=run_generate_image,
         sensitive_values=[api_key],
     )
     response_data: dict = {"url": result.get("url") or "", "raw": result.get("raw")}
     if payload.save_to_assets:
-        asset = AiGeneratedAsset(
-            user_id=current_user.id,
-            prompt=payload.prompt,
-            model_name=model_config.model_name,
-            params={
-                "provider": model_config.provider,
-                "reference_images": payload.reference_images,
-                "raw": result.get("raw"),
-            },
-            file_path=result.get("url") or "",
-        )
-        db.add(asset)
-        db.flush()
+        try:
+            asset = _create_generated_image_asset(
+                db=db,
+                user_id=current_user.id,
+                prompt=payload.prompt,
+                model_config=model_config,
+                params={
+                    "provider": model_config.provider,
+                    "reference_images": payload.reference_images,
+                    "aspect_ratio": payload.aspect_ratio,
+                    "raw": result.get("raw"),
+                    "source_url": result.get("url"),
+                },
+                source_url=result.get("url") or "",
+            )
+        except ValueError as exc:
+            redacted_error = _redact_sensitive_text(str(exc), [api_key])
+            task.status = "failed"
+            task.progress = 100
+            task.payload = {**(task.payload or {}), "error": redacted_error}
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
         task.payload = {**(task.payload or {}), "asset_id": asset.id}
         db.commit()
         db.refresh(asset)
@@ -622,6 +895,7 @@ def generate_image_async(
             "prompt": payload.prompt,
             "reference_images": reference_images,
             "save_to_assets": payload.save_to_assets,
+            "aspect_ratio": payload.aspect_ratio,
         },
     )
     db.add(task)

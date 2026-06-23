@@ -84,7 +84,7 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
                         <div style={{ width: "100%", display: "flex", gap: 12, alignItems: "flex-start" }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <Text strong ellipsis style={{ display: "block" }}>
-                              {draft.title || "未命名草稿"}
+                              {draft.draft_name || draft.title || "未命名草稿"}
                             </Text>
                             <Text type="secondary" style={{ fontSize: 12 }}>
                               {adapter.getListSubtitle(draft) || formatDraftTime(draft.created_at)}
@@ -107,12 +107,23 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
                 <Space direction="vertical" size={16} style={{ width: "100%" }}>
                   <div>
                     <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-                      标题
+                      内部草稿名
+                    </Text>
+                    <Input
+                      value={controller.draftName}
+                      onChange={(event) => controller.setDraftName(event.target.value)}
+                      placeholder="例如：浴缸案例图替换 - 0622 A版"
+                    />
+                  </div>
+
+                  <div>
+                    <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+                      发布标题
                     </Text>
                     <Input
                       value={controller.title}
                       onChange={(event) => controller.setTitle(event.target.value)}
-                      placeholder="输入草稿标题"
+                      placeholder="输入小红书发布标题"
                     />
                   </div>
 
