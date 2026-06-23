@@ -22,7 +22,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.time import shanghai_now
 from backend.app.core.security import decrypt_text
-from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAsset, NoteComment, PlatformAccount, Tag, User, note_tags
+from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAnalysisResult, NoteAsset, NoteComment, PlatformAccount, Tag, User, note_tags
 from backend.app.schemas.common import paginated
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -158,6 +158,43 @@ def _top20_marks(notes: list[Note]) -> dict[int, list[str]]:
     return marks
 
 
+def _get_feishu_analysis_result(db: Session, note_id: int) -> NoteAnalysisResult | None:
+    return db.scalar(
+        select(NoteAnalysisResult).where(
+            NoteAnalysisResult.note_id == note_id,
+            NoteAnalysisResult.source == "feishu",
+        )
+    )
+
+
+def _serialize_analysis_result(result: NoteAnalysisResult | None) -> dict | None:
+    if result is None:
+        return None
+    return {
+        "analysis_status": result.analysis_status,
+        "subject_object": result.subject_object,
+        "content_type": result.content_type,
+        "core_points": result.core_points,
+        "target_audience": result.target_audience,
+        "title_hook": result.title_hook,
+        "content_structure": result.content_structure,
+        "reusable_models": result.reusable_models or [],
+        "reuse_value": result.reuse_value,
+        "analysis_note": result.analysis_note,
+        "last_pushed_at": result.last_pushed_at.isoformat() if result.last_pushed_at else None,
+        "last_pulled_at": result.last_pulled_at.isoformat() if result.last_pulled_at else None,
+    }
+
+
+def _serialize_feishu_sync(result: NoteAnalysisResult | None) -> dict:
+    return {
+        "push_status": result.push_status if result else "not_synced",
+        "pull_status": result.pull_status if result else "not_pulled",
+        "external_record_id": result.external_record_id if result else None,
+        "last_error": result.last_error if result else "",
+    }
+
+
 def _serialize_note(db: Session, note: Note, top20_marks: dict[int, list[str]] | None = None) -> dict:
     assets = _get_note_assets(db, note)
     image_assets = [asset for asset in assets if asset.asset_type == "image"]
@@ -166,6 +203,7 @@ def _serialize_note(db: Session, note: Note, top20_marks: dict[int, list[str]] |
     raw = note.raw_json if isinstance(note.raw_json, dict) else {}
     raw_cover = raw.get("cover_url") if isinstance(raw.get("cover_url"), str) else ""
     marks = (top20_marks or {}).get(note.id, [])
+    analysis = _get_feishu_analysis_result(db, note.id)
     return {
         "id": note.id,
         "platform": note.platform,
@@ -183,6 +221,8 @@ def _serialize_note(db: Session, note: Note, top20_marks: dict[int, list[str]] |
         "engagement_metrics": _note_engagement_metrics(note),
         "analysis_marks": marks,
         "is_analysis_focus": len(marks) >= 2,
+        "feishu_sync": _serialize_feishu_sync(analysis),
+        "analysis_result": _serialize_analysis_result(analysis),
     }
 
 
@@ -304,6 +344,11 @@ def get_notes(
     has_assets: Optional[bool] = None,
     has_comments: Optional[bool] = None,
     sort_by: Literal["latest", "engagement", "likes", "comments", "collects"] = "latest",
+    feishu_push_status: Optional[str] = None,
+    analysis_status: Optional[str] = None,
+    content_type: Optional[str] = None,
+    reuse_value: Optional[str] = None,
+    reusable_model: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -339,6 +384,24 @@ def get_notes(
     elif has_comments is False:
         statement = statement.where(Note.id.not_in(select(NoteComment.note_id)))
     notes = db.scalars(statement.order_by(Note.created_at.desc())).all()
+
+    def _matches_analysis_filters(note: Note) -> bool:
+        result = _get_feishu_analysis_result(db, note.id)
+        if feishu_push_status and (result.push_status if result else "not_synced") != feishu_push_status:
+            return False
+        if analysis_status and (result.analysis_status if result else None) != analysis_status:
+            return False
+        if content_type and (result.content_type if result else None) != content_type:
+            return False
+        if reuse_value and (result.reuse_value if result else None) != reuse_value:
+            return False
+        if reusable_model and reusable_model not in ((result.reusable_models or []) if result else []):
+            return False
+        return True
+
+    if any([feishu_push_status, analysis_status, content_type, reuse_value, reusable_model]):
+        notes = [note for note in notes if _matches_analysis_filters(note)]
+
     top20_marks = _top20_marks(notes)
     if sort_by != "latest":
         notes = sorted(notes, key=lambda note: (_note_metric(note, sort_by), note.created_at, note.id), reverse=True)

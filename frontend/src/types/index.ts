@@ -638,6 +638,69 @@ export type XhsDataCrawlResponse = {
   items: XhsDataCrawlItem[];
 };
 
+export type FeishuIntegrationConfig = {
+  id?: number;
+  app_id: string;
+  has_app_secret: boolean;
+  bitable_url: string;
+  bitable_app_token?: string | null;
+  table_id: string;
+  view_id?: string | null;
+  enabled: boolean;
+  last_test_status?: string | null;
+  last_test_message?: string | null;
+  last_tested_at?: string | null;
+};
+
+export type FeishuIntegrationConfigPayload = {
+  app_id: string;
+  app_secret: string;
+  bitable_url: string;
+  table_id: string;
+  enabled: boolean;
+};
+
+export type NoteAnalysisResult = {
+  analysis_status?: string | null;
+  subject_object: string;
+  content_type?: string | null;
+  core_points: string;
+  target_audience: string;
+  title_hook: string;
+  content_structure: string;
+  reusable_models: string[];
+  reuse_value?: string | null;
+  analysis_note: string;
+  last_pushed_at?: string | null;
+  last_pulled_at?: string | null;
+};
+
+export type FeishuSyncState = {
+  push_status: "not_synced" | "dry_run" | "synced" | "failed" | string;
+  pull_status: "not_pulled" | "success" | "failed" | string;
+  external_record_id?: string | null;
+  last_error: string;
+};
+
+export type FeishuPushNotesPayload = {
+  note_ids: number[];
+  dry_run?: boolean;
+};
+
+export type FeishuPullNotesPayload = {
+  dry_run?: boolean;
+  records?: Array<Record<string, unknown>>;
+};
+
+export type FeishuSyncResponse = {
+  dry_run?: boolean;
+  updated_count: number;
+  failed_count: number;
+  unmatched_count?: number;
+  errors: unknown[];
+  records?: Array<Record<string, unknown>>;
+};
+
 export type SavedNote = {
   id: number;
   platform: PlatformId;
@@ -660,6 +723,8 @@ export type SavedNote = {
   };
   analysis_marks?: string[];
   is_analysis_focus?: boolean;
+  feishu_sync?: FeishuSyncState;
+  analysis_result?: NoteAnalysisResult | null;
   tags?: Tag[];
 };
 

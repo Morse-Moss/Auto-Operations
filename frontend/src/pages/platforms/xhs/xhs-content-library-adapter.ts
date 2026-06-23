@@ -7,6 +7,7 @@ import {
   LinkOutlined,
   MessageOutlined,
   PictureOutlined,
+  CloudSyncOutlined,
   PlayCircleOutlined,
   ShareAltOutlined,
   StarOutlined,
@@ -29,6 +30,8 @@ import {
   fetchSavedNoteComments,
   fetchSavedNotes,
   fetchTags,
+  pullXhsNotesFromFeishu,
+  pushXhsNotesToFeishu,
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { NoteComment, SavedNote } from "../../../types";
@@ -169,6 +172,17 @@ function renderSavedTags(note: SavedNote, fontSize = 11) {
   return note.tags?.length ? h("div", { style: { marginTop: 6 } }, note.tags.map((tag) => h(Tag, { key: tag.id, color: "blue", style: { fontSize } }, tag.name))) : null;
 }
 
+function renderFeishuAnalysisTags(note: SavedNote, fontSize = 11) {
+  const analysis = note.analysis_result;
+  const tags = [
+    analysis?.analysis_status ? h(Tag, { key: "analysis_status", color: analysis.analysis_status === "废弃" ? "red" : "blue", style: { fontSize } }, analysis.analysis_status) : null,
+    analysis?.content_type ? h(Tag, { key: "content_type", style: { fontSize } }, analysis.content_type) : null,
+    analysis?.reuse_value ? h(Tag, { key: "reuse_value", color: "green", style: { fontSize } }, analysis.reuse_value) : null,
+    analysis?.reusable_models?.[0] ? h(Tag, { key: "reusable_model", color: "purple", style: { fontSize } }, analysis.reusable_models[0]) : null,
+  ].filter(Boolean);
+  return tags.length ? h("div", { style: { marginTop: 6 } }, tags) : null;
+}
+
 function createTableColumns(context: ContentLibraryRenderContext<SavedNote>): ColumnsType<SavedNote> {
   return [
     { title: "标题", dataIndex: "title", ellipsis: true, render: (title: string, note) => h("a", { onClick: () => void context.openDetail(note) }, title || "未命名") },
@@ -183,6 +197,7 @@ function createTableColumns(context: ContentLibraryRenderContext<SavedNote>): Co
       },
     },
     { title: "重点", key: "analysis_marks", width: 180, render: (_, note) => note.analysis_marks?.length ? h(Space, { size: 4, wrap: true }, note.is_analysis_focus ? h(Tag, { color: "gold", key: "focus" }, "重点") : null, note.analysis_marks.map((mark) => h(Tag, { key: mark, color: "blue" }, mark))) : h(Text, { type: "secondary" }, "-") },
+    { title: "飞书分析", key: "analysis_result", width: 220, render: (_, note) => note.analysis_result ? h(Space, { size: 4, wrap: true }, renderFeishuAnalysisTags(note)) : h(Text, { type: "secondary" }, note.feishu_sync?.push_status === "dry_run" ? "Dry-run" : "未回传") },
     { title: "笔记 ID", dataIndex: "note_id", width: 140, ellipsis: true },
     { title: "保存时间", dataIndex: "created_at", width: 160, render: (value: string) => formatSavedTime(value) },
     { title: "标签", key: "tags", width: 180, render: (_, note) => note.tags?.length ? h(Space, { size: 4, wrap: true }, note.tags.map((tag) => h(Tag, { key: tag.id, color: "blue" }, tag.name))) : h(Text, { type: "secondary" }, "-") },
@@ -228,6 +243,7 @@ function renderCardGrid(context: ContentLibraryRenderContext<SavedNote>) {
         ),
       }),
       renderAnalysisMarks(note),
+      renderFeishuAnalysisTags(note),
       renderSavedTags(note),
     ));
   }));
@@ -253,6 +269,28 @@ function renderTable(context: ContentLibraryRenderContext<SavedNote>) {
       rowSelection: { selectedRowKeys: context.controller.selectedItemIds, onChange: (keys) => context.controller.setSelectedItemIds(keys as number[]) },
       onRow: (note) => ({ onClick: () => void context.openDetail(note), style: { cursor: "pointer" } }),
     }),
+  );
+}
+
+function renderFeishuAnalysisDetail(note: SavedNote) {
+  const analysis = note.analysis_result;
+  return h(Card, { size: "small", title: "飞书分析结果", style: { marginBottom: 16, background: "#1f1f1f" } },
+    h(Descriptions, { column: 1, size: "small" },
+      h(Descriptions.Item, { label: "飞书同步状态" }, note.feishu_sync?.push_status || "not_synced"),
+      h(Descriptions.Item, { label: "回传状态" }, note.feishu_sync?.pull_status || "not_pulled"),
+      h(Descriptions.Item, { label: "分析状态" }, analysis?.analysis_status || "未回传"),
+      h(Descriptions.Item, { label: "产品/主题对象" }, analysis?.subject_object || "-"),
+      h(Descriptions.Item, { label: "内容类型" }, analysis?.content_type || "-"),
+      h(Descriptions.Item, { label: "核心卖点/核心观点" }, analysis?.core_points || "-"),
+      h(Descriptions.Item, { label: "目标人群" }, analysis?.target_audience || "-"),
+      h(Descriptions.Item, { label: "封面/标题钩子" }, analysis?.title_hook || "-"),
+      h(Descriptions.Item, { label: "内容结构分析" }, analysis?.content_structure || "-"),
+      h(Descriptions.Item, { label: "可复用模型" }, analysis?.reusable_models?.join("、") || "-"),
+      h(Descriptions.Item, { label: "复用价值" }, analysis?.reuse_value || "-"),
+      h(Descriptions.Item, { label: "分析备注" }, analysis?.analysis_note || "-"),
+      note.feishu_sync?.external_record_id ? h(Descriptions.Item, { label: "飞书记录" }, note.feishu_sync.external_record_id) : null,
+      note.feishu_sync?.last_error ? h(Descriptions.Item, { label: "失败原因" }, note.feishu_sync.last_error) : null,
+    ),
   );
 }
 
@@ -282,6 +320,33 @@ function renderComment(comment: NoteComment, replies: NoteComment[]) {
   );
 }
 
+function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
+  async function syncSelectedToFeishu() {
+    if (!context.controller.selectedItemIds.length) {
+      context.controller.setBatchActionMessage("请先选择要同步到飞书的笔记。");
+      return;
+    }
+    const result = await pushXhsNotesToFeishu({ note_ids: context.controller.selectedItemIds, dry_run: false });
+    context.controller.setBatchActionMessage(`同步到飞书：新增 ${result.records?.filter((record) => record.status === "created").length ?? 0} 条，更新 ${result.updated_count} 条，失败 ${result.failed_count} 条`);
+    await context.controller.refreshItems();
+  }
+
+  async function pullSelectedFromFeishu() {
+    if (!context.controller.selectedItemIds.length) {
+      context.controller.setBatchActionMessage("请先选择要从飞书回传的笔记。");
+      return;
+    }
+    const result = await pullXhsNotesFromFeishu({ note_ids: context.controller.selectedItemIds, dry_run: false });
+    context.controller.setBatchActionMessage(`从飞书回传：更新 ${result.updated_count} 条，未匹配 ${result.unmatched_count ?? 0} 条，失败 ${result.failed_count} 条`);
+    await context.controller.refreshItems();
+  }
+
+  return h(Space, { wrap: true },
+    h(Button, { icon: h(CloudSyncOutlined), disabled: !context.controller.selectedItemIds.length, onClick: () => void syncSelectedToFeishu() }, "同步到飞书"),
+    h(Button, { disabled: !context.controller.selectedItemIds.length, onClick: () => void pullSelectedFromFeishu() }, "从飞书回传"),
+  );
+}
+
 function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibraryAdapter<SavedNote>["renderDetail"]>[0]) {
   const noteUrl = getNoteUrl(selectedNote);
   const authorProfileUrl = getAuthorProfileUrl(selectedNote);
@@ -298,6 +363,7 @@ function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibr
       h(Descriptions.Item, { label: "作品链接" }, h(Typography.Link, { href: noteUrl, target: "_blank", rel: "noreferrer", style: { fontSize: 12, wordBreak: "break-all" } }, noteUrl)),
     ),
     platformTags.length > 0 ? h("div", { style: { marginBottom: 12 } }, platformTags.map((tag) => h(Tag, { key: tag, color: "blue" }, `#${tag}`))) : null,
+    renderFeishuAnalysisDetail(selectedNote),
     h(Button, { type: "link", icon: h(LinkOutlined), href: noteUrl, target: "_blank", rel: "noreferrer", style: { padding: 0, marginBottom: 16 } }, "查看原文"),
     h(Space, { wrap: true, style: { marginBottom: 16 } },
       h(Button, { icon: h(CopyOutlined), onClick: controller.copySelectedItem, size: "small" }, "复制内容"),
@@ -342,6 +408,7 @@ export function createXhsContentLibraryAdapter(navigate: XhsNavigate): ContentLi
       canTag: true,
       canExport: true,
       canReadComments: true,
+      canFilterFeishuAnalysis: true,
     },
     labels: {
       savedCountTitle: "已保存笔记",
@@ -395,6 +462,7 @@ export function createXhsContentLibraryAdapter(navigate: XhsNavigate): ContentLi
       { value: "collects", label: "最多收藏" },
     ],
     emptyState: { description: "内容库还是空的", actionLabel: "去发现笔记", actionPath: "/platforms/xhs/discovery" },
+    renderToolbarExtras: renderFeishuToolbar,
     loadItems: (filters) => fetchSavedNotes({ platform: "xhs", ...filters }),
     loadItem: (itemId) => fetchSavedNote(itemId),
     loadAssets: (itemId) => fetchSavedNoteAssets(itemId),

@@ -297,6 +297,87 @@ def test_rewrite_page_splits_generate_reference_inputs_before_combining():
     assert "rewriteDraftWithAi" in source
 
 
+def test_frontend_exposes_feishu_integration_contracts():
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+
+    assert "FeishuIntegrationConfig" in types_source
+    assert "FeishuIntegrationConfigPayload" in types_source
+    assert "NoteAnalysisResult" in types_source
+    assert "FeishuSyncState" in types_source
+    assert "FeishuPushNotesPayload" in types_source
+    assert "FeishuPullNotesPayload" in types_source
+    assert "FeishuSyncResponse" in types_source
+    assert "feishu_sync?: FeishuSyncState" in types_source
+    assert "analysis_result?: NoteAnalysisResult | null" in types_source
+    assert "fetchFeishuConfig" in api_source
+    assert "saveFeishuConfig" in api_source
+    assert "ensureFeishuFields" in api_source
+    assert "testFeishuConnection" in api_source
+    assert "pushXhsNotesToFeishu" in api_source
+    assert "pullXhsNotesFromFeishu" in api_source
+    assert '"/integrations/feishu/config"' in api_source
+    assert '"/integrations/feishu/xhs-notes/push"' in api_source
+    assert '"/integrations/feishu/xhs-notes/pull"' in api_source
+    assert "feishu_push_status" in api_source
+    assert "analysis_status" in api_source
+    assert "content_type" in api_source
+    assert "reuse_value" in api_source
+    assert "reusable_model" in api_source
+
+
+def test_settings_page_exposes_feishu_integration_card():
+    source = open("frontend/src/pages/settings/settings-page.tsx", encoding="utf-8").read()
+
+    assert "飞书集成" in source
+    assert "飞书 App ID" in source
+    assert "飞书 App Secret" in source
+    assert "飞书多维表格地址" in source
+    assert "目标数据表" in source
+    assert "启用状态" in source
+    assert "保存飞书配置" in source
+    assert "测试连接" in source
+    assert "自动补字段" in source
+    assert "fetchFeishuConfig" in source
+    assert "saveFeishuConfig" in source
+    assert "ensureFeishuFields" in source
+
+
+def test_xhs_content_library_exposes_feishu_filters_and_actions():
+    adapter_source = open("frontend/src/pages/platforms/xhs/xhs-content-library-adapter.ts", encoding="utf-8").read()
+    shell_source = open("frontend/src/components/content-library/content-library-shell.tsx", encoding="utf-8").read()
+    types_source = open("frontend/src/components/content-library/content-library-types.ts", encoding="utf-8").read()
+    hook_source = open("frontend/src/components/content-library/use-content-library.ts", encoding="utf-8").read()
+
+    assert "飞书同步状态" in shell_source
+    assert "分析状态" in shell_source
+    assert "内容类型" in shell_source
+    assert "复用价值" in shell_source
+    assert "可复用模型" in shell_source
+    assert "canFilterFeishuAnalysis" in types_source
+    assert "feishuPushStatusFilter" in types_source
+    assert "feishuPushStatusFilter" in hook_source
+    assert "pushXhsNotesToFeishu" in adapter_source
+    assert "pullXhsNotesFromFeishu" in adapter_source
+    assert "同步到飞书" in adapter_source
+    assert "从飞书回传" in adapter_source
+    assert "飞书分析结果" in adapter_source
+    assert "analysis_result" in adapter_source
+    assert "feishu_sync" in adapter_source
+
+
+def test_crawler_page_groups_sources_by_huitun_and_xhs_tabs():
+    source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
+
+    assert "灰豚热词采集" in source
+    assert "小红书站内采集" in source
+    assert "灰豚用于发现热词和候选关键词" in source
+    assert "不直接进入内容库" in source
+    assert "按关键词组采集" in source
+    assert "临时关键词搜索" in source
+    assert "Tabs" in source
+
+
 def test_discovery_uses_antd_components_and_preserves_core_logic():
     source = open("frontend/src/pages/platforms/xhs/discovery-page.tsx", encoding="utf-8").read()
 

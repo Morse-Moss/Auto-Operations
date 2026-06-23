@@ -30,6 +30,11 @@ import type {
   DashboardOverview,
   Draft,
   DescribeImagePayload,
+  FeishuIntegrationConfig,
+  FeishuIntegrationConfigPayload,
+  FeishuPullNotesPayload,
+  FeishuPushNotesPayload,
+  FeishuSyncResponse,
   GenerateNotePayload,
   GenerateCoverPayload,
   GenerateImagePayload,
@@ -602,10 +607,45 @@ export type SavedNoteFilters = {
   tag_id?: number;
   has_assets?: boolean;
   has_comments?: boolean;
+  feishu_push_status?: string;
+  analysis_status?: string;
+  content_type?: string;
+  reuse_value?: string;
+  reusable_model?: string;
   sort_by?: "latest" | "engagement" | "likes" | "comments" | "collects";
   page?: number;
   page_size?: number;
 };
+
+export async function fetchFeishuConfig(): Promise<FeishuIntegrationConfig> {
+  const response = await http.get<FeishuIntegrationConfig>("/integrations/feishu/config");
+  return response.data;
+}
+
+export async function saveFeishuConfig(payload: FeishuIntegrationConfigPayload): Promise<FeishuIntegrationConfig> {
+  const response = await http.put<FeishuIntegrationConfig>("/integrations/feishu/config", payload);
+  return response.data;
+}
+
+export async function testFeishuConnection(): Promise<{ status: string; message: string; field_count?: number }> {
+  const response = await http.post<{ status: string; message: string; field_count?: number }>("/integrations/feishu/test");
+  return response.data;
+}
+
+export async function ensureFeishuFields(payload: { dry_run?: boolean } = { dry_run: true }): Promise<{ dry_run: boolean; status: string; fields: Array<Record<string, unknown>>; created_count?: number; skipped_count?: number; message?: string }> {
+  const response = await http.post<{ dry_run: boolean; status: string; fields: Array<Record<string, unknown>>; created_count?: number; skipped_count?: number; message?: string }>("/integrations/feishu/ensure-fields", payload);
+  return response.data;
+}
+
+export async function pushXhsNotesToFeishu(payload: FeishuPushNotesPayload): Promise<FeishuSyncResponse> {
+  const response = await http.post<FeishuSyncResponse>("/integrations/feishu/xhs-notes/push", payload);
+  return response.data;
+}
+
+export async function pullXhsNotesFromFeishu(payload: FeishuPullNotesPayload): Promise<FeishuSyncResponse> {
+  const response = await http.post<FeishuSyncResponse>("/integrations/feishu/xhs-notes/pull", payload);
+  return response.data;
+}
 
 export async function fetchSavedNoteIds(platform = "xhs"): Promise<string[]> {
   const response = await http.get<{ items: string[] }>("/notes/ids", { params: { platform } });
@@ -622,6 +662,11 @@ export async function fetchSavedNotes(platformOrFilters: string | SavedNoteFilte
           tag_id: platformOrFilters.tag_id,
           has_assets: platformOrFilters.has_assets,
           has_comments: platformOrFilters.has_comments,
+          feishu_push_status: platformOrFilters.feishu_push_status,
+          analysis_status: platformOrFilters.analysis_status,
+          content_type: platformOrFilters.content_type,
+          reuse_value: platformOrFilters.reuse_value,
+          reusable_model: platformOrFilters.reusable_model,
           sort_by: platformOrFilters.sort_by,
           page: platformOrFilters.page,
           page_size: platformOrFilters.page_size,

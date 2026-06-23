@@ -23,6 +23,11 @@ export type ContentLibraryFilters = {
   tag_id?: number;
   has_assets?: boolean;
   has_comments?: boolean;
+  feishu_push_status?: string;
+  analysis_status?: string;
+  content_type?: string;
+  reuse_value?: string;
+  reusable_model?: string;
   sort_by?: ContentLibrarySortBy;
   page?: number;
   page_size?: number;
@@ -50,6 +55,7 @@ export type ContentLibraryCapabilities = {
   canReadComments: boolean;
   canFilterAssets?: boolean;
   canFilterComments?: boolean;
+  canFilterFeishuAnalysis?: boolean;
 };
 
 export type ContentLibraryEmptyState = {
@@ -191,6 +197,11 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   selectedTagFilter: string;
   hasAssetsFilter: boolean;
   hasCommentsFilter: boolean;
+  feishuPushStatusFilter: string;
+  analysisStatusFilter: string;
+  contentTypeFilter: string;
+  reuseValueFilter: string;
+  reusableModelFilter: string;
   sortBy: ContentLibrarySortBy;
   page: number;
   pageSize: number;
@@ -205,6 +216,11 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   setSelectedTagFilter(value: string): void;
   setHasAssetsFilter(value: boolean): void;
   setHasCommentsFilter(value: boolean): void;
+  setFeishuPushStatusFilter(value: string): void;
+  setAnalysisStatusFilter(value: string): void;
+  setContentTypeFilter(value: string): void;
+  setReuseValueFilter(value: string): void;
+  setReusableModelFilter(value: string): void;
   setViewMode(value: ContentLibraryViewMode): void;
   setNewTagName(value: string): void;
   setBatchTagId(value: string): void;

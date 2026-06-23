@@ -59,6 +59,65 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
           <Col span={4}>
             <Select value={controller.sortBy} onChange={controller.handleSortChange} style={{ width: "100%" }} options={adapter.sortOptions} />
           </Col>
+          {adapter.capabilities.canFilterFeishuAnalysis ? (
+            <>
+              <Col span={4}>
+                <Select
+                  allowClear
+                  placeholder="飞书同步状态"
+                  value={controller.feishuPushStatusFilter || undefined}
+                  onChange={(value) => controller.setFeishuPushStatusFilter(value ?? "")}
+                  style={{ width: "100%" }}
+                  options={[
+                    { value: "not_synced", label: "未同步" },
+                    { value: "dry_run", label: "Dry-run" },
+                    { value: "synced", label: "已同步" },
+                    { value: "failed", label: "同步失败" },
+                  ]}
+                />
+              </Col>
+              <Col span={4}>
+                <Select
+                  allowClear
+                  placeholder="分析状态"
+                  value={controller.analysisStatusFilter || undefined}
+                  onChange={(value) => controller.setAnalysisStatusFilter(value ?? "")}
+                  style={{ width: "100%" }}
+                  options={["待分析", "分析中", "已完成", "废弃"].map((value) => ({ value, label: value }))}
+                />
+              </Col>
+              <Col span={4}>
+                <Select
+                  allowClear
+                  placeholder="内容类型"
+                  value={controller.contentTypeFilter || undefined}
+                  onChange={(value) => controller.setContentTypeFilter(value ?? "")}
+                  style={{ width: "100%" }}
+                  options={["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事"].map((value) => ({ value, label: value }))}
+                />
+              </Col>
+              <Col span={4}>
+                <Select
+                  allowClear
+                  placeholder="复用价值"
+                  value={controller.reuseValueFilter || undefined}
+                  onChange={(value) => controller.setReuseValueFilter(value ?? "")}
+                  style={{ width: "100%" }}
+                  options={["选题参考", "标题参考", "正文结构参考", "卖点表达参考", "可直接改写", "行业观察", "竞品参考", "废弃"].map((value) => ({ value, label: value }))}
+                />
+              </Col>
+              <Col span={5}>
+                <Select
+                  allowClear
+                  placeholder="可复用模型"
+                  value={controller.reusableModelFilter || undefined}
+                  onChange={(value) => controller.setReusableModelFilter(value ?? "")}
+                  style={{ width: "100%" }}
+                  options={["问题驱动模型", "情绪驱动模型", "场景种草模型", "对比反差模型", "测评背书模型", "教程方法模型", "故事案例模型", "IP/热点借势模型"].map((value) => ({ value, label: value }))}
+                />
+              </Col>
+            </>
+          ) : null}
           {adapter.capabilities.canFilterAssets !== false ? (
             <Col><Checkbox checked={controller.hasAssetsFilter} onChange={(event) => controller.setHasAssetsFilter(event.target.checked)}>有素材</Checkbox></Col>
           ) : null}

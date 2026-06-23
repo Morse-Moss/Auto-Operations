@@ -4,6 +4,7 @@ from backend.app.models.api_log import ApiLog
 from backend.app.models.auto_task import AutoTask
 from backend.app.models.crawl_diagnostic import CrawlDiagnostic
 from backend.app.models.keyword_discovery import KeywordDiscoveryItem, KeywordDiscoveryRun
+from backend.app.models.feishu import FeishuIntegrationConfig, NoteAnalysisResult
 from backend.app.models.keyword_group import KeywordGroup
 from backend.app.models.login_session import LoginSession
 from backend.app.models.monitoring import MonitoringSnapshot, MonitoringTarget
@@ -40,6 +41,7 @@ __all__ = [
     "CrawlDiagnostic",
     "DEFAULT_TEXT_MODEL_NAME",
     "DraftAsset",
+    "FeishuIntegrationConfig",
     "KeywordDiscoveryItem",
     "KeywordDiscoveryRun",
     "KeywordGroup",
@@ -50,6 +52,7 @@ __all__ = [
     "Note",
     "NoteAsset",
     "NoteComment",
+    "NoteAnalysisResult",
     "Notification",
     "PlatformAccount",
     "PublishAsset",
