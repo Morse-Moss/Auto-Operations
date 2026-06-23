@@ -1,5 +1,5 @@
-import { DeleteOutlined, FileTextOutlined, LinkOutlined, MessageOutlined, ReadOutlined, StarOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Checkbox, Col, Descriptions, Image, List, Row, Space, Table, Tag, Typography } from "antd";
+import { CloudSyncOutlined, DeleteOutlined, FileTextOutlined, LinkOutlined, MessageOutlined, ReadOutlined, StarOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Checkbox, Col, Descriptions, Image, List, message, Row, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import React from "react";
 
@@ -17,6 +17,8 @@ import {
   deleteWechatOfficialContentLibraryItem,
   fetchWechatOfficialContentDetail,
   fetchWechatOfficialContentLibrary,
+  pullWechatOfficialArticlesFromFeishu,
+  pushWechatOfficialArticlesToFeishu,
   refreshWechatOfficialContentDetail,
 } from "../../lib/api";
 import type {
@@ -144,6 +146,69 @@ function mapComment(itemId: number, comment: WechatOfficialArticleComment, index
     created_at_remote: comment.created_at_remote || null,
     raw_json: undefined,
   };
+}
+
+function syncCount(result: { created_count?: number; updated_count: number; failed_count: number; unmatched_count?: number }): string {
+  const created = result.created_count ?? 0;
+  const unmatched = result.unmatched_count ?? 0;
+  return `新增 ${created} / 更新 ${result.updated_count} / 未匹配 ${unmatched} / 失败 ${result.failed_count}`;
+}
+
+function actionError(error: unknown): string {
+  return error instanceof Error ? error.message : "未知错误";
+}
+
+function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<WechatOfficialContentLibraryViewItem>["controller"] }) {
+  const selectedIds = context.controller.selectedItemIds;
+
+  async function pushSelectedToFeishu() {
+    if (!selectedIds.length) {
+      context.controller.setBatchActionMessage("请先选择要推送飞书分析的公众号文章。");
+      return;
+    }
+    context.controller.setBatchActionMessage(`正在推送 ${selectedIds.length} 篇公众号文章到飞书分析表…`);
+    const loadingMessage = message.loading(`正在推送 ${selectedIds.length} 篇公众号文章到飞书…`, 0);
+    try {
+      const result = await pushWechatOfficialArticlesToFeishu({ article_ids: selectedIds, dry_run: false });
+      const text = `公众号飞书分析推送完成：${syncCount(result)}`;
+      context.controller.setBatchActionMessage(text);
+      loadingMessage();
+      message.success(text);
+      await context.controller.refreshItems();
+    } catch (error) {
+      const text = `公众号飞书分析推送失败：${actionError(error)}`;
+      context.controller.setBatchActionMessage(text);
+      loadingMessage();
+      message.error(text);
+    }
+  }
+
+  async function pullSelectedFromFeishu() {
+    if (!selectedIds.length) {
+      context.controller.setBatchActionMessage("请先选择要回拉飞书标注的公众号文章。");
+      return;
+    }
+    context.controller.setBatchActionMessage(`正在回拉 ${selectedIds.length} 篇公众号文章的飞书标注…`);
+    const loadingMessage = message.loading(`正在回拉 ${selectedIds.length} 篇公众号文章的飞书标注…`, 0);
+    try {
+      const result = await pullWechatOfficialArticlesFromFeishu({ article_ids: selectedIds, dry_run: false });
+      const text = `公众号飞书标注回拉完成：${syncCount(result)}`;
+      context.controller.setBatchActionMessage(text);
+      loadingMessage();
+      message.success(text);
+      await context.controller.refreshItems();
+    } catch (error) {
+      const text = `公众号飞书标注回拉失败：${actionError(error)}`;
+      context.controller.setBatchActionMessage(text);
+      loadingMessage();
+      message.error(text);
+    }
+  }
+
+  return h(Space, { wrap: true },
+    h(Button, { icon: h(CloudSyncOutlined), disabled: !selectedIds.length, onClick: () => void pushSelectedToFeishu() }, selectedIds.length ? `推送 ${selectedIds.length} 篇到飞书分析` : "推送飞书分析"),
+    h(Button, { disabled: !selectedIds.length, onClick: () => void pullSelectedFromFeishu() }, selectedIds.length ? `回拉 ${selectedIds.length} 篇飞书标注` : "回拉飞书标注"),
+  );
 }
 
 function createTableColumns(context: ContentLibraryRenderContext<WechatOfficialContentLibraryViewItem>): ColumnsType<WechatOfficialContentLibraryViewItem> {
@@ -324,6 +389,7 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
       canReadComments: true,
       canFilterAssets: false,
       canFilterComments: false,
+      canFilterFeishuAnalysis: true,
     },
     labels: {
       savedCountTitle: "公众号文章",
@@ -439,6 +505,7 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
     getCopyText(item) {
       return [item.title, item.author_name, item.article.digest, item.detail?.latest_snapshot?.text].filter(Boolean).join("\n\n");
     },
+    renderToolbarExtras: renderFeishuToolbar,
     renderCardGrid,
     renderTable,
     renderDetail,

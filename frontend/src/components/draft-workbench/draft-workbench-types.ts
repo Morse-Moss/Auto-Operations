@@ -17,6 +17,7 @@ export type DraftWorkbenchDryRunResult = {
   ok: boolean;
   publish_blocked: boolean;
   sendall_blocked: boolean;
+  preview_blocked?: boolean;
   checks: Record<string, string>;
 };
 

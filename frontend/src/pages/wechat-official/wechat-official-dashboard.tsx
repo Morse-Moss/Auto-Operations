@@ -28,6 +28,7 @@ import { PageHeader } from "../../components/layout/app-shell";
 import {
   fetchWechatOfficialContentLibrary,
   fetchWechatOfficialOverview,
+  fetchWechatOfficialReadiness,
   fetchWechatOfficialRedfoxConfig,
   saveWechatOfficialRedfoxConfig,
   validateWechatOfficialRedfoxConfig,
@@ -39,6 +40,7 @@ import { WechatOfficialDraftWorkbench } from "./wechat-official-draft-workbench"
 import type {
   WechatOfficialContentLibraryItem,
   WechatOfficialOverview,
+  WechatOfficialReadiness,
   WechatOfficialRedfoxConfig,
 } from "../../types";
 
@@ -57,6 +59,21 @@ const fallbackOverview: WechatOfficialOverview = {
     { key: "publish.real_publish", label: "群发发布", status: "blocked", message: "真实发布和群发保持阻断。" },
   ],
   blocked_actions: ["真实授权", "素材上传", "草稿同步", "预览发送", "群发发布"],
+};
+
+const fallbackReadiness: WechatOfficialReadiness = {
+  summary: { overall_status: "blocked", next_actions: ["配置 Redfox", "采集公众号候选", "从内容库生成草稿"] },
+  checks: [
+    { key: "redfox.config", label: "Redfox 配置", status: "missing", message: "Redfox 未配置。", action: "去设置页配置 Redfox" },
+    { key: "safety.publish", label: "真实发布安全边界", status: "blocked", message: "真实发布、预览发送、群发和素材上传均保持阻断。", action: "需要真实发布时先做风险和 QA 设计" },
+  ],
+  redfox: { configured: false, status: "missing" },
+  sessions: { valid: 0, pending: 0, expired: 0, invalid: 0, total: 0 },
+  content: { total: 0, candidate: 0, shortlisted: 0, analyzing: 0, draft_ready: 0, rejected: 0, snapshots: 0, images: 0, comments: 0, metrics: 0 },
+  feishu: { configured: false, enabled: false },
+  drafts: { count: 0, dry_run_available: true },
+  image_studio: { available: true, material_upload_blocked: true },
+  safety: { publish_blocked: true, sendall_blocked: true, preview_blocked: true, material_upload_blocked: true, message: "真实发布、预览发送、群发和素材上传均保持阻断。" },
 };
 
 type WechatOfficialSection = "dashboard" | "accounts" | "discovery" | "library" | "drafts" | "settings";
@@ -105,9 +122,9 @@ function sectionFromPath(pathname: string): WechatOfficialSection {
 
 function statusColor(status?: string): string {
   if (!status) return "default";
-  if (["blocked", "expired", "invalid", "failed", "rejected"].includes(status)) return "red";
+  if (["blocked", "expired", "invalid", "failed", "rejected", "missing"].includes(status)) return "red";
   if (["planned", "partial", "pending", "unknown", "analyzing"].includes(status)) return "gold";
-  if (["available", "valid", "active", "succeeded", "completed", "shortlisted"].includes(status)) return "green";
+  if (["ready", "available", "valid", "active", "succeeded", "completed", "shortlisted"].includes(status)) return "green";
   if (["draft_ready"].includes(status)) return "purple";
   return "default";
 }
@@ -136,6 +153,7 @@ export function WechatOfficialDashboard() {
   const showDrafts = currentSection === "drafts";
   const showSettings = currentSection === "settings";
   const [overview, setOverview] = useState<WechatOfficialOverview>(fallbackOverview);
+  const [readiness, setReadiness] = useState<WechatOfficialReadiness>(fallbackReadiness);
   const [redfoxConfig, setRedfoxConfig] = useState<WechatOfficialRedfoxConfig | null>(null);
   const [configured, setConfigured] = useState(false);
   const [contentItems, setContentItems] = useState<WechatOfficialContentLibraryItem[]>([]);
@@ -155,12 +173,14 @@ export function WechatOfficialDashboard() {
 
   const refreshWorkspace = useCallback(async () => {
     try {
-      const [overviewPayload, configPayload, libraryPayload] = await Promise.all([
+      const [overviewPayload, readinessPayload, configPayload, libraryPayload] = await Promise.all([
         fetchWechatOfficialOverview(),
+        fetchWechatOfficialReadiness(),
         fetchWechatOfficialRedfoxConfig(),
         fetchWechatOfficialContentLibrary(),
       ]);
       setOverview(overviewPayload);
+      setReadiness(readinessPayload);
       setConfigured(configPayload.configured);
       setRedfoxConfig(configPayload.config);
       setContentItems(libraryPayload.items);
@@ -172,6 +192,7 @@ export function WechatOfficialDashboard() {
       setLoadFailed(false);
     } catch {
       setOverview(fallbackOverview);
+      setReadiness(fallbackReadiness);
       setLoadFailed(true);
     }
   }, [configForm]);
@@ -241,10 +262,32 @@ export function WechatOfficialDashboard() {
       <Row gutter={[16, 16]}>
         {showDashboard ? (
           <>
+            <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Readiness" value={readiness.summary.overall_status} prefix={<SafetyCertificateOutlined />} /></Card></Col>
             <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Redfox" value={configuredText} prefix={<SafetyCertificateOutlined />} /></Card></Col>
             <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="爆文候选" value={candidateCount} prefix={<DatabaseOutlined />} /></Card></Col>
             <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="内容库" value={libraryCount} prefix={<FileTextOutlined />} /></Card></Col>
+            <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="公众号草稿" value={readiness.drafts.count} prefix={<FileTextOutlined />} /></Card></Col>
+            <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="候选图" value={readiness.content.images} prefix={<FileTextOutlined />} /></Card></Col>
             <Col xs={24} md={8} xl={6}><Card style={cardStyle}><Statistic title="Blocked actions" value={overview.blocked_actions.length} prefix={<LockOutlined />} /></Card></Col>
+            <Col xs={24}>
+              <Card title="Readiness / Diagnostics" style={cardStyle}>
+                <Space direction="vertical" style={{ width: "100%" }}>
+                  <Alert showIcon type={readiness.summary.overall_status === "ready" ? "success" : "warning"} message={`当前状态：${readiness.summary.overall_status}`} description={readiness.summary.next_actions.join(" / ")} />
+                  <Space wrap>
+                    {readiness.checks.map((check) => <Tag key={check.key} color={statusColor(check.status)}>{check.label}: {check.status}</Tag>)}
+                  </Space>
+                  <Space wrap>
+                    <Tag color="red">publish blocked</Tag>
+                    <Tag color="red">sendall blocked</Tag>
+                    <Tag color="red">preview blocked</Tag>
+                    <Tag color="red">material upload blocked</Tag>
+                  </Space>
+                  <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                    下一步建议：{readiness.summary.next_actions.join("；")}
+                  </Paragraph>
+                </Space>
+              </Card>
+            </Col>
             <Col xs={24}>
               <Collapse
                 items={[

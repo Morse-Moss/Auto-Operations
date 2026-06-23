@@ -395,6 +395,7 @@ export type WechatOfficialDraftDryRun = {
   ok: boolean;
   publish_blocked: boolean;
   sendall_blocked: boolean;
+  preview_blocked?: boolean;
   checks: Record<string, "ok" | "missing" | "blocked" | "warning" | string>;
 };
 
@@ -481,6 +482,40 @@ export type WechatOfficialRedfoxCollectJobDetail = {
   job: WechatOfficialCrawlJob;
   items: WechatOfficialContentLibraryItem[];
   total: number;
+};
+
+export type WechatOfficialReadinessCheck = {
+  key: string;
+  label: string;
+  status: "ready" | "partial" | "missing" | "blocked" | string;
+  message: string;
+  action: string;
+};
+
+export type WechatOfficialReadiness = {
+  summary: {
+    overall_status: "ready" | "partial" | "blocked" | string;
+    next_actions: string[];
+  };
+  checks: WechatOfficialReadinessCheck[];
+  redfox: { configured: boolean; status: string; last_error?: string; last_checked_at?: string | null };
+  sessions: { valid: number; pending: number; expired: number; invalid: number; total: number };
+  content: {
+    total: number;
+    candidate: number;
+    shortlisted: number;
+    analyzing: number;
+    draft_ready: number;
+    rejected: number;
+    snapshots: number;
+    images: number;
+    comments: number;
+    metrics: number;
+  };
+  feishu: { configured: boolean; enabled: boolean; last_test_status?: string | null; last_test_message?: string | null };
+  drafts: { count: number; dry_run_available: boolean };
+  image_studio: { available: boolean; material_upload_blocked: boolean };
+  safety: { publish_blocked: boolean; sendall_blocked: boolean; preview_blocked: boolean; material_upload_blocked: boolean; message: string };
 };
 
 export type Paginated<T> = {
@@ -715,8 +750,20 @@ export type FeishuPullNotesPayload = {
   records?: Array<Record<string, unknown>>;
 };
 
+export type FeishuPushWechatOfficialArticlesPayload = {
+  article_ids: number[];
+  dry_run?: boolean;
+};
+
+export type FeishuPullWechatOfficialArticlesPayload = {
+  article_ids?: number[];
+  dry_run?: boolean;
+  records?: Array<Record<string, unknown>>;
+};
+
 export type FeishuSyncResponse = {
   dry_run?: boolean;
+  created_count?: number;
   updated_count: number;
   failed_count: number;
   unmatched_count?: number;

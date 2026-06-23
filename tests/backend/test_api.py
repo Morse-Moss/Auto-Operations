@@ -436,6 +436,10 @@ def test_wechat_official_library_reuses_content_library_shell_without_publish_ac
     assert "renderToolbarExtras" in shell_source
     assert "refreshSelectedItem" in controller_source
     assert "refreshSelectedItem" in adapter_source
+    assert "pushWechatOfficialArticlesToFeishu" in adapter_source
+    assert "pullWechatOfficialArticlesFromFeishu" in adapter_source
+    assert "推送飞书分析" in adapter_source
+    assert "回拉飞书标注" in adapter_source
     assert "createDraftFromNote" not in adapter_source
     assert "fetchDrafts" not in adapter_source
     assert "sendToPublish" not in adapter_source
@@ -495,6 +499,67 @@ def test_wechat_official_discovery_is_candidate_only_and_delegates_operations_to
     assert "createWechatOfficialDraft" in library_adapter_source
 
 
+def test_wechat_official_image_studio_reuses_generic_draft_context_without_material_upload():
+    generic_context_source = open("frontend/src/components/image-studio/draft-image-studio-context.ts", encoding="utf-8").read()
+    xhs_context_source = open("frontend/src/pages/platforms/xhs/xhs-image-studio-context.ts", encoding="utf-8").read()
+    wechat_context_source = open("frontend/src/pages/wechat-official/wechat-official-image-studio-context.ts", encoding="utf-8").read()
+    wechat_workbench_source = open("frontend/src/pages/wechat-official/wechat-official-draft-workbench.tsx", encoding="utf-8").read()
+    image_studio_source = open("frontend/src/pages/platforms/xhs/image-studio-page.tsx", encoding="utf-8").read()
+    router_source = open("frontend/src/app/router.tsx", encoding="utf-8").read()
+
+    assert "DraftImageStudioDraftContext" in generic_context_source
+    assert "platform" in generic_context_source
+    assert "source_article_id" in generic_context_source
+    assert "candidate_images" in generic_context_source
+    assert "requireFresh" in generic_context_source
+    assert "DRAFT_IMAGE_STUDIO_CONTEXT_TTL_MS" in generic_context_source
+
+    assert "saveDraftImageStudioContext" in xhs_context_source
+    assert "loadDraftImageStudioContext" in xhs_context_source
+    assert 'platform: "xhs"' in xhs_context_source
+    assert "XHS_IMAGE_STUDIO_DRAFT_CONTEXT_KEY" in xhs_context_source
+
+    assert "WECHAT_OFFICIAL_IMAGE_STUDIO_DRAFT_CONTEXT_KEY" in wechat_context_source
+    assert 'platform: "wechat_official"' in wechat_context_source
+    assert "article_cover" in wechat_context_source
+    assert "snapshot_image" in wechat_context_source
+
+    assert "saveWechatOfficialImageStudioDraftContext" in wechat_workbench_source
+    assert "extractWechatOfficialDraftImageCandidates" in wechat_workbench_source
+    assert "整理封面/正文图" in wechat_workbench_source or "图片工坊" in wechat_workbench_source
+    assert '"/platforms/wechat-official/image-studio?from=draft"' in wechat_workbench_source
+    assert 'path="/platforms/wechat-official/image-studio"' in router_source
+    assert "loadWechatOfficialImageStudioDraftContext" in image_studio_source
+    assert "material_upload_blocked" in image_studio_source
+
+    forbidden_sources = "\\n".join([wechat_context_source, wechat_workbench_source, image_studio_source])
+    assert "uploadWechatMaterial" not in forbidden_sources
+    assert "uploadPublishAsset" not in forbidden_sources
+    assert "sendall(" not in forbidden_sources.lower()
+    assert "PublishJob" not in forbidden_sources
+
+
+def test_wechat_official_readiness_dashboard_contract():
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+
+    assert "fetchWechatOfficialReadiness" in api_source
+    assert '"/wechat-official/readiness"' in api_source
+    assert "WechatOfficialReadiness" in types_source
+    assert "WechatOfficialReadinessCheck" in types_source
+    assert "Readiness / Diagnostics" in dashboard_source
+    assert "readiness.summary.next_actions" in dashboard_source
+    assert "material upload blocked" in dashboard_source
+    assert "preview blocked" in dashboard_source
+    assert "sendall blocked" in dashboard_source
+    assert "fetchWechatOfficialReadiness" in dashboard_source
+    assert "uploadWechatMaterial" not in dashboard_source
+    assert "uploadPublishAsset" not in dashboard_source
+    assert "sendToPublish" not in dashboard_source
+    assert "PublishJob" not in dashboard_source
+
+
 def test_wechat_official_redfox_collect_jobs_frontend_contract():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
@@ -508,6 +573,8 @@ def test_wechat_official_redfox_collect_jobs_frontend_contract():
 
     assert "export type WechatOfficialRedfoxCollectJobListResponse" in types_source
     assert "export type WechatOfficialRedfoxCollectJobDetail" in types_source
+    assert "FeishuPushWechatOfficialArticlesPayload" in types_source
+    assert "FeishuPullWechatOfficialArticlesPayload" in types_source
     assert "params?: Record<string, unknown>" in types_source
     assert "started_at?: string | null" in types_source
     assert "finished_at?: string | null" in types_source

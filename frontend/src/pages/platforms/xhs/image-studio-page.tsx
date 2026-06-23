@@ -50,9 +50,13 @@ import type { GeneratedImageAsset, GenerateImageResult, TaskRecord, UserImageFil
 import {
   clearImageStudioDraftContext,
   loadImageStudioDraftContext,
-  type XhsImageStudioCandidateImage,
   type XhsImageStudioDraftContext,
 } from "./xhs-image-studio-context";
+import {
+  clearWechatOfficialImageStudioDraftContext,
+  loadWechatOfficialImageStudioDraftContext,
+  type WechatOfficialImageStudioDraftContext,
+} from "../../wechat-official/wechat-official-image-studio-context";
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -60,6 +64,7 @@ const RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT = 2;
 const IMAGE_GENERATION_POLL_INTERVAL_MS = 3000;
 const IMAGE_GENERATION_MAX_POLLS = 220;
 type ImageAspectRatio = "auto" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
+type ImageStudioDraftContext = XhsImageStudioDraftContext | WechatOfficialImageStudioDraftContext;
 
 function isRenderableImage(value: string): boolean {
   return (
@@ -100,24 +105,31 @@ function taskErrorMessage(task: TaskRecord): string {
   return typeof error === "string" && error ? error : "AI 图片生成失败，请检查任务详情。";
 }
 
-function buildDraftImagePrompt(context: XhsImageStudioDraftContext): string {
+function buildDraftImagePrompt(context: ImageStudioDraftContext): string {
   const title = context.title.trim();
   const body = context.body.replace(/\s+/g, " ").trim();
   const bodyExcerpt = body.length > 180 ? `${body.slice(0, 180)}...` : body;
   const tags = context.tags.map((tag) => tag.name.trim()).filter(Boolean).slice(0, 6);
+  const isWechatOfficial = "platform" in context && context.platform === "wechat_official";
   return [
-    "为这篇小红书草稿生成一张可直接发布的封面/首图。",
+    isWechatOfficial ? "为这篇公众号草稿生成一张封面/正文配图候选。" : "为这篇小红书草稿生成一张可直接发布的封面/首图。",
     title ? `标题：${title}` : "",
     bodyExcerpt ? `正文要点：${bodyExcerpt}` : "",
     tags.length > 0 ? `标签：${tags.map((tag) => `#${tag}`).join(" ")}` : "",
-    "风格要求：真实、有生活感、构图干净，适合小红书图文笔记。",
+    isWechatOfficial ? "风格要求：信息清晰、可信、有公众号封面感；只生成/整理图片，不上传公众号素材。" : "风格要求：真实、有生活感、构图干净，适合小红书图文笔记。",
   ].filter(Boolean).join("\n");
 }
 
-function candidateImageSourceLabel(source: XhsImageStudioCandidateImage["source"]): string {
+function candidateImageSourceLabel(source: ImageStudioDraftContext["candidate_images"][number]["source"]): string {
   if (source === "draft_asset") return "草稿素材";
   if (source === "source_note") return "原笔记案例图";
+  if (source === "article_cover") return "文章封面";
+  if (source === "snapshot_image") return "正文配图";
   return "手动添加";
+}
+
+function isWechatOfficialDraftContext(context: ImageStudioDraftContext | null): context is WechatOfficialImageStudioDraftContext {
+  return Boolean(context && "platform" in context && context.platform === "wechat_official");
 }
 
 export function XhsImageStudioPage() {
@@ -139,7 +151,7 @@ export function XhsImageStudioPage() {
   const [saveToAssets, setSaveToAssets] = useState(true);
   const [generatedPreview, setGeneratedPreview] = useState<string | null>(null);
   const [generatedMediaPath, setGeneratedMediaPath] = useState<string | null>(null);
-  const [draftContext, setDraftContext] = useState<XhsImageStudioDraftContext | null>(null);
+  const [draftContext, setDraftContext] = useState<ImageStudioDraftContext | null>(null);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
 
   const draftReferenceUrls = useMemo(
@@ -308,13 +320,21 @@ export function XhsImageStudioPage() {
   }
 
   function handleClearDraftContext() {
-    clearImageStudioDraftContext();
+    if (draftContext && isWechatOfficialDraftContext(draftContext)) {
+      clearWechatOfficialImageStudioDraftContext();
+    } else {
+      clearImageStudioDraftContext();
+    }
     setDraftContext(null);
     setMessage("已清除草稿上下文，当前图片工坊内容不会再自动关联草稿。");
   }
 
   async function handleSendGeneratedToPublish() {
     if (!draftContext || !generatedMediaPath) return;
+    if (isWechatOfficialDraftContext(draftContext)) {
+      setMessage("公众号图片工坊第一版只做生成/整理/下载，material_upload_blocked：不上传公众号素材，也不送发布中心。");
+      return;
+    }
     setIsSendingPublish(true);
     setError(null);
     setMessage(null);
@@ -339,8 +359,11 @@ export function XhsImageStudioPage() {
     const searchParams = new URLSearchParams(location.search);
     const shouldLoadDraftContext = searchParams.get("from") === "draft";
     if (!shouldLoadDraftContext) return;
-    const context = loadImageStudioDraftContext({ requireFresh: true });
-    navigate("/platforms/xhs/image-studio", { replace: true });
+    const isWechatOfficialRoute = location.pathname.startsWith("/platforms/wechat-official/");
+    const context: ImageStudioDraftContext | null = isWechatOfficialRoute
+      ? loadWechatOfficialImageStudioDraftContext({ requireFresh: true })
+      : loadImageStudioDraftContext({ requireFresh: true });
+    navigate(isWechatOfficialRoute ? "/platforms/wechat-official/image-studio" : "/platforms/xhs/image-studio", { replace: true });
     if (!context) {
       setMessage("草稿上下文已过期，请从草稿工坊重新进入图片工坊。");
       return;
@@ -354,7 +377,7 @@ export function XhsImageStudioPage() {
         .filter((url, index, urls) => urls.indexOf(url) === index)
         .slice(0, RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT);
     });
-  }, [location.search, navigate]);
+  }, [location.pathname, location.search, navigate]);
 
   useEffect(() => {
     void loadAssets();
@@ -363,9 +386,9 @@ export function XhsImageStudioPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="XHS Image Studio"
+        eyebrow={isWechatOfficialDraftContext(draftContext) ? "WeChat Official Image Studio" : "XHS Image Studio"}
         title="图片工坊"
-        description="AI 图片生成、图片描述、沉淀图片资产，赋能小红书内容创作。"
+        description={isWechatOfficialDraftContext(draftContext) ? "AI 图片生成、图片描述、整理公众号草稿候选图；material_upload_blocked：不上传公众号素材。" : "AI 图片生成、图片描述、沉淀图片资产，赋能小红书内容创作。"}
         action={
           <Button
             icon={<ReloadOutlined />}
@@ -668,7 +691,7 @@ export function XhsImageStudioPage() {
                     style={{ maxHeight: 240, objectFit: "contain" }}
                   />
                   <Space style={{ marginTop: 8 }} wrap>
-                    {draftContext && (
+                    {draftContext && !isWechatOfficialDraftContext(draftContext) && (
                       <Button
                         type="primary"
                         icon={<SendOutlined />}
@@ -679,6 +702,9 @@ export function XhsImageStudioPage() {
                       >
                         用这张图送发布中心
                       </Button>
+                    )}
+                    {isWechatOfficialDraftContext(draftContext) && (
+                      <Tag color="red">material_upload_blocked · 不上传公众号素材</Tag>
                     )}
                     {!saveToAssets && (
                       <Button

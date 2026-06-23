@@ -33,7 +33,9 @@ import type {
   FeishuIntegrationConfig,
   FeishuIntegrationConfigPayload,
   FeishuPullNotesPayload,
+  FeishuPullWechatOfficialArticlesPayload,
   FeishuPushNotesPayload,
+  FeishuPushWechatOfficialArticlesPayload,
   FeishuSyncResponse,
   GenerateNotePayload,
   GenerateCoverPayload,
@@ -113,6 +115,7 @@ import type {
   WechatOfficialProxy,
   WechatOfficialProxyTestPayload,
   WechatOfficialQrLoginSession,
+  WechatOfficialReadiness,
   WechatOfficialRecommendationUpdatePayload,
   WechatOfficialRedfoxAccountCollectPayload,
   WechatOfficialRedfoxCollectJobDetail,
@@ -291,6 +294,11 @@ export async function fetchXhsOverview(): Promise<DashboardOverview> {
 
 export async function fetchWechatOfficialOverview(): Promise<WechatOfficialOverview> {
   const response = await http.get<WechatOfficialOverview>("/wechat-official/overview");
+  return response.data;
+}
+
+export async function fetchWechatOfficialReadiness(): Promise<WechatOfficialReadiness> {
+  const response = await http.get<WechatOfficialReadiness>("/wechat-official/readiness");
   return response.data;
 }
 
@@ -664,6 +672,16 @@ export async function pushXhsNotesToFeishu(payload: FeishuPushNotesPayload): Pro
 
 export async function pullXhsNotesFromFeishu(payload: FeishuPullNotesPayload): Promise<FeishuSyncResponse> {
   const response = await http.post<FeishuSyncResponse>("/integrations/feishu/xhs-notes/pull", payload);
+  return response.data;
+}
+
+export async function pushWechatOfficialArticlesToFeishu(payload: FeishuPushWechatOfficialArticlesPayload): Promise<FeishuSyncResponse> {
+  const response = await http.post<FeishuSyncResponse>("/integrations/feishu/wechat-official/articles/push", payload);
+  return response.data;
+}
+
+export async function pullWechatOfficialArticlesFromFeishu(payload: FeishuPullWechatOfficialArticlesPayload): Promise<FeishuSyncResponse> {
+  const response = await http.post<FeishuSyncResponse>("/integrations/feishu/wechat-official/articles/pull", payload);
   return response.data;
 }
 

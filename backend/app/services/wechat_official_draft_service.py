@@ -37,17 +37,20 @@ class WechatOfficialDraftService:
         template_lines = ""
         if template_name or template_instruction or opening_angle:
             template_lines = (
-                f"草稿模板：{template_name or template_key or '默认模板'}\n"
+                f"草稿模板：{template_name or template_key or analysis.get('draft_template_key') or '默认模板'}\n"
                 f"模板说明：{template_instruction or '按公众号读者可读的结构生成二创底稿'}\n"
                 f"切入角度：{opening_angle or hotspot.get('reuse_angle') or '从原文爆点提炼可复用观点'}\n\n"
             )
+        analysis_lines = _analysis_lines(analysis)
         body = (
             f"{template_lines}"
             f"改写风格：{rewrite_style}\n"
             f"目标读者：{target_audience}\n"
             f"行动引导：{call_to_action}\n\n"
+            f"选题判断：\n{analysis_lines}\n\n"
             f"原文摘要：{article.digest}\n\n"
             f"爆点拆解：\n{hotspot_text}\n\n"
+            f"正文大纲：\n- 开头：用标题钩子承接读者痛点。\n- 主体：结合核心洞察、案例证据和可执行步骤展开。\n- 收束：用行动引导转向业务咨询或持续关注。\n\n"
             f"改写参考：\n{source_text}"
         )
         draft = AiDraft(user_id=user_id, platform="wechat_official", title=article.title, body=body, tags=[])
@@ -76,10 +79,11 @@ class WechatOfficialDraftService:
             "body": "ok" if body.strip() else "missing",
             "publish": "blocked",
             "sendall": "blocked",
+            "preview": "blocked",
             "external_images": "warning" if _has_external_images(body) else "ok",
         }
         ok = checks["title"] == "ok" and checks["body"] == "ok"
-        return {"draft_id": draft.id, "ok": ok, "publish_blocked": True, "sendall_blocked": True, "checks": checks}
+        return {"draft_id": draft.id, "ok": ok, "publish_blocked": True, "sendall_blocked": True, "preview_blocked": True, "checks": checks}
 
 
 def serialize_draft(draft: AiDraft) -> dict[str, Any]:
@@ -92,6 +96,26 @@ def serialize_draft(draft: AiDraft) -> dict[str, Any]:
         "tags": draft.tags or [],
         "created_at": draft.created_at.isoformat() if draft.created_at else None,
     }
+
+
+def _analysis_lines(analysis: dict[str, Any]) -> str:
+    labels = {
+        "core_insight": "核心洞察",
+        "viral_factors": "爆点因子",
+        "title_type": "标题类型",
+        "article_type_label": "文章类型",
+        "business_direction": "业务方向",
+        "customer_conversion_method": "转化方法",
+        "draft_template_key": "草稿模板",
+    }
+    lines = []
+    for key, label in labels.items():
+        value = analysis.get(key)
+        if isinstance(value, list):
+            value = "、".join(str(item) for item in value if str(item).strip())
+        if value:
+            lines.append(f"- {label}: {value}")
+    return "\n".join(lines) if lines else "- 待补充：可先从飞书分析或本地爆点拆解回填选题判断。"
 
 
 def _hotspot_text(hotspot: dict[str, Any]) -> str:

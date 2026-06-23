@@ -21,6 +21,12 @@ from backend.app.services.feishu_bitable_service import (
     push_notes_to_feishu,
     push_notes_to_feishu_dry_run,
 )
+from backend.app.services.wechat_official_feishu_service import (
+    pull_wechat_official_feishu_analysis_records,
+    pull_wechat_official_feishu_analysis_records_from_client,
+    push_wechat_official_articles_to_feishu,
+    push_wechat_official_articles_to_feishu_dry_run,
+)
 
 router = APIRouter(prefix="/integrations/feishu", tags=["feishu-integration"])
 
@@ -44,6 +50,17 @@ class FeishuPushNotesPayload(BaseModel):
 
 class FeishuPullNotesPayload(BaseModel):
     note_ids: list[int] = Field(default_factory=list)
+    dry_run: bool = True
+    records: list[dict] = Field(default_factory=list)
+
+
+class FeishuPushWechatOfficialArticlesPayload(BaseModel):
+    article_ids: list[int] = Field(default_factory=list)
+    dry_run: bool = True
+
+
+class FeishuPullWechatOfficialArticlesPayload(BaseModel):
+    article_ids: list[int] = Field(default_factory=list)
     dry_run: bool = True
     records: list[dict] = Field(default_factory=list)
 
@@ -163,6 +180,42 @@ def pull_xhs_notes_from_feishu(payload: FeishuPullNotesPayload, current_user: Us
     try:
         client = _client_or_error(_get_config(db, current_user.id))
         return pull_feishu_analysis_records_from_client(db, user_id=current_user.id, client=client, note_ids=payload.note_ids or None)
+    except Exception as exc:
+        return {
+            "updated_count": 0,
+            "unmatched_count": 0,
+            "failed_count": 1,
+            "errors": [str(exc)],
+        }
+
+
+@router.post("/wechat-official/articles/push")
+def push_wechat_official_articles_to_feishu_endpoint(payload: FeishuPushWechatOfficialArticlesPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not payload.article_ids:
+        return {"dry_run": payload.dry_run, "updated_count": 0, "failed_count": 0, "errors": [], "records": []}
+    if payload.dry_run:
+        return push_wechat_official_articles_to_feishu_dry_run(db, user_id=current_user.id, article_ids=payload.article_ids)
+    try:
+        client = _client_or_error(_get_config(db, current_user.id))
+        return push_wechat_official_articles_to_feishu(db, user_id=current_user.id, article_ids=payload.article_ids, client=client)
+    except Exception as exc:
+        return {
+            "dry_run": False,
+            "created_count": 0,
+            "updated_count": 0,
+            "failed_count": len(payload.article_ids),
+            "errors": [str(exc)],
+            "records": [],
+        }
+
+
+@router.post("/wechat-official/articles/pull")
+def pull_wechat_official_articles_from_feishu_endpoint(payload: FeishuPullWechatOfficialArticlesPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if payload.dry_run:
+        return pull_wechat_official_feishu_analysis_records(db, user_id=current_user.id, records=payload.records, article_ids=payload.article_ids or None)
+    try:
+        client = _client_or_error(_get_config(db, current_user.id))
+        return pull_wechat_official_feishu_analysis_records_from_client(db, user_id=current_user.id, client=client, article_ids=payload.article_ids or None)
     except Exception as exc:
         return {
             "updated_count": 0,

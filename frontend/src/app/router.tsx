@@ -66,6 +66,7 @@ export function AppRouter() {
           <Route path="/platforms/wechat-official/discovery" element={<WechatOfficialDashboard />} />
           <Route path="/platforms/wechat-official/library" element={<WechatOfficialDashboard />} />
           <Route path="/platforms/wechat-official/drafts" element={<WechatOfficialDashboard />} />
+          <Route path="/platforms/wechat-official/image-studio" element={<XhsImageStudioPage />} />
           <Route path="/platforms/wechat-official/settings" element={<WechatOfficialDashboard />} />
           <Route path="/platforms/xhs/dashboard" element={<XhsDashboard />} />
           <Route path="/platforms/xhs/accounts" element={<XhsAccountsPage />} />

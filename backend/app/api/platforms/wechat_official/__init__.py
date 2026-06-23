@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from backend.app.api.platforms.wechat_official import accounts, content_library, crawl, credentials, drafts, overview, proxies, redfox
+from backend.app.api.platforms.wechat_official import accounts, content_library, crawl, credentials, drafts, overview, proxies, readiness, redfox
 
 router = APIRouter()
 router.include_router(overview.router)
@@ -13,5 +13,6 @@ router.include_router(redfox.router)
 router.include_router(crawl.router)
 router.include_router(content_library.router)
 router.include_router(drafts.router)
+router.include_router(readiness.router)
 
 __all__ = ["router"]

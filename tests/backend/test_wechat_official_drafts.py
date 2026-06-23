@@ -191,7 +191,50 @@ def test_generic_send_to_publish_blocks_wechat_official_draft_without_creating_j
 
 
 
-def test_draft_dry_run_blocks_publish_and_reports_content_checks(tmp_path):
+def test_create_draft_from_analyzed_article_uses_analysis_fields(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("draft-analysis-user")
+        article_id = _create_article_with_snapshot(headers)
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            article.raw_json = {
+                **(article.raw_json or {}),
+                "analysis": {
+                    "core_insight": "飞书回拉的核心洞察",
+                    "viral_factors": ["强结果", "强对比"],
+                    "title_type": "结果导向",
+                    "article_type_label": "案例拆解",
+                    "business_direction": "企业服务",
+                    "customer_conversion_method": "引导预约咨询",
+                    "draft_template_key": "case_rewrite",
+                    "hotspot_breakdown": {"hook": "强标题钩子", "reuse_angle": "拆成实操清单"},
+                },
+            }
+            db.commit()
+
+        response = client.post(
+            f"/api/wechat-official/content-library/{article_id}/create-draft",
+            headers=headers,
+            json={"template_name": "案例拆解", "template_instruction": "按 背景-冲突-方法-结果-启发 组织。"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()["body"]
+        assert "飞书回拉的核心洞察" in body
+        assert "强结果、强对比" in body
+        assert "结果导向" in body
+        assert "案例拆解" in body
+        assert "企业服务" in body
+        assert "引导预约咨询" in body
+        assert "强标题钩子" in body
+        assert "case_rewrite" in body
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_draft_dry_run_blocks_publish_preview_and_reports_content_checks(tmp_path):
     get_db, _ = _override_database(tmp_path)
     try:
         headers = _register("dry-run-user")
@@ -210,6 +253,7 @@ def test_draft_dry_run_blocks_publish_and_reports_content_checks(tmp_path):
         assert payload["ok"] is True
         assert payload["publish_blocked"] is True
         assert payload["sendall_blocked"] is True
+        assert payload["preview_blocked"] is True
         assert payload["checks"]["title"] == "ok"
         assert payload["checks"]["body"] == "ok"
         assert payload["checks"]["external_images"] == "ok"
