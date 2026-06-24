@@ -175,7 +175,7 @@ export function WechatOfficialDashboard() {
     try {
       const [overviewPayload, readinessPayload, configPayload, libraryPayload] = await Promise.all([
         fetchWechatOfficialOverview(),
-        fetchWechatOfficialReadiness(),
+        fetchWechatOfficialReadiness().catch(() => fallbackReadiness),
         fetchWechatOfficialRedfoxConfig(),
         fetchWechatOfficialContentLibrary(),
       ]);
