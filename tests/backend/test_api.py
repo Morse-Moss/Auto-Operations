@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
+from backend.app.core.database import get_db
 from backend.app.main import app
+from backend.app.models import Note, NoteAnalysisResult
 
 
 client = TestClient(app)
@@ -303,6 +305,8 @@ def test_frontend_exposes_feishu_integration_contracts():
 
     assert "FeishuIntegrationConfig" in types_source
     assert "FeishuIntegrationConfigPayload" in types_source
+    assert "FeishuCreateAnalysisBasePayload" in types_source
+    assert "FeishuCreateAnalysisBaseResponse" in types_source
     assert "NoteAnalysisResult" in types_source
     assert "FeishuSyncState" in types_source
     assert "FeishuPushNotesPayload" in types_source
@@ -314,9 +318,11 @@ def test_frontend_exposes_feishu_integration_contracts():
     assert "saveFeishuConfig" in api_source
     assert "ensureFeishuFields" in api_source
     assert "testFeishuConnection" in api_source
+    assert "createFeishuAnalysisBase" in api_source
     assert "pushXhsNotesToFeishu" in api_source
     assert "pullXhsNotesFromFeishu" in api_source
     assert '"/integrations/feishu/config"' in api_source
+    assert '"/integrations/feishu/create-analysis-base"' in api_source
     assert '"/integrations/feishu/xhs-notes/push"' in api_source
     assert '"/integrations/feishu/xhs-notes/pull"' in api_source
     assert "feishu_push_status" in api_source
@@ -336,10 +342,12 @@ def test_settings_page_exposes_feishu_integration_card():
     assert "目标数据表" in source
     assert "启用状态" in source
     assert "保存飞书配置" in source
+    assert "创建飞书分析表" in source
     assert "测试连接" in source
     assert "自动补字段" in source
     assert "fetchFeishuConfig" in source
     assert "saveFeishuConfig" in source
+    assert "createFeishuAnalysisBase" in source
     assert "ensureFeishuFields" in source
 
 
@@ -573,7 +581,7 @@ def test_wechat_official_image_studio_reuses_generic_draft_context_without_mater
     assert "已挂到草稿本地资产" in image_studio_source
     assert "本地图片资产" in wechat_workbench_source
 
-    forbidden_sources = "\\n".join([wechat_context_source, wechat_workbench_source, image_studio_source])
+    forbidden_sources = "\n".join([wechat_context_source, wechat_workbench_source, image_studio_source])
     assert "uploadWechatMaterial" not in forbidden_sources
     assert "uploadPublishAsset" not in forbidden_sources
     assert "sendall(" not in forbidden_sources.lower()
@@ -2060,6 +2068,94 @@ def _create_pc_account_with_cookie(tmp_path, username="search-owner"):
     finally:
         db.close()
     return db_dependency, access_token, account_id
+
+
+def test_xhs_notes_feishu_analysis_filters_are_dynamic_and_multi_select(tmp_path):
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(tmp_path, "analysis-filter-owner")
+    try:
+        db = next(app.dependency_overrides[db_dependency]())
+        try:
+            first = Note(user_id=1, platform_account_id=account_id, platform="xhs", note_id="filter-1", title="AI 教程", content="正文", author_name="作者A")
+            second = Note(user_id=1, platform_account_id=account_id, platform="xhs", note_id="filter-2", title="知识管理测评", content="正文", author_name="作者B")
+            third = Note(user_id=1, platform_account_id=account_id, platform="xhs", note_id="filter-3", title="AI 避坑", content="正文", author_name="作者C")
+            db.add_all([first, second, third])
+            db.flush()
+            db.add_all([
+                NoteAnalysisResult(
+                    user_id=1,
+                    note_id=first.id,
+                    source="feishu",
+                    analysis_status="已完成",
+                    subject_object="AI 工具",
+                    content_type="教程",
+                    reusable_models=["教程方法模型", "问题驱动模型"],
+                    reuse_value="正文结构参考",
+                    search_attribute="强搜索",
+                    push_status="synced",
+                ),
+                NoteAnalysisResult(
+                    user_id=1,
+                    note_id=second.id,
+                    source="feishu",
+                    analysis_status="已完成",
+                    subject_object="知识管理",
+                    content_type="测评",
+                    reusable_models=["测评背书模型"],
+                    reuse_value="选题参考",
+                    search_attribute="弱搜索",
+                    push_status="synced",
+                ),
+                NoteAnalysisResult(
+                    user_id=1,
+                    note_id=third.id,
+                    source="feishu",
+                    analysis_status="分析中",
+                    subject_object="AI 工具",
+                    content_type="避坑",
+                    reusable_models=["问题驱动模型"],
+                    reuse_value="废弃",
+                    search_attribute=None,
+                    push_status="synced",
+                ),
+            ])
+            db.commit()
+        finally:
+            db.close()
+
+        options_response = client.get(
+            "/api/notes/filter-options?platform=xhs",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert options_response.status_code == 200
+        options = options_response.json()
+        assert {item["value"] for item in options["coreProductService"]} >= {"AI 工具", "知识管理"}
+        assert {item["value"] for item in options["contentType"]} >= {"教程", "测评", "避坑"}
+        assert {item["value"] for item in options["reusableModel"]} >= {"教程方法模型", "问题驱动模型", "测评背书模型"}
+        assert {item["value"] for item in options["contentUsage"]} >= {"正文结构参考", "选题参考", "废弃"}
+        assert {item["value"] for item in options["searchAttribute"]} >= {"强搜索", "弱搜索"}
+
+        or_response = client.get(
+            "/api/notes?platform=xhs&core_product_service=AI 工具,知识管理",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert or_response.status_code == 200
+        assert {item["note_id"] for item in or_response.json()["items"]} == {"filter-1", "filter-2", "filter-3"}
+
+        and_response = client.get(
+            "/api/notes?platform=xhs&core_product_service=AI 工具,知识管理&content_type=教程",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert and_response.status_code == 200
+        assert [item["note_id"] for item in and_response.json()["items"]] == ["filter-1"]
+
+        model_response = client.get(
+            "/api/notes?platform=xhs&reusable_model=问题驱动模型&search_attribute=强搜索",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert model_response.status_code == 200
+        assert [item["note_id"] for item in model_response.json()["items"]] == ["filter-1"]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 def _create_creator_account_with_cookie(tmp_path, username="creator-owner"):

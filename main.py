@@ -30,7 +30,7 @@ def resolve_npm_executable() -> str:
 
 def build_frontend_command(port: int, npm_executable: Optional[str] = None) -> list[str]:
     npm = npm_executable or resolve_npm_executable()
-    return [npm, "run", "dev", "--", "--host", "127.0.0.1", "--port", str(port)]
+    return [npm, "run", "dev", "--", "--host", "0.0.0.0", "--port", str(port)]
 
 
 def start_frontend(port: int) -> Optional[subprocess.Popen]:

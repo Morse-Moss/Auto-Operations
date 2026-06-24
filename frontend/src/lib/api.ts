@@ -30,10 +30,15 @@ import type {
   DashboardOverview,
   Draft,
   DescribeImagePayload,
+  FeishuCreateAnalysisBasePayload,
+  FeishuCreateAnalysisBaseResponse,
+  FeishuGrantPermissionPayload,
+  FeishuGrantPermissionResponse,
   FeishuIntegrationConfig,
   FeishuIntegrationConfigPayload,
   FeishuPullNotesPayload,
   FeishuPullWechatOfficialArticlesPayload,
+  FeishuPushAllNotesPayload,
   FeishuPushNotesPayload,
   FeishuPushWechatOfficialArticlesPayload,
   FeishuSyncResponse,
@@ -374,21 +379,21 @@ export async function validateWechatOfficialRedfoxConfig(): Promise<{ ok: boolea
 export async function collectWechatOfficialRedfoxArticles(
   payload: WechatOfficialRedfoxKeywordCollectPayload
 ): Promise<WechatOfficialRedfoxCollectResponse> {
-  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/articles", payload);
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/articles", payload, { _silent: true } as never);
   return response.data;
 }
 
 export async function collectWechatOfficialRedfoxAccount(
   payload: WechatOfficialRedfoxAccountCollectPayload
 ): Promise<WechatOfficialRedfoxCollectResponse> {
-  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/account", payload);
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/account", payload, { _silent: true } as never);
   return response.data;
 }
 
 export async function importWechatOfficialRedfoxUrl(
   payload: WechatOfficialRedfoxUrlImportPayload
 ): Promise<WechatOfficialRedfoxCollectResponse> {
-  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/import-url", payload);
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/import-url", payload, { _silent: true } as never);
   return response.data;
 }
 
@@ -660,6 +665,16 @@ export async function testFeishuConnection(): Promise<{ status: string; message:
   return response.data;
 }
 
+export async function createFeishuAnalysisBase(payload: FeishuCreateAnalysisBasePayload = {}): Promise<FeishuCreateAnalysisBaseResponse> {
+  const response = await http.post<FeishuCreateAnalysisBaseResponse>("/integrations/feishu/create-analysis-base", payload);
+  return response.data;
+}
+
+export async function grantFeishuPermission(payload: FeishuGrantPermissionPayload = {}): Promise<FeishuGrantPermissionResponse> {
+  const response = await http.post<FeishuGrantPermissionResponse>("/integrations/feishu/grant-permission", payload);
+  return response.data;
+}
+
 export async function ensureFeishuFields(payload: { dry_run?: boolean } = { dry_run: true }): Promise<{ dry_run: boolean; status: string; fields: Array<Record<string, unknown>>; created_count?: number; skipped_count?: number; message?: string }> {
   const response = await http.post<{ dry_run: boolean; status: string; fields: Array<Record<string, unknown>>; created_count?: number; skipped_count?: number; message?: string }>("/integrations/feishu/ensure-fields", payload);
   return response.data;
@@ -667,6 +682,11 @@ export async function ensureFeishuFields(payload: { dry_run?: boolean } = { dry_
 
 export async function pushXhsNotesToFeishu(payload: FeishuPushNotesPayload): Promise<FeishuSyncResponse> {
   const response = await http.post<FeishuSyncResponse>("/integrations/feishu/xhs-notes/push", payload);
+  return response.data;
+}
+
+export async function pushAllXhsNotesToFeishu(payload: FeishuPushAllNotesPayload = {}): Promise<FeishuSyncResponse> {
+  const response = await http.post<FeishuSyncResponse>("/integrations/feishu/xhs-notes/push-all", payload, { timeout: 600000 });
   return response.data;
 }
 

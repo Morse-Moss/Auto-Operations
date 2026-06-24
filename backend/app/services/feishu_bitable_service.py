@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import ipaddress
+import json
 import re
+import socket
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app.core.config import get_settings
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import FeishuIntegrationConfig, Note, NoteAnalysisResult
+from backend.app.models import FeishuIntegrationConfig, ModelConfig, Note, NoteAnalysisResult, NoteAsset
+from backend.app.services.ai_service import OpenAICompatibleTextClient
 
 ANALYSIS_STATUS_OPTIONS = ["待分析", "分析中", "已完成", "废弃"]
-CONTENT_TYPE_OPTIONS = ["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事"]
+CONTENT_TYPE_OPTIONS = ["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事", "经验分享", "观点输出", "记录日常"]
 REUSABLE_MODEL_OPTIONS = [
     "问题驱动模型",
     "情绪驱动模型",
@@ -38,7 +45,7 @@ SYSTEM_FIELD_NAMES = [
     "作者",
     "原链接",
     "笔记类型",
-    "标签/话题",
+    "笔记标签",
     "点赞数",
     "收藏数",
     "评论数",
@@ -49,14 +56,23 @@ SYSTEM_FIELD_NAMES = [
 
 ANALYSIS_FIELD_NAMES = [
     "分析状态",
+    "分析状态确认",
+    "核心产品/服务",
     "产品/主题对象",
     "内容类型",
+    "核心卖点/观点",
     "核心卖点/核心观点",
     "目标人群",
-    "封面/标题钩子",
+    "内容钩子",
+    "封面类型",
+    "标题类型",
+    "笔记结构分析",
     "内容结构分析",
     "可复用模型",
+    "内容利用方式",
     "复用价值",
+    "搜索属性",
+    "搜素属性",
     "分析备注",
 ]
 
@@ -64,24 +80,41 @@ FEISHU_FIELD_DEFINITIONS = [
     {"field_name": name, "type": "text"} for name in SYSTEM_FIELD_NAMES
 ] + [
     {"field_name": "分析状态", "type": "single_select", "options": ANALYSIS_STATUS_OPTIONS},
-    {"field_name": "产品/主题对象", "type": "text"},
+    {"field_name": "核心产品/服务", "type": "text"},
     {"field_name": "内容类型", "type": "single_select", "options": CONTENT_TYPE_OPTIONS},
-    {"field_name": "核心卖点/核心观点", "type": "text"},
+    {"field_name": "核心卖点/观点", "type": "text"},
     {"field_name": "目标人群", "type": "text"},
-    {"field_name": "封面/标题钩子", "type": "text"},
-    {"field_name": "内容结构分析", "type": "text"},
+    {"field_name": "内容钩子", "type": "text"},
+    {"field_name": "封面", "type": "attachment"},
+    {"field_name": "封面类型", "type": "text"},
+    {"field_name": "标题类型", "type": "text"},
+    {"field_name": "笔记结构分析", "type": "text"},
     {"field_name": "可复用模型", "type": "multi_select", "options": REUSABLE_MODEL_OPTIONS},
-    {"field_name": "复用价值", "type": "single_select", "options": REUSE_VALUE_OPTIONS},
+    {"field_name": "内容利用方式", "type": "multi_select", "options": REUSE_VALUE_OPTIONS},
+    {"field_name": "搜索属性", "type": "single_select", "options": ["强搜索", "弱搜索", "泛流量"]},
     {"field_name": "分析备注", "type": "text"},
 ]
+
+FIELD_ALIASES = {
+    "核心产品/服务": ["产品/主题对象"],
+    "核心卖点/观点": ["核心卖点/核心观点"],
+    "内容钩子": ["封面/标题钩子"],
+    "笔记结构分析": ["内容结构分析"],
+    "内容利用方式": ["复用价值"],
+    "搜索属性": ["搜素属性"],
+    "笔记标签": ["标签/话题"],
+}
 
 FEISHU_FIELD_TYPE_MAP = {
     "text": 1,
     "number": 2,
     "single_select": 3,
     "multi_select": 4,
+    "url": 15,
+    "attachment": 17,
 }
 MAX_SYNC_ITEMS = 100
+MAX_FEISHU_MEDIA_BYTES = 20 * 1024 * 1024
 FEISHU_OPEN_API_BASE_URL = "https://open.feishu.cn/open-apis"
 
 
@@ -90,7 +123,7 @@ class FeishuIntegrationError(RuntimeError):
 
 
 class FeishuBitableClient:
-    def __init__(self, *, app_id: str, app_secret: str, bitable_app_token: str, table_id: str, timeout: int = 20):
+    def __init__(self, *, app_id: str, app_secret: str, bitable_app_token: str = "", table_id: str = "", timeout: int = 20):
         self.app_id = app_id
         self.app_secret = app_secret
         self.bitable_app_token = bitable_app_token
@@ -110,12 +143,23 @@ class FeishuBitableClient:
             json=json,
             timeout=self.timeout,
         )
+        return self._parse_response(response)
+
+    def _parse_response(self, response: requests.Response) -> dict[str, Any]:
         try:
             payload = response.json()
         except ValueError as exc:
             raise FeishuIntegrationError(f"飞书接口返回非 JSON：HTTP {response.status_code}") from exc
         if response.status_code >= 400 or payload.get("code") not in (0, None):
             message = payload.get("msg") or payload.get("message") or f"HTTP {response.status_code}"
+            error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+            violations = error.get("permission_violations") if isinstance(error, dict) else None
+            scopes = [str(item.get("scope")) for item in violations if isinstance(item, dict) and item.get("scope")] if isinstance(violations, list) else []
+            if "Permission denied" in str(message):
+                hint = "请确认飞书开放平台权限已发布生效，并开通云文档协作者权限（docs:permission.member:create 或 docs:permission.member），同时确认应用具备分享该多维表格的权限。"
+                if scopes:
+                    hint = f"{hint} 缺失权限：{', '.join(scopes)}。"
+                message = f"{message}。{hint}"
             raise FeishuIntegrationError(f"飞书接口调用失败：{message}")
         return payload
 
@@ -133,6 +177,17 @@ class FeishuBitableClient:
             raise FeishuIntegrationError("飞书没有返回 tenant_access_token")
         self._tenant_access_token = str(token)
         return self._tenant_access_token
+
+    def create_app(self, *, name: str, folder_token: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"name": name}
+        if folder_token:
+            body["folder_token"] = folder_token
+        payload = self._request("POST", "/bitable/v1/apps", json=body)
+        return dict(payload.get("data", {}).get("app", payload.get("data", {})))
+
+    def create_table(self, *, name: str) -> dict[str, Any]:
+        payload = self._request("POST", f"/bitable/v1/apps/{self.bitable_app_token}/tables", json={"table": {"name": name}})
+        return dict(payload.get("data", {}).get("table", payload.get("data", {})))
 
     def list_fields(self) -> list[dict[str, Any]]:
         payload = self._request("GET", f"/bitable/v1/apps/{self.bitable_app_token}/tables/{self.table_id}/fields")
@@ -158,7 +213,7 @@ class FeishuBitableClient:
                 params["page_token"] = page_token
             payload = self._request("GET", f"/bitable/v1/apps/{self.bitable_app_token}/tables/{self.table_id}/records", params=params)
             data = payload.get("data", {})
-            records.extend(list(data.get("items", [])))
+            records.extend(list(data.get("items") or []))
             if not data.get("has_more"):
                 return records
             page_token = data.get("page_token")
@@ -172,6 +227,36 @@ class FeishuBitableClient:
     def update_record(self, record_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         payload = self._request("PUT", f"/bitable/v1/apps/{self.bitable_app_token}/tables/{self.table_id}/records/{record_id}", json={"fields": fields})
         return dict(payload.get("data", {}).get("record", payload.get("data", {})))
+
+    def upload_bitable_attachment(self, *, file_name: str, content: bytes, content_type: str = "application/octet-stream") -> str:
+        headers = {"Authorization": f"Bearer {self.get_tenant_access_token()}"}
+        response = requests.post(
+            f"{FEISHU_OPEN_API_BASE_URL}/drive/v1/medias/upload_all",
+            headers=headers,
+            data={
+                "file_name": file_name,
+                "parent_type": "bitable_file",
+                "parent_node": self.bitable_app_token,
+                "size": str(len(content)),
+            },
+            files={"file": (file_name, content, content_type)},
+            timeout=self.timeout,
+        )
+        payload = self._parse_response(response)
+        file_token = str(payload.get("data", {}).get("file_token") or "")
+        if not file_token:
+            raise FeishuIntegrationError("飞书附件上传成功但未返回 file_token")
+        return file_token
+
+    def add_bitable_permission_member(self, *, app_token: str, member_type: str, member_id: str, perm: str = "edit", notify_lark: bool = False) -> dict[str, Any]:
+        payload = self._request(
+            "POST",
+            f"/drive/v1/permissions/{app_token}/members",
+            params={"type": "bitable"},
+            json={"member_type": member_type, "member_id": member_id, "perm": perm},
+        )
+        data = payload.get("data", {})
+        return {"is_all_success": True, "fail_members": [], "member": data.get("member", data)}
 
 
 def extract_bitable_tokens(url: str) -> dict[str, str | None]:
@@ -188,19 +273,72 @@ def _match(value: str, pattern: str) -> str | None:
     return matched.group(1) if matched else None
 
 
+def create_feishu_bootstrap_client_from_config(config: FeishuIntegrationConfig) -> FeishuBitableClient:
+    if not config.enabled:
+        raise FeishuIntegrationError("飞书集成未启用")
+    if not config.app_id or not config.encrypted_app_secret:
+        raise FeishuIntegrationError("飞书 App ID 或 App Secret 未配置")
+    return FeishuBitableClient(app_id=config.app_id, app_secret=decrypt_text(config.encrypted_app_secret))
+
+
 def create_feishu_client_from_config(config: FeishuIntegrationConfig) -> FeishuBitableClient:
     if not config.enabled:
         raise FeishuIntegrationError("飞书集成未启用")
     if not config.app_id or not config.encrypted_app_secret or not config.table_id:
         raise FeishuIntegrationError("飞书 App ID、App Secret 或目标数据表未配置")
     if not config.bitable_app_token:
-        raise FeishuIntegrationError("当前只支持飞书多维表格 base 链接，请在设置页填写 /base/ 开头的多维表格地址")
+        raise FeishuIntegrationError("飞书多维表格尚未创建，请先在设置页点击创建飞书分析表")
     return FeishuBitableClient(
         app_id=config.app_id,
         app_secret=decrypt_text(config.encrypted_app_secret),
         bitable_app_token=config.bitable_app_token,
         table_id=config.table_id,
     )
+
+
+def grant_feishu_bitable_permission(client: Any, *, app_token: str, member_type: str, member_id: str, perm: str = "edit", notify_lark: bool = False) -> dict[str, Any]:
+    member_type = member_type.strip()
+    member_id = member_id.strip()
+    perm = (perm or "edit").strip() or "edit"
+    if not app_token:
+        raise FeishuIntegrationError("飞书多维表格 app_token 缺失")
+    if not member_type or not member_id:
+        raise FeishuIntegrationError("飞书协作者类型或 ID 未配置")
+    if member_type not in {"email", "openid", "openchat", "userid"}:
+        raise FeishuIntegrationError("飞书协作者类型仅支持 email、openid、openchat、userid")
+    if perm not in {"view", "edit"}:
+        raise FeishuIntegrationError("飞书协作者权限仅支持 view 或 edit")
+    result = client.add_bitable_permission_member(app_token=app_token, member_type=member_type, member_id=member_id, perm=perm, notify_lark=notify_lark)
+    return {
+        "status": "success" if result.get("is_all_success", True) else "partial_failed",
+        "is_all_success": result.get("is_all_success", True),
+        "fail_members": result.get("fail_members") or [],
+        "member_type": member_type,
+        "member_id": member_id,
+        "perm": perm,
+    }
+
+
+def create_feishu_analysis_base(client: Any, *, base_name: str = "小红书内容分析总表", table_name: str = "小红书内容分析", folder_token: str = "") -> dict[str, Any]:
+    app = client.create_app(name=base_name, folder_token=folder_token)
+    app_token = str(app.get("app_token") or app.get("token") or app.get("appToken") or "")
+    if not app_token:
+        raise FeishuIntegrationError("飞书已返回结果，但没有 app_token")
+    client.bitable_app_token = app_token
+    table = client.create_table(name=table_name)
+    table_id = str(table.get("table_id") or table.get("tableId") or "")
+    if not table_id:
+        raise FeishuIntegrationError("飞书已创建多维表格，但没有返回 table_id")
+    client.table_id = table_id
+    fields_result = ensure_feishu_fields(client)
+    return {
+        "status": "success",
+        "app_token": app_token,
+        "table_id": table_id,
+        "bitable_url": f"https://www.feishu.cn/base/{app_token}?table={table_id}",
+        "created_fields": fields_result.get("created_count", 0),
+        "skipped_fields": fields_result.get("skipped_count", 0),
+    }
 
 
 def ensure_feishu_fields(client: Any) -> dict[str, Any]:
@@ -210,7 +348,8 @@ def ensure_feishu_fields(client: Any) -> dict[str, Any]:
     skipped: list[str] = []
     for definition in FEISHU_FIELD_DEFINITIONS:
         field_name = definition["field_name"]
-        if field_name in existing_names:
+        aliases = FIELD_ALIASES.get(field_name, [])
+        if field_name in existing_names or any(alias in existing_names for alias in aliases):
             skipped.append(field_name)
             continue
         created.append(client.create_field(definition))
@@ -234,9 +373,13 @@ def note_to_feishu_fields(
     method: str = "内容库同步",
     keyword: str = "",
     keyword_group: str = "",
+    analysis: dict[str, Any] | None = None,
+    cover_file_token: str = "",
 ) -> dict[str, Any]:
     raw = note.raw_json or {}
-    return {
+    tags = _note_tags(raw)
+    note_url = str(raw.get("note_url") or raw.get("url") or raw.get("share_url") or f"https://www.xiaohongshu.com/explore/{note.note_id}")
+    fields: dict[str, Any] = {
         "系统笔记ID": str(note.id),
         "平台笔记ID": note.note_id,
         "采集批次ID": batch_id,
@@ -247,9 +390,9 @@ def note_to_feishu_fields(
         "笔记标题": note.title,
         "笔记正文": note.content,
         "作者": note.author_name,
-        "原链接": str(raw.get("note_url") or raw.get("url") or raw.get("share_url") or f"https://www.xiaohongshu.com/explore/{note.note_id}"),
-        "笔记类型": str(raw.get("note_type") or raw.get("type") or "未知"),
-        "标签/话题": "、".join(str(item) for item in raw.get("tags", []) if item) if isinstance(raw.get("tags"), list) else "",
+        "原链接": {"text": note.title or note.note_id, "link": note_url},
+        "笔记类型": infer_note_type(note),
+        "笔记标签": "、".join(tags),
         "点赞数": str(raw.get("liked_count") or raw.get("like_count") or raw.get("likes") or ""),
         "收藏数": str(raw.get("collected_count") or raw.get("collect_count") or raw.get("collects") or ""),
         "评论数": str(raw.get("comment_count") or raw.get("comments") or ""),
@@ -258,6 +401,237 @@ def note_to_feishu_fields(
         "同步时间": shanghai_now().isoformat(),
         "分析状态": "待分析",
     }
+    analysis = analysis or {}
+    if analysis:
+        fields.update(
+            {
+                "内容类型": normalize_content_type(analysis.get("content_type")),
+                "可复用模型": normalize_multi_select(analysis.get("reusable_models"), REUSABLE_MODEL_OPTIONS, fallback=["场景种草模型"]),
+                "内容利用方式": normalize_multi_select(analysis.get("reuse_values"), REUSE_VALUE_OPTIONS, fallback=["选题参考"]),
+                "搜索属性": normalize_search_attribute(analysis.get("search_attribute"), note),
+            }
+        )
+    if cover_file_token:
+        fields["封面"] = [{"file_token": cover_file_token}]
+    return fields
+
+
+def _note_tags(raw: dict[str, Any]) -> list[str]:
+    for key in ("tags", "tag_list", "note_tags", "hash_tags"):
+        value = raw.get(key)
+        if isinstance(value, list):
+            tags: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    tag = item.get("name") or item.get("tag_name") or item.get("title")
+                else:
+                    tag = item
+                if str(tag or "").strip():
+                    tags.append(str(tag).strip().lstrip("#"))
+            return tags
+        if isinstance(value, str) and value.strip():
+            return [item.strip().lstrip("#") for item in re.split(r"[,，、\s]+", value) if item.strip()]
+    return []
+
+
+def _first_note_card(raw: dict[str, Any]) -> dict[str, Any]:
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    item = items[0] if items and isinstance(items[0], dict) else {}
+    card = item.get("note_card") if isinstance(item.get("note_card"), dict) else {}
+    return {"item": item, "card": card}
+
+
+def infer_note_type(note: Note) -> str:
+    raw = note.raw_json or {}
+    nested = _first_note_card(raw)
+    item = nested["item"]
+    card = nested["card"]
+    values = [raw.get("note_type"), raw.get("type"), raw.get("media_type"), raw.get("model_type"), item.get("model_type"), item.get("type"), card.get("type"), card.get("model_type")]
+    text = " ".join(str(value or "").lower() for value in values)
+    if "video" in text or "视频" in text or bool(card.get("video") or card.get("video_url") or card.get("video_addr")):
+        return "视频"
+    if "image" in text or "normal" in text or "note" in text or "图" in text or bool(card.get("image_list") or card.get("images") or _cover_url_from_raw(raw)):
+        return "图文"
+    return "未知"
+
+
+def normalize_content_type(value: Any) -> str:
+    text = _as_text(value)
+    if not text:
+        return "经验分享"
+    if "避坑" in text or "避雷" in text or "踩坑" in text:
+        return "避坑"
+    if text in CONTENT_TYPE_OPTIONS:
+        return text
+    if "教程" in text or "攻略" in text or "方法" in text:
+        return "教程"
+    for option in CONTENT_TYPE_OPTIONS:
+        if option in text:
+            return option
+    return "经验分享"
+
+
+def normalize_multi_select(value: Any, options: list[str], *, fallback: list[str]) -> list[str]:
+    raw_items = _as_text_list(value)
+    items: list[str] = []
+    for item in raw_items:
+        if "废弃" in item:
+            return ["废弃"]
+        matched = item if item in options else next((option for option in options if option in item), "")
+        if matched and matched not in items:
+            items.append(matched)
+        if len(items) >= 3:
+            break
+    return items or fallback
+
+
+def infer_reusable_models(note: Note) -> list[str]:
+    source = f"{note.title}\n{note.content}".lower()
+    scored: list[tuple[str, int]] = []
+    rules = [
+        ("问题驱动模型", 30, ["痛点", "困扰", "问题", "怎么办", "担心", "焦虑", "踩坑", "避坑", "为什么", "如何"]),
+        ("教程方法模型", 24, ["方法", "步骤", "技巧", "经验", "攻略", "教程", "清单", "流程", "一步步", "建议"]),
+        ("测评背书模型", 20, ["体验", "测评", "测试", "数据", "反馈", "真实", "实测", "评价", "证明", "效果"]),
+        ("对比反差模型", 16, ["前后", "变化", "对比", "反差", "差别", "不同", "原来", "现在", "提升", "变成"]),
+        ("场景种草模型", 12, ["场景", "生活", "使用", "氛围", "家里", "日常", "入住", "小户型", "卧室", "厨房", "浴室", "客厅"]),
+        ("情绪驱动模型", 10, ["共鸣", "治愈", "期待", "爽", "崩溃", "后悔", "喜欢", "惊喜", "焦虑", "松弛", "幸福"]),
+        ("故事案例模型", 8, ["经历", "事件", "过程", "案例", "我家", "我曾", "那天", "后来"]),
+        ("IP/热点借势模型", 6, ["爆火", "热点", "趋势", "明星", "品牌", "ip", "同款", "全网", "最近很火"]),
+    ]
+    for model, base_score, keywords in rules:
+        keyword_hits = sum(1 for keyword in keywords if keyword in source)
+        score = base_score + keyword_hits if keyword_hits else 0
+        if score:
+            scored.append((model, score))
+    if not scored:
+        return ["场景种草模型"]
+    scored.sort(key=lambda item: (-item[1], REUSABLE_MODEL_OPTIONS.index(item[0])))
+    return [model for model, _ in scored[:3]]
+
+
+def normalize_search_attribute(value: Any, note: Note | None = None) -> str:
+    text = _as_text(value)
+    if text in {"强搜索", "弱搜索", "泛流量"}:
+        return text
+    if text:
+        if "强" in text:
+            return "强搜索"
+        if "弱" in text:
+            return "弱搜索"
+        if "泛" in text:
+            return "泛流量"
+    if note is None:
+        return ""
+    source = f"{note.title}\n{note.content}".lower()
+    strong_keywords = ["怎么", "如何", "教程", "攻略", "步骤", "尺寸", "价格", "避坑", "避雷", "解决", "怎么办", "清单", "方法"]
+    weak_keywords = ["小户型", "装修", "设计", "方案", "推荐", "搭配", "收纳", "改造", "选购"]
+    if any(keyword in source for keyword in strong_keywords):
+        return "强搜索"
+    if any(keyword in source for keyword in weak_keywords):
+        return "弱搜索"
+    return "泛流量"
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?", "", stripped, flags=re.IGNORECASE).strip()
+        stripped = re.sub(r"```$", "", stripped).strip()
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", stripped, re.DOTALL)
+        if not match:
+            raise
+        parsed = json.loads(match.group(0))
+    if not isinstance(parsed, dict):
+        raise ValueError("AI pre-analysis result must be a JSON object")
+    return parsed
+
+
+def _default_text_model(db: Session, user_id: int) -> tuple[ModelConfig, str] | None:
+    model_config = db.scalar(select(ModelConfig).where(ModelConfig.user_id == user_id, ModelConfig.model_type == "text", ModelConfig.is_default.is_(True)))
+    if model_config is None:
+        return None
+    api_key = decrypt_text(model_config.encrypted_api_key) if model_config.encrypted_api_key else ""
+    if not api_key:
+        return None
+    return model_config, api_key
+
+
+def preanalyze_note_for_feishu(db: Session, *, user_id: int, note: Note) -> tuple[dict[str, Any], str]:
+    fallback = {
+        "content_type": "经验分享",
+        "reusable_models": infer_reusable_models(note),
+        "reuse_values": ["选题参考"],
+        "search_attribute": normalize_search_attribute("", note),
+    }
+    model_context = _default_text_model(db, user_id)
+    if model_context is None:
+        return fallback, "未配置默认文本模型，已使用规则兜底预分析"
+    model_config, api_key = model_context
+    raw = note.raw_json or {}
+    prompt = _feishu_preanalysis_prompt(note, _note_tags(raw))
+    try:
+        content = OpenAICompatibleTextClient().complete_json_prompt(
+            model_config=model_config,
+            api_key=api_key,
+            system_prompt="你是小红书内容运营分析师。只输出合法 JSON，不输出解释。",
+            user_prompt=prompt,
+            temperature=0.1,
+        )
+        parsed = _extract_json_object(content)
+        return {
+            "content_type": normalize_content_type(parsed.get("content_type")),
+            "reusable_models": normalize_multi_select(parsed.get("reusable_models"), REUSABLE_MODEL_OPTIONS, fallback=["场景种草模型"]),
+            "reuse_values": normalize_multi_select(parsed.get("reuse_values"), REUSE_VALUE_OPTIONS, fallback=["选题参考"]),
+            "search_attribute": normalize_search_attribute(parsed.get("search_attribute"), note),
+        }, ""
+    except Exception as exc:
+        return fallback, f"AI 预分析失败，已使用规则兜底：{exc}"
+
+
+def _feishu_preanalysis_prompt(note: Note, tags: list[str]) -> str:
+    raw = note.raw_json or {}
+    url = str(raw.get("note_url") or raw.get("url") or raw.get("share_url") or f"https://www.xiaohongshu.com/explore/{note.note_id}")
+    return f"""
+请根据小红书笔记信息做同步前预分析，输出 JSON：
+{{
+  "content_type": "种草|测评|避坑|教程|合集/清单|对比|痛点共鸣|案例故事|经验分享|观点输出|记录日常",
+  "reusable_models": ["问题驱动模型|情绪驱动模型|场景种草模型|对比反差模型|测评背书模型|教程方法模型|故事案例模型|IP/热点借势模型"],
+  "reuse_values": ["选题参考|标题参考|正文结构参考|卖点表达参考|可直接改写|行业观察|竞品参考|废弃"],
+  "search_attribute": "强搜索|弱搜索|泛流量"
+}}
+
+内容类型规则：
+- 避坑：核心是提醒风险、纠正错误、避免踩坑。即使包含步骤，只要核心是避坑，也输出避坑。
+- 教程：核心是中性方法、步骤、流程，且不是以避坑纠错为主。
+- 案例故事优先于教程；合集/清单优先于教程。
+- 不允许输出“避坑教程”。
+
+可复用模型规则：
+可复用模型指内容背后的传播方式、吸引逻辑或说服机制，用于判断为什么这篇内容有效，不分析内容主题。
+- 问题驱动模型：先提出问题、痛点、困扰，再推进内容。
+- 情绪驱动模型：通过情绪、共鸣、期待、治愈、焦虑、爽感驱动阅读。
+- 场景种草模型：通过生活场景、使用场景、氛围感激发向往或尝试欲。
+- 对比反差模型：通过前后变化、认知差异、结果差异增强表达。
+- 测评背书模型：通过体验、评价、测试、数据、真实反馈建立信任。
+- 教程方法模型：通过步骤、方法、经验、技巧输出价值。
+- 故事案例模型：通过经历、案例、事件推进表达。
+- IP/热点借势模型：借助人物、品牌、热点、趋势获得关注。
+判断要求：一篇内容可同时选择多个模型；优先判断真正驱动传播的模型，不要机械匹配关键词；不分析标题形式；不分析内容结构；不允许因为出现案例就直接判断故事案例模型；至少输出1项，最多输出3项；若多个模型同时存在，按影响强弱排序。
+
+内容利用方式输出 1-3 个；如果输出“废弃”，必须只有“废弃”。
+搜索属性：明确问题/方法/攻略/避坑/解决方案为强搜索；场景灵感/类目方案为弱搜索；情绪审美日常为泛流量。
+
+标题：{note.title}
+正文：{note.content[:5000]}
+原链接：{url}
+笔记标签：{'、'.join(tags)}
+笔记类型：{infer_note_type(note)}
+规则兜底可复用模型：{'、'.join(infer_reusable_models(note))}
+""".strip()
 
 
 def get_or_create_analysis_result(db: Session, *, user_id: int, note_id: int) -> NoteAnalysisResult:
@@ -267,6 +641,209 @@ def get_or_create_analysis_result(db: Session, *, user_id: int, note_id: int) ->
         db.add(result)
         db.flush()
     return result
+
+
+def apply_preanalysis_to_result(result: NoteAnalysisResult, analysis: dict[str, Any], warning: str = "", *, force_update: bool = False) -> None:
+    content_type = normalize_content_type(analysis.get("content_type"))
+    reusable_models = normalize_multi_select(analysis.get("reusable_models"), REUSABLE_MODEL_OPTIONS, fallback=["场景种草模型"])
+    reuse_value = "、".join(normalize_multi_select(analysis.get("reuse_values"), REUSE_VALUE_OPTIONS, fallback=["选题参考"]))
+    if force_update or not result.content_type:
+        result.content_type = content_type
+    if force_update or not result.reusable_models:
+        result.reusable_models = reusable_models
+    if force_update or not result.reuse_value:
+        result.reuse_value = reuse_value
+    search_attribute = normalize_search_attribute(analysis.get("search_attribute"), None)
+    if force_update or not result.search_attribute:
+        result.search_attribute = search_attribute or None
+    if warning and warning not in (result.last_error or ""):
+        result.last_error = warning
+
+
+def _analysis_from_result(result: NoteAnalysisResult, note: Note) -> dict[str, Any]:
+    return {
+        "content_type": result.content_type or "经验分享",
+        "reusable_models": result.reusable_models or ["场景种草模型"],
+        "reuse_values": _as_text_list(result.reuse_value) or ["选题参考"],
+        "search_attribute": result.search_attribute or normalize_search_attribute("", note),
+    }
+
+
+def _field_value(record_fields: dict[str, Any], name: str) -> Any:
+    if name in record_fields:
+        return record_fields.get(name)
+    for alias in FIELD_ALIASES.get(name, []):
+        if alias in record_fields:
+            return record_fields.get(alias)
+    return None
+
+
+def _has_field_value(record_fields: dict[str, Any], name: str) -> bool:
+    value = _field_value(record_fields, name)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value)
+    return True
+
+
+def _record_fields_by_id(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for record in records:
+        record_id = str(record.get("record_id") or "")
+        fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        if record_id:
+            result[record_id] = fields
+    return result
+
+
+def existing_empty_only_fields(fields: dict[str, Any], existing_fields: dict[str, Any], *, overwrite_existing: bool = False) -> dict[str, Any]:
+    if overwrite_existing:
+        return dict(fields)
+    protected = set(ANALYSIS_FIELD_NAMES)
+    update_fields: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key in protected and _has_field_value(existing_fields, key):
+            continue
+        update_fields[key] = value
+    return update_fields
+
+
+def field_names_for_client(client: Any) -> set[str]:
+    try:
+        return {str(field.get("field_name")) for field in client.list_fields() if field.get("field_name")}
+    except Exception:
+        return set()
+
+
+def resolve_field_aliases(fields: dict[str, Any], existing_field_names: set[str]) -> dict[str, Any]:
+    if not existing_field_names:
+        return fields
+    resolved: dict[str, Any] = {}
+    for key, value in fields.items():
+        target = key
+        if key not in existing_field_names:
+            target = next((alias for alias in FIELD_ALIASES.get(key, []) if alias in existing_field_names), key)
+        resolved[target] = value
+    return resolved
+
+
+def _image_url_from_item(item: Any) -> str:
+    if isinstance(item, str) and item.strip():
+        return item.strip()
+    if not isinstance(item, dict):
+        return ""
+    for key in ("url", "original", "default", "src", "file_id"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    info_list = item.get("info_list")
+    if isinstance(info_list, list):
+        for info in info_list:
+            url = _image_url_from_item(info)
+            if url:
+                return url
+    return ""
+
+
+def _cover_url_from_raw(raw: dict[str, Any]) -> str:
+    for key in ("cover", "cover_url", "image", "image_url", "thumbnail", "thumb_url"):
+        value = raw.get(key)
+        url = _image_url_from_item(value)
+        if url:
+            return url
+    nested = _first_note_card(raw)
+    for container in (raw, nested["card"], nested["item"]):
+        for key in ("images", "image_list", "imgs"):
+            value = container.get(key) if isinstance(container, dict) else None
+            if isinstance(value, list):
+                for item in value:
+                    url = _image_url_from_item(item)
+                    if url:
+                        return url
+    return ""
+
+
+def cover_url_for_note(db: Session, note: Note) -> str:
+    asset = db.scalar(select(NoteAsset).where(NoteAsset.note_id == note.id, NoteAsset.asset_type == "image").order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc()))
+    if asset:
+        return asset.local_path or asset.url or ""
+    return _cover_url_from_raw(note.raw_json or {})
+
+
+def _public_http_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("封面地址不是可下载的 HTTP 地址")
+    addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise ValueError("封面地址解析到非公网地址")
+    return url
+
+
+def _image_content_type(content: bytes, declared: str = "") -> str:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return "image/gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    if declared.startswith("image/"):
+        return declared.split(";", 1)[0].strip()
+    return "application/octet-stream"
+
+
+def _image_extension(content_type: str) -> str:
+    return {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}.get(content_type, ".bin")
+
+
+def _resolve_local_media_path(value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    media_path = Path(get_settings().storage_dir) / "media" / value.removeprefix("/api/files/media/")
+    if media_path.is_file():
+        return media_path
+    return path
+
+
+def _read_cover_bytes(ref: str) -> tuple[bytes, str]:
+    value = (ref or "").strip()
+    if not value:
+        raise ValueError("没有可用封面")
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        response = requests.get(_public_http_url(value), timeout=20, allow_redirects=False)
+        response.raise_for_status()
+        content = response.content
+        content_type = _image_content_type(content, response.headers.get("content-type", ""))
+    else:
+        path = _resolve_local_media_path(value)
+        content = path.read_bytes()
+        content_type = _image_content_type(content)
+    if not content or len(content) > MAX_FEISHU_MEDIA_BYTES:
+        raise ValueError("封面图片为空或超过 20MB")
+    if not content_type.startswith("image/"):
+        raise ValueError("封面文件不是图片")
+    return content, content_type
+
+
+def upload_note_cover_to_feishu(db: Session, *, note: Note, client: Any) -> tuple[str, str]:
+    ref = cover_url_for_note(db, note)
+    if not ref:
+        return "", ""
+    try:
+        content, content_type = _read_cover_bytes(ref)
+        file_name = f"xhs-note-{note.id}-cover{_image_extension(content_type)}"
+        return client.upload_bitable_attachment(file_name=file_name, content=content, content_type=content_type), ""
+    except Exception as exc:
+        return "", f"封面上传失败：{exc}"
 
 
 def _unique_note_ids(note_ids: list[int]) -> list[int]:
@@ -290,7 +867,7 @@ def _records_by_system_and_platform_id(records: list[dict[str, Any]]) -> tuple[d
     return by_system_id, by_platform_id
 
 
-def push_notes_to_feishu_dry_run(db: Session, *, user_id: int, note_ids: list[int]) -> dict[str, Any]:
+def push_notes_to_feishu_dry_run(db: Session, *, user_id: int, note_ids: list[int], overwrite_existing: bool = False) -> dict[str, Any]:
     unique_ids = _unique_note_ids(note_ids)
     if len(unique_ids) > MAX_SYNC_ITEMS:
         return {"dry_run": True, "updated_count": 0, "failed_count": len(unique_ids), "errors": [f"每次最多同步 {MAX_SYNC_ITEMS} 条"], "records": []}
@@ -305,27 +882,31 @@ def push_notes_to_feishu_dry_run(db: Session, *, user_id: int, note_ids: list[in
         if note is None:
             errors.append({"note_id": note_id, "error": "Note not found"})
             continue
-        fields = note_to_feishu_fields(note)
         result = get_or_create_analysis_result(db, user_id=user_id, note_id=note.id)
+        analysis, warning = preanalyze_note_for_feishu(db, user_id=user_id, note=note)
+        apply_preanalysis_to_result(result, analysis, warning, force_update=overwrite_existing)
+        fields = note_to_feishu_fields(note, analysis=_analysis_from_result(result, note))
         result.analysis_status = result.analysis_status or "待分析"
         result.push_status = "dry_run"
         result.last_pushed_at = now
-        result.last_error = ""
         result.updated_at = now
-        records.append({"note_id": note.id, "status": "dry_run", "fields": fields})
+        records.append({"note_id": note.id, "status": "dry_run", "fields": fields, "warning": warning})
         updated += 1
     db.commit()
     return {"dry_run": True, "updated_count": updated, "failed_count": len(errors), "errors": errors, "records": records}
 
 
-def push_notes_to_feishu(db: Session, *, user_id: int, note_ids: list[int], client: Any) -> dict[str, Any]:
+def push_notes_to_feishu(db: Session, *, user_id: int, note_ids: list[int], client: Any, overwrite_existing: bool = False) -> dict[str, Any]:
     unique_ids = _unique_note_ids(note_ids)
     if len(unique_ids) > MAX_SYNC_ITEMS:
         return {"dry_run": False, "created_count": 0, "updated_count": 0, "failed_count": len(unique_ids), "errors": [f"每次最多同步 {MAX_SYNC_ITEMS} 条"], "records": []}
     notes = db.scalars(select(Note).where(Note.id.in_(unique_ids), Note.user_id == user_id)).all()
     by_id = {note.id: note for note in notes}
+    ensure_feishu_fields(client)
     existing_records = client.list_records()
+    existing_field_names = field_names_for_client(client)
     by_system_id, by_platform_id = _records_by_system_and_platform_id(existing_records)
+    existing_fields_by_id = _record_fields_by_id(existing_records)
     created_count = 0
     updated_count = 0
     records = []
@@ -337,11 +918,18 @@ def push_notes_to_feishu(db: Session, *, user_id: int, note_ids: list[int], clie
             errors.append({"note_id": note_id, "error": "Note not found"})
             continue
         result = get_or_create_analysis_result(db, user_id=user_id, note_id=note.id)
-        fields = note_to_feishu_fields(note)
+        analysis, warning = preanalyze_note_for_feishu(db, user_id=user_id, note=note)
+        apply_preanalysis_to_result(result, analysis, warning, force_update=overwrite_existing)
         record_id = result.external_record_id or by_system_id.get(str(note.id)) or by_platform_id.get(note.note_id)
+        existing_fields = existing_fields_by_id.get(record_id, {}) if record_id else {}
+        cover_token = ""
+        cover_warning = ""
+        if overwrite_existing or not record_id or not _has_field_value(existing_fields, "封面"):
+            cover_token, cover_warning = upload_note_cover_to_feishu(db, note=note, client=client)
+        fields = resolve_field_aliases(note_to_feishu_fields(note, analysis=_analysis_from_result(result, note), cover_file_token=cover_token), existing_field_names)
         try:
             if record_id:
-                update_fields = {key: value for key, value in fields.items() if key not in ANALYSIS_FIELD_NAMES}
+                update_fields = existing_empty_only_fields(fields, existing_fields, overwrite_existing=overwrite_existing)
                 record = client.update_record(record_id, update_fields)
                 status = "updated"
                 updated_count += 1
@@ -355,9 +943,9 @@ def push_notes_to_feishu(db: Session, *, user_id: int, note_ids: list[int], clie
             result.analysis_status = result.analysis_status or "待分析"
             result.push_status = "synced"
             result.last_pushed_at = now
-            result.last_error = ""
+            result.last_error = "；".join(item for item in [warning, cover_warning] if item)
             result.updated_at = now
-            records.append({"note_id": note.id, "status": status, "record_id": result.external_record_id})
+            records.append({"note_id": note.id, "status": status, "record_id": result.external_record_id, "warning": result.last_error})
         except Exception as exc:
             result.push_status = "failed"
             result.last_error = str(exc)
@@ -408,16 +996,18 @@ def pull_feishu_analysis_records(db: Session, *, user_id: int, records: list[dic
             continue
         result = get_or_create_analysis_result(db, user_id=user_id, note_id=note.id)
         result.external_record_id = _as_text(record.get("record_id") or result.external_record_id) or None
-        result.analysis_status = _as_text(fields.get("分析状态")) or None
-        result.subject_object = _as_text(fields.get("产品/主题对象"))
-        result.content_type = _as_text(fields.get("内容类型")) or None
-        result.core_points = _as_text(fields.get("核心卖点/核心观点"))
-        result.target_audience = _as_text(fields.get("目标人群"))
-        result.title_hook = _as_text(fields.get("封面/标题钩子"))
-        result.content_structure = _as_text(fields.get("内容结构分析"))
-        result.reusable_models = _as_text_list(fields.get("可复用模型"))
-        result.reuse_value = _as_text(fields.get("复用价值")) or None
-        result.analysis_note = _as_text(fields.get("分析备注"))
+        result.analysis_status = _as_text(_field_value(fields, "分析状态")) or None
+        result.subject_object = _as_text(_field_value(fields, "核心产品/服务"))
+        result.content_type = normalize_content_type(_field_value(fields, "内容类型")) or None
+        result.core_points = _as_text(_field_value(fields, "核心卖点/观点"))
+        result.target_audience = _as_text(_field_value(fields, "目标人群"))
+        result.title_hook = _as_text(_field_value(fields, "内容钩子"))
+        result.content_structure = _as_text(_field_value(fields, "笔记结构分析"))
+        result.reusable_models = normalize_multi_select(_field_value(fields, "可复用模型"), REUSABLE_MODEL_OPTIONS, fallback=[])
+        result.reuse_value = "、".join(normalize_multi_select(_field_value(fields, "内容利用方式"), REUSE_VALUE_OPTIONS, fallback=[])) or None
+        raw_search_attribute = _as_text(_field_value(fields, "搜索属性"))
+        result.search_attribute = normalize_search_attribute(raw_search_attribute, note) if raw_search_attribute else None
+        result.analysis_note = _as_text(_field_value(fields, "分析备注"))
         result.pull_status = "success"
         result.last_pulled_at = now
         result.last_error = ""

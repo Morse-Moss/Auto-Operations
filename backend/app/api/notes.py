@@ -172,14 +172,18 @@ def _serialize_analysis_result(result: NoteAnalysisResult | None) -> dict | None
         return None
     return {
         "analysis_status": result.analysis_status,
+        "core_product_service": result.subject_object,
         "subject_object": result.subject_object,
         "content_type": result.content_type,
         "core_points": result.core_points,
         "target_audience": result.target_audience,
         "title_hook": result.title_hook,
         "content_structure": result.content_structure,
+        "reusable_model": result.reusable_models or [],
         "reusable_models": result.reusable_models or [],
+        "content_usage": result.reuse_value,
         "reuse_value": result.reuse_value,
+        "search_attribute": result.search_attribute,
         "analysis_note": result.analysis_note,
         "last_pushed_at": result.last_pushed_at.isoformat() if result.last_pushed_at else None,
         "last_pulled_at": result.last_pulled_at.isoformat() if result.last_pulled_at else None,
@@ -320,6 +324,35 @@ def _get_unique_owned_notes(db: Session, current_user: User, note_ids: list[int]
     return [_get_owned_note(db, current_user, note_id) for note_id in dict.fromkeys(note_ids)]
 
 
+def _filter_option_items(values: list[str]) -> list[dict[str, str]]:
+    return [{"label": value, "value": value} for value in sorted(set(value for value in values if value))]
+
+
+@router.get("/filter-options")
+def get_note_filter_options(
+    platform: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    statement = select(Note).where(Note.user_id == current_user.id)
+    if platform:
+        statement = statement.where(Note.platform == platform)
+    notes = db.scalars(statement).all()
+    results = [_get_feishu_analysis_result(db, note.id) for note in notes]
+    core_product_service = [result.subject_object for result in results if result and result.subject_object]
+    content_type = [result.content_type for result in results if result and result.content_type]
+    reusable_model = [model for result in results if result for model in (result.reusable_models or [])]
+    content_usage = [result.reuse_value for result in results if result and result.reuse_value]
+    search_attribute = [result.search_attribute for result in results if result and result.search_attribute]
+    return {
+        "coreProductService": _filter_option_items(core_product_service),
+        "contentType": _filter_option_items(content_type),
+        "reusableModel": _filter_option_items(reusable_model),
+        "contentUsage": _filter_option_items(content_usage),
+        "searchAttribute": _filter_option_items(search_attribute),
+    }
+
+
 @router.get("/ids")
 def get_note_ids(
     platform: Optional[str] = None,
@@ -349,6 +382,7 @@ def get_notes(
     content_type: Optional[str] = None,
     reuse_value: Optional[str] = None,
     reusable_model: Optional[str] = None,
+    search_attribute: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -397,9 +431,11 @@ def get_notes(
             return False
         if reusable_model and reusable_model not in ((result.reusable_models or []) if result else []):
             return False
+        if search_attribute and (result.search_attribute if result else None) != search_attribute:
+            return False
         return True
 
-    if any([feishu_push_status, analysis_status, content_type, reuse_value, reusable_model]):
+    if any([feishu_push_status, analysis_status, content_type, reuse_value, reusable_model, search_attribute]):
         notes = [note for note in notes if _matches_analysis_filters(note)]
 
     top20_marks = _top20_marks(notes)
