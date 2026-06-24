@@ -14,7 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.models import AiDraft, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User
+from backend.app.models import AiDraft, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User, WechatOfficialDraftSource
 from backend.app.schemas.common import paginated
 from backend.app.services.asset_storage_policy import asset_owner_prefix
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
@@ -89,8 +89,8 @@ def _validate_handoff_asset_file_path(file_path: str, current_user: User) -> Non
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path media file not found")
 
 
-def _serialize_draft(draft: AiDraft) -> dict:
-    return {
+def _serialize_draft(draft: AiDraft, db: Session | None = None) -> dict:
+    payload = {
         "id": draft.id,
         "platform": draft.platform,
         "draft_name": draft.draft_name or "",
@@ -100,6 +100,16 @@ def _serialize_draft(draft: AiDraft) -> dict:
         "source_note_id": draft.source_note_id,
         "created_at": draft.created_at.isoformat(),
     }
+    if draft.platform == "wechat_official":
+        source_article_id = None
+        if db is not None:
+            source_article_id = db.scalar(
+                select(WechatOfficialDraftSource.article_id)
+                .where(WechatOfficialDraftSource.draft_id == draft.id)
+                .order_by(WechatOfficialDraftSource.id.asc())
+            )
+        payload["source_article_id"] = source_article_id
+    return payload
 
 
 def _apply_normalized_content(draft: AiDraft) -> None:
@@ -149,7 +159,7 @@ def get_drafts(
     if platform:
         statement = statement.where(AiDraft.platform == platform)
     drafts = db.scalars(statement.order_by(AiDraft.created_at.desc())).all()
-    return paginated([_serialize_draft(draft) for draft in drafts], page, page_size)
+    return paginated([_serialize_draft(draft, db) for draft in drafts], page, page_size)
 
 
 @router.post("")
@@ -212,7 +222,7 @@ def create_draft(
 
     db.commit()
     db.refresh(draft)
-    return _serialize_draft(draft)
+    return _serialize_draft(draft, db)
 
 
 @router.post("/{draft_id}/send-to-publish")
@@ -317,6 +327,15 @@ def duplicate_draft(
     db.add(duplicated)
     db.flush()
 
+    source = db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == draft.id))
+    if source is not None:
+        db.add(WechatOfficialDraftSource(
+            draft_id=duplicated.id,
+            article_id=source.article_id,
+            source_type=source.source_type,
+            raw_json=source.raw_json,
+        ))
+
     draft_assets = db.scalars(
         select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
     ).all()
@@ -331,7 +350,7 @@ def duplicate_draft(
 
     db.commit()
     db.refresh(duplicated)
-    return _serialize_draft(duplicated)
+    return _serialize_draft(duplicated, db)
 
 
 @router.patch("/{draft_id}")
@@ -359,7 +378,7 @@ def update_draft(
 
     db.commit()
     db.refresh(draft)
-    return _serialize_draft(draft)
+    return _serialize_draft(draft, db)
 
 
 @router.delete("/{draft_id}")

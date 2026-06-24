@@ -7,6 +7,18 @@ import type { DraftWorkbenchAdapter, DraftWorkbenchController, DraftWorkbenchDra
 
 const { Paragraph, Text } = Typography;
 
+const DEFAULT_EDITOR_LABELS = {
+  draftNameLabel: "内部草稿名",
+  draftNamePlaceholder: "例如：浴缸案例图替换 - 0622 A版",
+  titleLabel: "发布标题",
+  titlePlaceholder: "输入发布标题",
+  bodyLabel: "正文",
+  bodyPlaceholder: "输入草稿正文",
+  tagsLabel: "标签",
+  assistantTitle: "AI 助手",
+  assistantDescription: "平台相关的改写、校验或辅助动作放在这里。",
+};
+
 export type DraftWorkbenchShellProps<TDraft extends DraftWorkbenchDraft> = {
   adapter: DraftWorkbenchAdapter<TDraft>;
   controller: DraftWorkbenchController<TDraft>;
@@ -26,6 +38,7 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
 }: DraftWorkbenchShellProps<TDraft>) {
   const selectedDraft = controller.selectedDraft;
   const emptyState = adapter.getEmptyState();
+  const editorLabels = adapter.editorLabels ?? DEFAULT_EDITOR_LABELS;
   const canDuplicate = adapter.capabilities.canDuplicate && Boolean(controller.duplicateSelectedDraft);
   const canDelete = adapter.capabilities.canDelete && Boolean(controller.deleteSelectedDraft);
   const canDryRun = adapter.capabilities.canDryRun && Boolean(controller.dryRunSelectedDraft);
@@ -107,41 +120,41 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
                 <Space direction="vertical" size={16} style={{ width: "100%" }}>
                   <div>
                     <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-                      内部草稿名
+                      {editorLabels.draftNameLabel}
                     </Text>
                     <Input
                       value={controller.draftName}
                       onChange={(event) => controller.setDraftName(event.target.value)}
-                      placeholder="例如：浴缸案例图替换 - 0622 A版"
+                      placeholder={editorLabels.draftNamePlaceholder}
                     />
                   </div>
 
                   <div>
                     <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-                      发布标题
+                      {editorLabels.titleLabel}
                     </Text>
                     <Input
                       value={controller.title}
                       onChange={(event) => controller.setTitle(event.target.value)}
-                      placeholder="输入小红书发布标题"
+                      placeholder={editorLabels.titlePlaceholder}
                     />
                   </div>
 
                   <div>
                     <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-                      正文
+                      {editorLabels.bodyLabel}
                     </Text>
                     <Input.TextArea
                       value={controller.body}
                       onChange={(event) => controller.setBody(event.target.value)}
-                      placeholder="输入草稿正文"
+                      placeholder={editorLabels.bodyPlaceholder}
                       rows={16}
                     />
                   </div>
 
                   <div>
                     <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-                      标签
+                      {editorLabels.tagsLabel}
                     </Text>
                     <Space size={[4, 8]} wrap>
                       {controller.tags.map((tag) => (
@@ -180,11 +193,11 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
           </Col>
 
           <Col xs={24} lg={6}>
-            <Card title="AI 助手">
+            <Card title={editorLabels.assistantTitle}>
               {selectedDraft ? (
                 <Space direction="vertical" size={16} style={{ width: "100%" }}>
                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    平台相关的改写、校验或辅助动作放在这里。
+                    {editorLabels.assistantDescription}
                   </Paragraph>
                   {renderAssistantExtras ? <div>{renderAssistantExtras(selectedDraft)}</div> : null}
                 </Space>

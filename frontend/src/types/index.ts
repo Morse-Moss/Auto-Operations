@@ -383,6 +383,7 @@ export type WechatOfficialCreateDraftPayload = {
 
 export type WechatOfficialDraft = Omit<Draft, "platform" | "source_note_id"> & {
   platform: "wechat_official";
+  source_article_id?: number | null;
 };
 
 export type WechatOfficialDraftDryRunPayload = {
@@ -1085,6 +1086,7 @@ export type Draft = {
   body: string;
   tags?: { id?: string; name: string }[];
   source_note_id?: number | null;
+  source_article_id?: number | null;
   created_at: string;
 };
 

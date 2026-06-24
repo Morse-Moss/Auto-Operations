@@ -60,7 +60,7 @@ def _create_article_with_snapshot(headers: dict) -> int:
     return article_id
 
 
-def test_create_draft_from_content_library_returns_source_free_wechat_official_draft(tmp_path):
+def test_create_draft_from_content_library_returns_traceable_wechat_official_draft(tmp_path):
     get_db, TestingSessionLocal = _override_database(tmp_path)
     try:
         headers = _register("draft-user")
@@ -77,22 +77,31 @@ def test_create_draft_from_content_library_returns_source_free_wechat_official_d
         assert payload["platform"] == "wechat_official"
         assert payload["title"] == "原文标题"
         assert "source_note_id" not in payload
+        assert payload["source_article_id"] == article_id
         assert "专业克制" in payload["body"]
         assert "企业主" in payload["body"]
         assert "预约咨询" in payload["body"]
         assert "原文正文第一段" in payload["body"]
+
+        list_response = client.get("/api/drafts", headers=headers, params={"platform": "wechat_official"})
+        assert list_response.status_code == 200
+        listed = list_response.json()["items"][0]
+        assert listed["id"] == payload["id"]
+        assert listed["source_article_id"] == article_id
 
         with TestingSessionLocal() as db:
             draft = db.get(AiDraft, payload["id"])
             source = db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == payload["id"]))
             assert draft is not None
             assert draft.platform == "wechat_official"
-            assert source is None
+            assert source is not None
+            assert source.article_id == article_id
+            assert source.source_type == "rewrite"
     finally:
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_create_draft_with_template_updates_article_analysis_without_source_row(tmp_path):
+def test_create_draft_with_template_updates_article_analysis_and_source_row(tmp_path):
     get_db, TestingSessionLocal = _override_database(tmp_path)
     try:
         headers = _register("draft-template-user")
@@ -121,7 +130,8 @@ def test_create_draft_with_template_updates_article_analysis_without_source_row(
 
         with TestingSessionLocal() as db:
             source = db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == payload["id"]))
-            assert source is None
+            assert source is not None
+            assert source.article_id == article_id
             article = db.get(WechatOfficialArticle, article_id)
             assert article is not None
             assert article.raw_json["analysis"]["pool_status"] == "draft_ready"
@@ -143,14 +153,10 @@ def test_deleted_content_article_does_not_remove_existing_wechat_official_draft(
         assert create.status_code == 200
         draft_id = create.json()["id"]
 
+        delete = client.delete(f"/api/wechat-official/content-library/{article_id}", headers=headers)
+        assert delete.status_code == 200
+
         with TestingSessionLocal() as db:
-            article = db.get(WechatOfficialArticle, article_id)
-            snapshot = db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article_id))
-            assert article is not None
-            assert snapshot is not None
-            db.delete(snapshot)
-            db.delete(article)
-            db.commit()
             assert db.get(AiDraft, draft_id) is not None
             assert db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == draft_id)) is None
 

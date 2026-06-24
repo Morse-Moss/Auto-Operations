@@ -13,6 +13,17 @@ export function createXhsDraftWorkbenchAdapter(): DraftWorkbenchAdapter<Draft> {
     platform: "xhs",
     pageTitle: "小红书草稿工坊",
     pageDescription: "左侧草稿队列，中间编辑器，右侧 AI 助手；草稿继续保持 XHS 现有语义。",
+    editorLabels: {
+      draftNameLabel: "内部草稿名",
+      draftNamePlaceholder: "例如：浴缸案例图替换 - 0622 A版",
+      titleLabel: "发布标题",
+      titlePlaceholder: "输入小红书发布标题",
+      bodyLabel: "正文",
+      bodyPlaceholder: "输入小红书草稿正文",
+      tagsLabel: "标签",
+      assistantTitle: "AI 助手",
+      assistantDescription: "小红书相关的改写、标题、标签和发布准备动作放在这里。",
+    },
     capabilities: {
       canCreateFromSource: true,
       canDuplicate: true,

@@ -7,6 +7,13 @@ import type { ContentLibraryAdapter, ContentLibraryController, ContentLibraryIte
 
 const { Title, Text } = Typography;
 
+const DEFAULT_FILTER_OPTIONS = {
+  analysisStatus: ["待分析", "分析中", "已完成", "废弃"].map((value) => ({ value, label: value })),
+  contentType: ["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事"].map((value) => ({ value, label: value })),
+  reuseValue: ["选题参考", "标题参考", "正文结构参考", "卖点表达参考", "可直接改写", "行业观察", "竞品参考", "废弃"].map((value) => ({ value, label: value })),
+  reusableModel: ["问题驱动模型", "情绪驱动模型", "场景种草模型", "对比反差模型", "测评背书模型", "教程方法模型", "故事案例模型", "IP/热点借势模型"].map((value) => ({ value, label: value })),
+};
+
 export type ContentLibraryShellProps<TItem extends ContentLibraryItem> = {
   adapter: ContentLibraryAdapter<TItem>;
   controller: ContentLibraryController<TItem>;
@@ -15,6 +22,12 @@ export type ContentLibraryShellProps<TItem extends ContentLibraryItem> = {
 
 export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter, controller, toolbarExtras }: ContentLibraryShellProps<TItem>) {
   const emptyState = adapter.emptyState;
+  const filterOptions = {
+    analysisStatus: adapter.filterOptions?.analysisStatus ?? DEFAULT_FILTER_OPTIONS.analysisStatus,
+    contentType: adapter.filterOptions?.contentType ?? DEFAULT_FILTER_OPTIONS.contentType,
+    reuseValue: adapter.filterOptions?.reuseValue ?? DEFAULT_FILTER_OPTIONS.reuseValue,
+    reusableModel: adapter.filterOptions?.reusableModel ?? DEFAULT_FILTER_OPTIONS.reusableModel,
+  };
 
   return (
     <div>
@@ -83,7 +96,7 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
                   value={controller.analysisStatusFilter || undefined}
                   onChange={(value) => controller.setAnalysisStatusFilter(value ?? "")}
                   style={{ width: "100%" }}
-                  options={["待分析", "分析中", "已完成", "废弃"].map((value) => ({ value, label: value }))}
+                  options={filterOptions.analysisStatus}
                 />
               </Col>
               <Col span={4}>
@@ -93,7 +106,7 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
                   value={controller.contentTypeFilter || undefined}
                   onChange={(value) => controller.setContentTypeFilter(value ?? "")}
                   style={{ width: "100%" }}
-                  options={["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事"].map((value) => ({ value, label: value }))}
+                  options={filterOptions.contentType}
                 />
               </Col>
               <Col span={4}>
@@ -103,7 +116,7 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
                   value={controller.reuseValueFilter || undefined}
                   onChange={(value) => controller.setReuseValueFilter(value ?? "")}
                   style={{ width: "100%" }}
-                  options={["选题参考", "标题参考", "正文结构参考", "卖点表达参考", "可直接改写", "行业观察", "竞品参考", "废弃"].map((value) => ({ value, label: value }))}
+                  options={filterOptions.reuseValue}
                 />
               </Col>
               <Col span={5}>
@@ -113,7 +126,7 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
                   value={controller.reusableModelFilter || undefined}
                   onChange={(value) => controller.setReusableModelFilter(value ?? "")}
                   style={{ width: "100%" }}
-                  options={["问题驱动模型", "情绪驱动模型", "场景种草模型", "对比反差模型", "测评背书模型", "教程方法模型", "故事案例模型", "IP/热点借势模型"].map((value) => ({ value, label: value }))}
+                  options={filterOptions.reusableModel}
                 />
               </Col>
             </>

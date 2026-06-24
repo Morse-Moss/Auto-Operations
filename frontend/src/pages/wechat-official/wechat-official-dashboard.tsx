@@ -142,6 +142,43 @@ function apiErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+type ReadinessAction = {
+  key: string;
+  label: string;
+  description: string;
+  path: string;
+};
+
+function buildReadinessActions(readiness: WechatOfficialReadiness): ReadinessAction[] {
+  const checks = new Map(readiness.checks.map((check) => [check.key, check]));
+  const actions: ReadinessAction[] = [];
+  const pushAction = (action: ReadinessAction) => {
+    if (!actions.some((item) => item.path === action.path && item.label === action.label)) actions.push(action);
+  };
+
+  if (checks.get("redfox.config")?.status !== "ready") {
+    pushAction({ key: "redfox.config", label: "配置 Redfox", description: "先接通公众号爆文数据源", path: "/platforms/wechat-official/settings" });
+  }
+  if (readiness.content.total === 0) {
+    pushAction({ key: "content.discovery", label: "去爆文发现", description: "采集公众号候选文章", path: "/platforms/wechat-official/discovery" });
+  } else {
+    pushAction({ key: "content.library", label: "查看内容库", description: "筛选、拆解、同步飞书分析", path: "/platforms/wechat-official/library" });
+  }
+  if (checks.get("feishu.analysis")?.status !== "ready" && readiness.content.total > 0) {
+    pushAction({ key: "feishu.analysis", label: "处理飞书分析", description: "在内容库推送或回拉飞书标注", path: "/platforms/wechat-official/library" });
+  }
+  if (readiness.drafts.count === 0 && readiness.content.total > 0) {
+    pushAction({ key: "drafts.workbench", label: "生成公众号草稿", description: "从已分析文章生成独立草稿", path: "/platforms/wechat-official/library" });
+  }
+  if (readiness.drafts.count > 0) {
+    pushAction({ key: "image.studio", label: "整理封面/正文图", description: "从草稿进入图片工坊并回挂本地资产", path: "/platforms/wechat-official/drafts" });
+  }
+  if (!actions.length) {
+    pushAction({ key: "dashboard.refresh", label: "刷新诊断", description: "重新读取当前工作区状态", path: "/platforms/wechat-official/dashboard" });
+  }
+  return actions.slice(0, 4);
+}
+
 export function WechatOfficialDashboard() {
   const location = useLocation();
   const currentSection = sectionFromPath(location.pathname);
@@ -158,6 +195,7 @@ export function WechatOfficialDashboard() {
   const [configured, setConfigured] = useState(false);
   const [contentItems, setContentItems] = useState<WechatOfficialContentLibraryItem[]>([]);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [readinessCompatibilityMode, setReadinessCompatibilityMode] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [configForm] = Form.useForm<RedfoxConfigForm>();
 
@@ -170,12 +208,17 @@ export function WechatOfficialDashboard() {
     [contentItems],
   );
   const configuredText = configured ? `已配置 ${redfoxConfig?.masked_api_key || "****"}` : "未配置";
+  const readinessActions = useMemo(() => buildReadinessActions(readiness), [readiness]);
 
   const refreshWorkspace = useCallback(async () => {
     try {
+      let compatibilityMode = false;
       const [overviewPayload, readinessPayload, configPayload, libraryPayload] = await Promise.all([
         fetchWechatOfficialOverview(),
-        fetchWechatOfficialReadiness().catch(() => fallbackReadiness),
+        fetchWechatOfficialReadiness().catch(() => {
+          compatibilityMode = true;
+          return fallbackReadiness;
+        }),
         fetchWechatOfficialRedfoxConfig(),
         fetchWechatOfficialContentLibrary(),
       ]);
@@ -184,6 +227,7 @@ export function WechatOfficialDashboard() {
       setConfigured(configPayload.configured);
       setRedfoxConfig(configPayload.config);
       setContentItems(libraryPayload.items);
+      setReadinessCompatibilityMode(compatibilityMode);
       configForm.setFieldsValue({
         name: configPayload.config?.name ?? "RedFoxHub",
         base_url: configPayload.config?.base_url ?? "https://redfox.hk",
@@ -193,6 +237,7 @@ export function WechatOfficialDashboard() {
     } catch {
       setOverview(fallbackOverview);
       setReadiness(fallbackReadiness);
+      setReadinessCompatibilityMode(true);
       setLoadFailed(true);
     }
   }, [configForm]);
@@ -273,6 +318,19 @@ export function WechatOfficialDashboard() {
               <Card title="Readiness / Diagnostics" style={cardStyle}>
                 <Space direction="vertical" style={{ width: "100%" }}>
                   <Alert showIcon type={readiness.summary.overall_status === "ready" ? "success" : "warning"} message={`当前状态：${readiness.summary.overall_status}`} description={readiness.summary.next_actions.join(" / ")} />
+                  {readinessCompatibilityMode ? (
+                    <Alert showIcon type="warning" message="后端服务版本可能未重启" description="readiness endpoint 不可用时已启用兼容模式；页面仍可继续使用，重启根目录后端后可恢复完整诊断。" />
+                  ) : null}
+                  <div>
+                    <Paragraph strong style={{ marginBottom: 8 }}>推荐下一步</Paragraph>
+                    <Space wrap>
+                      {readinessActions.map((action) => (
+                        <Link key={action.key} to={action.path}>
+                          <Button type="primary">{action.label}</Button>
+                        </Link>
+                      ))}
+                    </Space>
+                  </div>
                   <Space wrap>
                     {readiness.checks.map((check) => <Tag key={check.key} color={statusColor(check.status)}>{check.label}: {check.status}</Tag>)}
                   </Space>

@@ -35,10 +35,23 @@ export type DraftWorkbenchEmptyState = {
   actionLabel?: string;
 };
 
+export type DraftWorkbenchEditorLabels = {
+  draftNameLabel: string;
+  draftNamePlaceholder: string;
+  titleLabel: string;
+  titlePlaceholder: string;
+  bodyLabel: string;
+  bodyPlaceholder: string;
+  tagsLabel: string;
+  assistantTitle: string;
+  assistantDescription: string;
+};
+
 export type DraftWorkbenchAdapter<TDraft extends DraftWorkbenchDraft = DraftWorkbenchDraft> = {
   platform: Draft["platform"];
   pageTitle: string;
   pageDescription: string;
+  editorLabels?: DraftWorkbenchEditorLabels;
   capabilities: DraftWorkbenchCapabilities;
   loadDrafts(): Promise<TDraft[]>;
   saveDraft(draftId: number, patch: DraftWorkbenchDraftPatch): Promise<TDraft>;

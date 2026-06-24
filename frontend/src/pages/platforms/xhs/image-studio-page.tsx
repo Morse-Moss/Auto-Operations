@@ -40,6 +40,7 @@ import {
   describeImageWithAi,
   fetchGeneratedImageAssets,
   fetchTask,
+  addDraftAsset,
   fetchUserImages,
   sendDraftToPublish,
   startImageGenerationTask,
@@ -153,6 +154,7 @@ export function XhsImageStudioPage() {
   const [generatedMediaPath, setGeneratedMediaPath] = useState<string | null>(null);
   const [draftContext, setDraftContext] = useState<ImageStudioDraftContext | null>(null);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
+  const [isAttachingDraftAsset, setIsAttachingDraftAsset] = useState(false);
 
   const draftReferenceUrls = useMemo(
     () => (draftContext?.candidate_images ?? [])
@@ -329,10 +331,24 @@ export function XhsImageStudioPage() {
     setMessage("已清除草稿上下文，当前图片工坊内容不会再自动关联草稿。");
   }
 
+  async function handleAttachGeneratedToWechatDraft() {
+    if (!draftContext || !isWechatOfficialDraftContext(draftContext) || !generatedPreview) return;
+    setIsAttachingDraftAsset(true);
+    setError(null);
+    try {
+      await addDraftAsset(draftContext.draft_id, { asset_type: "image", url: generatedPreview });
+      setMessage("已挂到草稿本地资产；material_upload_blocked：不上传公众号素材。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "回挂到公众号草稿失败，请稍后重试。");
+    } finally {
+      setIsAttachingDraftAsset(false);
+    }
+  }
+
   async function handleSendGeneratedToPublish() {
     if (!draftContext || !generatedMediaPath) return;
     if (isWechatOfficialDraftContext(draftContext)) {
-      setMessage("公众号图片工坊第一版只做生成/整理/下载，material_upload_blocked：不上传公众号素材，也不送发布中心。");
+      setMessage("公众号图片工坊第一版只做生成/整理/下载和本地资产回挂，material_upload_blocked：不上传公众号素材，也不送发布中心。");
       return;
     }
     setIsSendingPublish(true);
@@ -704,7 +720,18 @@ export function XhsImageStudioPage() {
                       </Button>
                     )}
                     {isWechatOfficialDraftContext(draftContext) && (
-                      <Tag color="red">material_upload_blocked · 不上传公众号素材</Tag>
+                      <>
+                        <Button
+                          type="primary"
+                          icon={<InboxOutlined />}
+                          onClick={handleAttachGeneratedToWechatDraft}
+                          loading={isAttachingDraftAsset}
+                          disabled={isGenerating || !generatedPreview}
+                        >
+                          回挂到公众号草稿
+                        </Button>
+                        <Tag color="red">material_upload_blocked · 不上传公众号素材</Tag>
+                      </>
                     )}
                     {!saveToAssets && (
                       <Button

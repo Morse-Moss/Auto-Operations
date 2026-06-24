@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from backend.app.models import AiDraft, WechatOfficialArticleSnapshot
+from backend.app.models import AiDraft, WechatOfficialArticleSnapshot, WechatOfficialDraftSource
 from backend.app.services.wechat_official_content_service import get_owned_content_article
 
 
@@ -56,6 +56,7 @@ class WechatOfficialDraftService:
         draft = AiDraft(user_id=user_id, platform="wechat_official", title=article.title, body=body, tags=[])
         self.db.add(draft)
         self.db.flush()
+        self.db.add(WechatOfficialDraftSource(draft_id=draft.id, article_id=article.id, source_type="rewrite"))
         raw = dict(article.raw_json or {})
         analysis["pool_status"] = "draft_ready"
         if template_key:
@@ -65,7 +66,7 @@ class WechatOfficialDraftService:
         flag_modified(article, "raw_json")
         self.db.commit()
         self.db.refresh(draft)
-        return serialize_draft(draft)
+        return serialize_draft(draft, source_article_id=article.id)
 
     def dry_run(self, user_id: int, draft_id: int, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         draft = self.db.get(AiDraft, draft_id)
@@ -86,8 +87,8 @@ class WechatOfficialDraftService:
         return {"draft_id": draft.id, "ok": ok, "publish_blocked": True, "sendall_blocked": True, "preview_blocked": True, "checks": checks}
 
 
-def serialize_draft(draft: AiDraft) -> dict[str, Any]:
-    return {
+def serialize_draft(draft: AiDraft, *, source_article_id: int | None = None) -> dict[str, Any]:
+    payload = {
         "id": draft.id,
         "platform": draft.platform,
         "draft_name": draft.draft_name or "",
@@ -96,6 +97,9 @@ def serialize_draft(draft: AiDraft) -> dict[str, Any]:
         "tags": draft.tags or [],
         "created_at": draft.created_at.isoformat() if draft.created_at else None,
     }
+    if draft.platform == "wechat_official":
+        payload["source_article_id"] = source_article_id
+    return payload
 
 
 def _analysis_lines(analysis: dict[str, Any]) -> str:

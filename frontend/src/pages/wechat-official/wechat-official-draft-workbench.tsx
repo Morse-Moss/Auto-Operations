@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Descriptions, Space, Typography, message as antMessage } from "antd";
+import { Alert, Button, Descriptions, Space, Tag, Typography, message as antMessage } from "antd";
 import { PictureOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
 
 import { DraftWorkbenchShell, useDraftWorkbench } from "../../components/draft-workbench";
 import type { DraftWorkbenchDryRunResult } from "../../components/draft-workbench";
 import { fetchDraftAssets, fetchWechatOfficialContentDetail, updateDraft } from "../../lib/api";
+import type { DraftAsset } from "../../lib/api";
+import type { WechatOfficialContentDetail } from "../../types";
 
 import { createWechatOfficialDraftWorkbenchAdapter } from "./wechat-official-draft-workbench-adapter";
 import {
@@ -21,7 +23,39 @@ export function WechatOfficialDraftWorkbench() {
   const adapter = useMemo(() => createWechatOfficialDraftWorkbenchAdapter(), []);
   const controller = useDraftWorkbench(adapter);
   const [dryRunResult, setDryRunResult] = useState<DraftWorkbenchDryRunResult | null>(null);
+  const [sourceDetail, setSourceDetail] = useState<WechatOfficialContentDetail | null>(null);
+  const [draftAssets, setDraftAssets] = useState<DraftAsset[]>([]);
   const [isSendingImageStudio, setIsSendingImageStudio] = useState(false);
+
+  const selectedDraft = controller.selectedDraft;
+  const sourceArticleId = selectedDraft?.source_article_id ?? null;
+
+  useEffect(() => {
+    setSourceDetail(null);
+    setDraftAssets([]);
+    if (!selectedDraft) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [assets, detail] = await Promise.all([
+          fetchDraftAssets(selectedDraft.id),
+          sourceArticleId ? fetchWechatOfficialContentDetail(sourceArticleId) : Promise.resolve(null),
+        ]);
+        if (!cancelled) {
+          setDraftAssets(assets.items);
+          setSourceDetail(detail);
+        }
+      } catch {
+        if (!cancelled) {
+          setDraftAssets([]);
+          setSourceDetail(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDraft?.id, sourceArticleId]);
 
   async function handleDryRun() {
     const result = await controller.dryRunSelectedDraft({});
@@ -41,7 +75,7 @@ export function WechatOfficialDraftWorkbench() {
         body: controller.body,
         tags: controller.tags,
       });
-      const sourceArticleId = (saved as unknown as { source_article_id?: number | null }).source_article_id ?? null;
+      const sourceArticleId = saved.source_article_id ?? null;
       const [assets, detail] = await Promise.all([
         fetchDraftAssets(saved.id),
         sourceArticleId ? fetchWechatOfficialContentDetail(sourceArticleId) : Promise.resolve(null),
@@ -71,6 +105,29 @@ export function WechatOfficialDraftWorkbench() {
     <DraftWorkbenchShell
       adapter={adapter}
       controller={controller}
+      renderEditorExtras={() => (
+        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <Alert
+            type="info"
+            showIcon
+            message="来源文章 / 分析依据"
+            description={sourceDetail ? `来源文章：${sourceDetail.article.title || "未命名文章"}` : sourceArticleId ? "正在读取来源文章。" : "这个草稿暂无来源文章记录。"}
+          />
+          {sourceDetail ? (
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="原文链接">{sourceDetail.article.article_url || sourceDetail.article.content_url || "无"}</Descriptions.Item>
+              <Descriptions.Item label="核心洞察">{sourceDetail.analysis?.core_insight || "待补充"}</Descriptions.Item>
+              <Descriptions.Item label="爆点因子">{Array.isArray(sourceDetail.analysis?.viral_factors) ? sourceDetail.analysis.viral_factors.join("、") : sourceDetail.analysis?.viral_factors || "待补充"}</Descriptions.Item>
+              <Descriptions.Item label="本地图片资产">{draftAssets.length} 张</Descriptions.Item>
+            </Descriptions>
+          ) : (
+            <Space wrap>
+              <Tag color={sourceArticleId ? "gold" : "default"}>source_article_id: {sourceArticleId ?? "none"}</Tag>
+              <Tag color="blue">本地图片资产 {draftAssets.length} 张</Tag>
+            </Space>
+          )}
+        </Space>
+      )}
       renderAssistantExtras={() => (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Alert
@@ -98,7 +155,7 @@ export function WechatOfficialDraftWorkbench() {
             </Descriptions>
           ) : null}
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            草稿来自内容库生成后的独立副本；这里不展示候选文章，也不依赖来源引用。
+            草稿保留来源文章和分析依据，只做本地编辑、dry-run 校验与图片工坊整理，不上传公众号素材。
           </Paragraph>
         </Space>
       )}

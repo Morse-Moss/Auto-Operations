@@ -366,6 +366,43 @@ def test_xhs_content_library_exposes_feishu_filters_and_actions():
     assert "feishu_sync" in adapter_source
 
 
+def test_content_library_filter_options_are_platform_adapter_owned():
+    xhs_adapter_source = open("frontend/src/pages/platforms/xhs/xhs-content-library-adapter.ts", encoding="utf-8").read()
+    wechat_adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
+    shell_source = open("frontend/src/components/content-library/content-library-shell.tsx", encoding="utf-8").read()
+    types_source = open("frontend/src/components/content-library/content-library-types.ts", encoding="utf-8").read()
+
+    assert "filterOptions" in types_source
+    assert "adapter.filterOptions" in shell_source
+    assert "观点评论" in wechat_adapter_source
+    assert "案例拆解" in wechat_adapter_source
+    assert "标题钩子" in wechat_adapter_source
+    assert "转化路径" in wechat_adapter_source
+    assert "认知升级模型" in wechat_adapter_source
+    assert "场景种草模型" in xhs_adapter_source or "场景种草模型" in shell_source
+    assert "测评背书模型" in xhs_adapter_source or "测评背书模型" in shell_source
+
+
+def test_draft_workbench_labels_are_platform_adapter_owned():
+    shell_source = open("frontend/src/components/draft-workbench/draft-workbench-shell.tsx", encoding="utf-8").read()
+    types_source = open("frontend/src/components/draft-workbench/draft-workbench-types.ts", encoding="utf-8").read()
+    xhs_adapter_source = open("frontend/src/pages/platforms/xhs/xhs-draft-workbench-adapter.ts", encoding="utf-8").read()
+    wechat_adapter_source = open("frontend/src/pages/wechat-official/wechat-official-draft-workbench-adapter.ts", encoding="utf-8").read()
+    wechat_workbench_source = open("frontend/src/pages/wechat-official/wechat-official-draft-workbench.tsx", encoding="utf-8").read()
+    types_app_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+
+    assert "editorLabels" in types_source
+    assert "adapter.editorLabels" in shell_source
+    assert "输入小红书发布标题" not in shell_source
+    assert "输入小红书发布标题" in xhs_adapter_source
+    assert "公众号标题" in wechat_adapter_source
+    assert "公众号正文" in wechat_adapter_source
+    assert "来源文章" in wechat_workbench_source
+    assert "分析依据" in wechat_workbench_source
+    assert "source_article_id?: number | null" in types_app_source
+    assert "source_article_id" in wechat_workbench_source
+
+
 def test_crawler_page_groups_sources_by_huitun_and_xhs_tabs():
     source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
 
@@ -531,6 +568,10 @@ def test_wechat_official_image_studio_reuses_generic_draft_context_without_mater
     assert 'path="/platforms/wechat-official/image-studio"' in router_source
     assert "loadWechatOfficialImageStudioDraftContext" in image_studio_source
     assert "material_upload_blocked" in image_studio_source
+    assert "addDraftAsset" in image_studio_source
+    assert "回挂到公众号草稿" in image_studio_source
+    assert "已挂到草稿本地资产" in image_studio_source
+    assert "本地图片资产" in wechat_workbench_source
 
     forbidden_sources = "\\n".join([wechat_context_source, wechat_workbench_source, image_studio_source])
     assert "uploadWechatMaterial" not in forbidden_sources
@@ -549,6 +590,13 @@ def test_wechat_official_readiness_dashboard_contract():
     assert "WechatOfficialReadiness" in types_source
     assert "WechatOfficialReadinessCheck" in types_source
     assert "Readiness / Diagnostics" in dashboard_source
+    assert "推荐下一步" in dashboard_source
+    assert "readinessActions" in dashboard_source
+    assert "后端服务版本可能未重启" in dashboard_source
+    assert '"/platforms/wechat-official/settings"' in dashboard_source
+    assert '"/platforms/wechat-official/discovery"' in dashboard_source
+    assert '"/platforms/wechat-official/library"' in dashboard_source
+    assert '"/platforms/wechat-official/drafts"' in dashboard_source
     assert "readiness.summary.next_actions" in dashboard_source
     assert "material upload blocked" in dashboard_source
     assert "preview blocked" in dashboard_source

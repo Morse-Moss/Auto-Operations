@@ -436,6 +436,11 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
       addedToDrafts: (draftId) => `已生成公众号草稿 #${draftId}。`,
     },
     sortOptions: [{ value: "latest", label: "最新收集" }],
+    filterOptions: {
+      contentType: ["观点评论", "案例拆解", "行业观察", "方法论", "访谈故事", "清单指南"].map((value) => ({ value, label: value })),
+      reuseValue: ["选题参考", "标题钩子", "结构参考", "案例素材", "转化路径", "私域引导"].map((value) => ({ value, label: value })),
+      reusableModel: ["观点反差模型", "案例证明模型", "问题解决模型", "清单方法模型", "趋势判断模型", "认知升级模型"].map((value) => ({ value, label: value })),
+    },
     emptyState: {
       description: "暂无公众号内容。先到爆文发现收集候选文章。",
       actionLabel: "去爆文发现",

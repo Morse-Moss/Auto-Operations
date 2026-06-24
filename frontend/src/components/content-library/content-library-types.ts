@@ -45,6 +45,18 @@ export type ContentLibrarySortOption = {
   label: string;
 };
 
+export type ContentLibrarySelectOption = {
+  value: string;
+  label: string;
+};
+
+export type ContentLibraryFilterOptions = {
+  analysisStatus?: ContentLibrarySelectOption[];
+  contentType?: ContentLibrarySelectOption[];
+  reuseValue?: ContentLibrarySelectOption[];
+  reusableModel?: ContentLibrarySelectOption[];
+};
+
 export type ContentLibraryCapabilities = {
   canCreateDraft: boolean;
   canBatchCreateDrafts: boolean;
@@ -151,6 +163,7 @@ export type ContentLibraryAdapter<TItem extends ContentLibraryItem = ContentLibr
   labels: ContentLibraryLabels;
   messages: ContentLibraryMessages;
   sortOptions: ContentLibrarySortOption[];
+  filterOptions?: ContentLibraryFilterOptions;
   emptyState: ContentLibraryEmptyState;
   loadItems(filters: ContentLibraryFilters): Promise<ContentLibraryPage<TItem>>;
   loadItem(itemId: number): Promise<TItem>;

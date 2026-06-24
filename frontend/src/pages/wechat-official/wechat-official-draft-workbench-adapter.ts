@@ -10,7 +10,18 @@ export function createWechatOfficialDraftWorkbenchAdapter(): DraftWorkbenchAdapt
   return {
     platform: "wechat_official",
     pageTitle: "公众号草稿工坊",
-    pageDescription: "这里只管理独立草稿；从内容库生成后不保留引用关系。",
+    pageDescription: "管理从公众号内容库生成的独立草稿，并保留来源文章和分析依据。",
+    editorLabels: {
+      draftNameLabel: "内部草稿名",
+      draftNamePlaceholder: "例如：行业案例拆解 - 公众号 A版",
+      titleLabel: "公众号标题",
+      titlePlaceholder: "输入公众号标题",
+      bodyLabel: "公众号正文",
+      bodyPlaceholder: "输入公众号正文、结构和行动引导",
+      tagsLabel: "选题标签",
+      assistantTitle: "公众号生产助手",
+      assistantDescription: "公众号草稿的分析依据、dry-run 校验和封面/正文图整理动作放在这里。",
+    },
     capabilities: {
       canCreateFromSource: false,
       canDuplicate: true,
@@ -25,6 +36,7 @@ export function createWechatOfficialDraftWorkbenchAdapter(): DraftWorkbenchAdapt
       title: draft.title,
       body: draft.body,
       tags: draft.tags,
+      source_article_id: draft.source_article_id ?? null,
       created_at: draft.created_at,
     })),
     saveDraft: async (draftId, patch) => {
@@ -36,6 +48,7 @@ export function createWechatOfficialDraftWorkbenchAdapter(): DraftWorkbenchAdapt
         title: draft.title,
         body: draft.body,
         tags: draft.tags,
+        source_article_id: draft.source_article_id ?? null,
         created_at: draft.created_at,
       };
     },
@@ -48,6 +61,7 @@ export function createWechatOfficialDraftWorkbenchAdapter(): DraftWorkbenchAdapt
         title: draft.title,
         body: draft.body,
         tags: draft.tags,
+        source_article_id: draft.source_article_id ?? null,
         created_at: draft.created_at,
       };
     },
