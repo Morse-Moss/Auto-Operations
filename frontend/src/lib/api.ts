@@ -30,10 +30,15 @@ import type {
   DashboardOverview,
   Draft,
   DescribeImagePayload,
+  FeishuCreateAnalysisBasePayload,
+  FeishuCreateAnalysisBaseResponse,
+  FeishuGrantPermissionPayload,
+  FeishuGrantPermissionResponse,
   FeishuIntegrationConfig,
   FeishuIntegrationConfigPayload,
   FeishuPullNotesPayload,
   FeishuPullWechatOfficialArticlesPayload,
+  FeishuPushAllNotesPayload,
   FeishuPushNotesPayload,
   FeishuPushWechatOfficialArticlesPayload,
   FeishuSyncResponse,
@@ -374,21 +379,21 @@ export async function validateWechatOfficialRedfoxConfig(): Promise<{ ok: boolea
 export async function collectWechatOfficialRedfoxArticles(
   payload: WechatOfficialRedfoxKeywordCollectPayload
 ): Promise<WechatOfficialRedfoxCollectResponse> {
-  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/articles", payload);
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/articles", payload, { _silent: true } as never);
   return response.data;
 }
 
 export async function collectWechatOfficialRedfoxAccount(
   payload: WechatOfficialRedfoxAccountCollectPayload
 ): Promise<WechatOfficialRedfoxCollectResponse> {
-  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/account", payload);
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/collect/account", payload, { _silent: true } as never);
   return response.data;
 }
 
 export async function importWechatOfficialRedfoxUrl(
   payload: WechatOfficialRedfoxUrlImportPayload
 ): Promise<WechatOfficialRedfoxCollectResponse> {
-  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/import-url", payload);
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/redfox/import-url", payload, { _silent: true } as never);
   return response.data;
 }
 
@@ -636,13 +641,25 @@ export type SavedNoteFilters = {
   has_assets?: boolean;
   has_comments?: boolean;
   feishu_push_status?: string;
-  analysis_status?: string;
-  content_type?: string;
-  reuse_value?: string;
-  reusable_model?: string;
+  analysis_status?: string | string[];
+  core_product_service?: string[];
+  content_type?: string | string[];
+  reusable_model?: string | string[];
+  content_usage?: string[];
+  search_attribute?: string[];
+  reuse_value?: string | string[];
   sort_by?: "latest" | "engagement" | "likes" | "comments" | "collects";
   page?: number;
   page_size?: number;
+};
+
+export type SavedNoteFilterOptions = {
+  analysisStatus: Array<{ value: string; label: string }>;
+  coreProductService: Array<{ value: string; label: string }>;
+  contentType: Array<{ value: string; label: string }>;
+  reusableModel: Array<{ value: string; label: string }>;
+  contentUsage: Array<{ value: string; label: string }>;
+  searchAttribute: Array<{ value: string; label: string }>;
 };
 
 export async function fetchFeishuConfig(): Promise<FeishuIntegrationConfig> {
@@ -660,6 +677,16 @@ export async function testFeishuConnection(): Promise<{ status: string; message:
   return response.data;
 }
 
+export async function createFeishuAnalysisBase(payload: FeishuCreateAnalysisBasePayload = {}): Promise<FeishuCreateAnalysisBaseResponse> {
+  const response = await http.post<FeishuCreateAnalysisBaseResponse>("/integrations/feishu/create-analysis-base", payload);
+  return response.data;
+}
+
+export async function grantFeishuPermission(payload: FeishuGrantPermissionPayload = {}): Promise<FeishuGrantPermissionResponse> {
+  const response = await http.post<FeishuGrantPermissionResponse>("/integrations/feishu/grant-permission", payload);
+  return response.data;
+}
+
 export async function ensureFeishuFields(payload: { dry_run?: boolean } = { dry_run: true }): Promise<{ dry_run: boolean; status: string; fields: Array<Record<string, unknown>>; created_count?: number; skipped_count?: number; message?: string }> {
   const response = await http.post<{ dry_run: boolean; status: string; fields: Array<Record<string, unknown>>; created_count?: number; skipped_count?: number; message?: string }>("/integrations/feishu/ensure-fields", payload);
   return response.data;
@@ -667,6 +694,11 @@ export async function ensureFeishuFields(payload: { dry_run?: boolean } = { dry_
 
 export async function pushXhsNotesToFeishu(payload: FeishuPushNotesPayload): Promise<FeishuSyncResponse> {
   const response = await http.post<FeishuSyncResponse>("/integrations/feishu/xhs-notes/push", payload);
+  return response.data;
+}
+
+export async function pushAllXhsNotesToFeishu(payload: FeishuPushAllNotesPayload = {}): Promise<FeishuSyncResponse> {
+  const response = await http.post<FeishuSyncResponse>("/integrations/feishu/xhs-notes/push-all", payload, { timeout: 600000 });
   return response.data;
 }
 
@@ -690,6 +722,16 @@ export async function fetchSavedNoteIds(platform = "xhs"): Promise<string[]> {
   return response.data.items;
 }
 
+function csvParam(value?: string | string[]): string | undefined {
+  if (Array.isArray(value)) return value.length ? value.join(",") : undefined;
+  return value || undefined;
+}
+
+function mergeCsvParam(primary?: string | string[], alias?: string | string[]): string | undefined {
+  const merged = [csvParam(primary), csvParam(alias)].filter(Boolean);
+  return merged.length ? merged.join(",") : undefined;
+}
+
 export async function fetchSavedNotes(platformOrFilters: string | SavedNoteFilters = "xhs"): Promise<Paginated<SavedNote>> {
   const params =
     typeof platformOrFilters === "string"
@@ -701,15 +743,22 @@ export async function fetchSavedNotes(platformOrFilters: string | SavedNoteFilte
           has_assets: platformOrFilters.has_assets,
           has_comments: platformOrFilters.has_comments,
           feishu_push_status: platformOrFilters.feishu_push_status,
-          analysis_status: platformOrFilters.analysis_status,
-          content_type: platformOrFilters.content_type,
-          reuse_value: platformOrFilters.reuse_value,
-          reusable_model: platformOrFilters.reusable_model,
+          analysis_status: csvParam(platformOrFilters.analysis_status),
+          core_product_service: csvParam(platformOrFilters.core_product_service),
+          content_type: csvParam(platformOrFilters.content_type),
+          reusable_model: csvParam(platformOrFilters.reusable_model),
+          content_usage: mergeCsvParam(platformOrFilters.content_usage, platformOrFilters.reuse_value),
+          search_attribute: csvParam(platformOrFilters.search_attribute),
           sort_by: platformOrFilters.sort_by,
           page: platformOrFilters.page,
           page_size: platformOrFilters.page_size,
         };
   const response = await http.get<Paginated<SavedNote>>("/notes", { params });
+  return response.data;
+}
+
+export async function fetchSavedNoteFilterOptions(platform = "xhs"): Promise<SavedNoteFilterOptions> {
+  const response = await http.get<SavedNoteFilterOptions>("/notes/filter-options", { params: { platform } });
   return response.data;
 }
 

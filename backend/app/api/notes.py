@@ -172,14 +172,18 @@ def _serialize_analysis_result(result: NoteAnalysisResult | None) -> dict | None
         return None
     return {
         "analysis_status": result.analysis_status,
+        "core_product_service": result.subject_object,
         "subject_object": result.subject_object,
         "content_type": result.content_type,
         "core_points": result.core_points,
         "target_audience": result.target_audience,
         "title_hook": result.title_hook,
         "content_structure": result.content_structure,
+        "reusable_model": result.reusable_models or [],
         "reusable_models": result.reusable_models or [],
+        "content_usage": result.reuse_value,
         "reuse_value": result.reuse_value,
+        "search_attribute": result.search_attribute,
         "analysis_note": result.analysis_note,
         "last_pushed_at": result.last_pushed_at.isoformat() if result.last_pushed_at else None,
         "last_pulled_at": result.last_pulled_at.isoformat() if result.last_pulled_at else None,
@@ -320,6 +324,91 @@ def _get_unique_owned_notes(db: Session, current_user: User, note_ids: list[int]
     return [_get_owned_note(db, current_user, note_id) for note_id in dict.fromkeys(note_ids)]
 
 
+def _split_filter_values(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    text = value
+    for separator in ["；", ";", "\n", "、"]:
+        text = text.replace(separator, ",")
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _split_analysis_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for item in value:
+            items.extend(_split_analysis_values(item))
+        return items
+    text = str(value).strip()
+    if not text:
+        return []
+    for separator in ["；", ";", "\n", "、"]:
+        text = text.replace(separator, ",")
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _has_any_text(actual: Any, selected: list[str]) -> bool:
+    if not selected:
+        return True
+    actual_values = set(_split_analysis_values(actual))
+    return any(value in actual_values for value in selected)
+
+
+def _option_list(counter: dict[str, int]) -> list[dict[str, str]]:
+    return [
+        {"label": value, "value": value}
+        for value, _count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def _add_option(counter: dict[str, int], value: Any) -> None:
+    for item in _split_analysis_values(value):
+        counter[item] = counter.get(item, 0) + 1
+
+
+@router.get("/filter-options")
+def get_note_filter_options(
+    platform: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    statement = (
+        select(NoteAnalysisResult)
+        .join(Note, NoteAnalysisResult.note_id == Note.id)
+        .where(
+            Note.user_id == current_user.id,
+            NoteAnalysisResult.user_id == current_user.id,
+            NoteAnalysisResult.source == "feishu",
+        )
+    )
+    if platform:
+        statement = statement.where(Note.platform == platform)
+    results = db.scalars(statement).all()
+    analysis_status: dict[str, int] = {}
+    core_product_service: dict[str, int] = {}
+    content_type: dict[str, int] = {}
+    reusable_model: dict[str, int] = {}
+    content_usage: dict[str, int] = {}
+    search_attribute: dict[str, int] = {}
+    for result in results:
+        _add_option(analysis_status, result.analysis_status)
+        _add_option(core_product_service, result.subject_object)
+        _add_option(content_type, result.content_type)
+        _add_option(reusable_model, result.reusable_models or [])
+        _add_option(content_usage, result.reuse_value)
+        _add_option(search_attribute, result.search_attribute)
+    return {
+        "analysisStatus": _option_list(analysis_status),
+        "coreProductService": _option_list(core_product_service),
+        "contentType": _option_list(content_type),
+        "reusableModel": _option_list(reusable_model),
+        "contentUsage": _option_list(content_usage),
+        "searchAttribute": _option_list(search_attribute),
+    }
+
+
 @router.get("/ids")
 def get_note_ids(
     platform: Optional[str] = None,
@@ -346,9 +435,12 @@ def get_notes(
     sort_by: Literal["latest", "engagement", "likes", "comments", "collects"] = "latest",
     feishu_push_status: Optional[str] = None,
     analysis_status: Optional[str] = None,
+    core_product_service: Optional[str] = None,
     content_type: Optional[str] = None,
-    reuse_value: Optional[str] = None,
     reusable_model: Optional[str] = None,
+    content_usage: Optional[str] = None,
+    search_attribute: Optional[str] = None,
+    reuse_value: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -385,21 +477,42 @@ def get_notes(
         statement = statement.where(Note.id.not_in(select(NoteComment.note_id)))
     notes = db.scalars(statement.order_by(Note.created_at.desc())).all()
 
+    analysis_status_values = _split_filter_values(analysis_status)
+    core_product_service_values = _split_filter_values(core_product_service)
+    content_type_values = _split_filter_values(content_type)
+    reusable_model_values = _split_filter_values(reusable_model)
+    content_usage_values = _split_filter_values(content_usage) + _split_filter_values(reuse_value)
+    search_attribute_values = _split_filter_values(search_attribute)
+    has_analysis_field_filters = any([
+        analysis_status_values,
+        core_product_service_values,
+        content_type_values,
+        reusable_model_values,
+        content_usage_values,
+        search_attribute_values,
+    ])
+
     def _matches_analysis_filters(note: Note) -> bool:
         result = _get_feishu_analysis_result(db, note.id)
         if feishu_push_status and (result.push_status if result else "not_synced") != feishu_push_status:
             return False
-        if analysis_status and (result.analysis_status if result else None) != analysis_status:
+        if has_analysis_field_filters and result is None:
             return False
-        if content_type and (result.content_type if result else None) != content_type:
+        if not _has_any_text(result.analysis_status if result else None, analysis_status_values):
             return False
-        if reuse_value and (result.reuse_value if result else None) != reuse_value:
+        if not _has_any_text(result.subject_object if result else None, core_product_service_values):
             return False
-        if reusable_model and reusable_model not in ((result.reusable_models or []) if result else []):
+        if not _has_any_text(result.content_type if result else None, content_type_values):
+            return False
+        if not _has_any_text(result.reusable_models if result else None, reusable_model_values):
+            return False
+        if not _has_any_text(result.reuse_value if result else None, content_usage_values):
+            return False
+        if not _has_any_text(result.search_attribute if result else None, search_attribute_values):
             return False
         return True
 
-    if any([feishu_push_status, analysis_status, content_type, reuse_value, reusable_model]):
+    if feishu_push_status or has_analysis_field_filters:
         notes = [note for note in notes if _matches_analysis_filters(note)]
 
     top20_marks = _top20_marks(notes)

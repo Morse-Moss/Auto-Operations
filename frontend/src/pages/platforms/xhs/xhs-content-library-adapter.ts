@@ -12,7 +12,7 @@ import {
   ShareAltOutlined,
   StarOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Checkbox, Col, Descriptions, Image, Popconfirm, Row, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Descriptions, Image, message, Popconfirm, Row, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import React from "react";
 
@@ -25,12 +25,14 @@ import {
   deleteSavedNote,
   downloadExportFile,
   exportSavedNotes,
+  fetchFeishuConfig,
   fetchSavedNote,
   fetchSavedNoteAssets,
   fetchSavedNoteComments,
   fetchSavedNotes,
   fetchTags,
   pullXhsNotesFromFeishu,
+  pushAllXhsNotesToFeishu,
   pushXhsNotesToFeishu,
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
@@ -320,30 +322,103 @@ function renderComment(comment: NoteComment, replies: NoteComment[]) {
   );
 }
 
+function getActionErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "未知错误";
+}
+
 function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
   async function syncSelectedToFeishu() {
-    if (!context.controller.selectedItemIds.length) {
+    const selectedIds = [...context.controller.selectedItemIds];
+    if (!selectedIds.length) {
       context.controller.setBatchActionMessage("请先选择要同步到飞书的笔记。");
       return;
     }
-    const result = await pushXhsNotesToFeishu({ note_ids: context.controller.selectedItemIds, dry_run: false });
-    context.controller.setBatchActionMessage(`同步到飞书：新增 ${result.records?.filter((record) => record.status === "created").length ?? 0} 条，更新 ${result.updated_count} 条，失败 ${result.failed_count} 条`);
-    await context.controller.refreshItems();
+    context.controller.setBatchActionMessage(`正在同步 ${selectedIds.length} 条笔记到飞书，请稍候…`);
+    const loadingMessage = message.loading(`正在同步 ${selectedIds.length} 条笔记到飞书…`, 0);
+    try {
+      const result = await pushXhsNotesToFeishu({ note_ids: selectedIds, dry_run: false });
+      const createdCount = result.created_count ?? result.records?.filter((record) => record.status === "created").length ?? 0;
+      const successMessage = `同步到飞书完成：新增 ${createdCount} 条，更新 ${result.updated_count} 条，失败 ${result.failed_count} 条`;
+      context.controller.setBatchActionMessage(successMessage);
+      loadingMessage();
+      message.success(successMessage);
+      await context.controller.refreshItems();
+    } catch (error) {
+      const errorMessage = `同步到飞书失败：${getActionErrorMessage(error)}`;
+      context.controller.setBatchActionMessage(errorMessage);
+      loadingMessage();
+      message.error(errorMessage);
+    }
+  }
+
+  async function syncAllToFeishu() {
+    context.controller.setBatchActionMessage("正在覆盖刷新全部内容库素材分析、封面和笔记类型并同步飞书，请保持页面打开…");
+    const loadingMessage = message.loading("正在覆盖刷新全部内容库素材分析、封面和笔记类型并同步飞书…", 0);
+    try {
+      const result = await pushAllXhsNotesToFeishu({ dry_run: false, only_unsynced: false, batch_size: 10, overwrite_existing: true });
+      const warningCount = result.records?.filter((record) => Boolean(record.warning)).length ?? 0;
+      const successMessage = `全部同步完成：共 ${result.total_count ?? result.processed_count ?? 0} 条，新增 ${result.created_count ?? 0} 条，更新 ${result.updated_count} 条，失败 ${result.failed_count} 条${warningCount ? `，${warningCount} 条有警告` : ""}`;
+      context.controller.setBatchActionMessage(successMessage);
+      loadingMessage();
+      if (result.failed_count > 0) {
+        message.warning(successMessage);
+      } else {
+        message.success(successMessage);
+      }
+      await context.controller.refreshItems();
+    } catch (error) {
+      const errorMessage = `同步全部到飞书失败：${getActionErrorMessage(error)}`;
+      context.controller.setBatchActionMessage(errorMessage);
+      loadingMessage();
+      message.error(errorMessage);
+    }
+  }
+
+  async function openFeishuAnalysisBase() {
+    try {
+      const config = await fetchFeishuConfig();
+      if (!config.bitable_url) {
+        context.controller.setBatchActionMessage("还没有飞书分析表，请先到设置页创建飞书分析表。");
+        message.warning("还没有飞书分析表，请先到设置页创建飞书分析表。");
+        return;
+      }
+      window.open(config.bitable_url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      const errorMessage = `打开飞书分析表失败：${getActionErrorMessage(error)}`;
+      context.controller.setBatchActionMessage(errorMessage);
+      message.error(errorMessage);
+    }
   }
 
   async function pullSelectedFromFeishu() {
-    if (!context.controller.selectedItemIds.length) {
+    const selectedIds = [...context.controller.selectedItemIds];
+    if (!selectedIds.length) {
       context.controller.setBatchActionMessage("请先选择要从飞书回传的笔记。");
       return;
     }
-    const result = await pullXhsNotesFromFeishu({ note_ids: context.controller.selectedItemIds, dry_run: false });
-    context.controller.setBatchActionMessage(`从飞书回传：更新 ${result.updated_count} 条，未匹配 ${result.unmatched_count ?? 0} 条，失败 ${result.failed_count} 条`);
-    await context.controller.refreshItems();
+    context.controller.setBatchActionMessage(`正在从飞书回传 ${selectedIds.length} 条分析结果，请稍候…`);
+    const loadingMessage = message.loading(`正在从飞书回传 ${selectedIds.length} 条分析结果…`, 0);
+    try {
+      const result = await pullXhsNotesFromFeishu({ note_ids: selectedIds, dry_run: false });
+      const successMessage = `从飞书回传完成：更新 ${result.updated_count} 条，未匹配 ${result.unmatched_count ?? 0} 条，失败 ${result.failed_count} 条`;
+      context.controller.setBatchActionMessage(successMessage);
+      loadingMessage();
+      message.success(successMessage);
+      await context.controller.refreshItems();
+    } catch (error) {
+      const errorMessage = `从飞书回传失败：${getActionErrorMessage(error)}`;
+      context.controller.setBatchActionMessage(errorMessage);
+      loadingMessage();
+      message.error(errorMessage);
+    }
   }
 
+  const selectedCount = context.controller.selectedItemIds.length;
   return h(Space, { wrap: true },
-    h(Button, { icon: h(CloudSyncOutlined), disabled: !context.controller.selectedItemIds.length, onClick: () => void syncSelectedToFeishu() }, "同步到飞书"),
-    h(Button, { disabled: !context.controller.selectedItemIds.length, onClick: () => void pullSelectedFromFeishu() }, "从飞书回传"),
+    h(Button, { onClick: () => void openFeishuAnalysisBase() }, "打开飞书分析表"),
+    h(Button, { icon: h(CloudSyncOutlined), type: "primary", onClick: () => void syncAllToFeishu() }, "补齐全部分析并同步"),
+    h(Button, { icon: h(CloudSyncOutlined), disabled: !selectedCount, onClick: () => void syncSelectedToFeishu() }, selectedCount ? `同步 ${selectedCount} 条到飞书` : "同步到飞书"),
+    h(Button, { disabled: !selectedCount, onClick: () => void pullSelectedFromFeishu() }, selectedCount ? `回传 ${selectedCount} 条` : "从飞书回传"),
   );
 }
 

@@ -23,10 +23,10 @@ export type ContentLibraryShellProps<TItem extends ContentLibraryItem> = {
 export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter, controller, toolbarExtras }: ContentLibraryShellProps<TItem>) {
   const emptyState = adapter.emptyState;
   const filterOptions = {
-    analysisStatus: adapter.filterOptions?.analysisStatus ?? DEFAULT_FILTER_OPTIONS.analysisStatus,
-    contentType: adapter.filterOptions?.contentType ?? DEFAULT_FILTER_OPTIONS.contentType,
-    reuseValue: adapter.filterOptions?.reuseValue ?? DEFAULT_FILTER_OPTIONS.reuseValue,
-    reusableModel: adapter.filterOptions?.reusableModel ?? DEFAULT_FILTER_OPTIONS.reusableModel,
+    analysisStatus: controller.filterOptions.analysisStatus ?? adapter.filterOptions?.analysisStatus ?? DEFAULT_FILTER_OPTIONS.analysisStatus,
+    contentType: controller.filterOptions.contentType ?? adapter.filterOptions?.contentType ?? DEFAULT_FILTER_OPTIONS.contentType,
+    contentUsage: controller.filterOptions.contentUsage ?? adapter.filterOptions?.contentUsage ?? adapter.filterOptions?.reuseValue ?? DEFAULT_FILTER_OPTIONS.reuseValue,
+    reusableModel: controller.filterOptions.reusableModel ?? adapter.filterOptions?.reusableModel ?? DEFAULT_FILTER_OPTIONS.reusableModel,
   };
 
   return (
@@ -103,8 +103,8 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
                 <Select
                   allowClear
                   placeholder="内容类型"
-                  value={controller.contentTypeFilter || undefined}
-                  onChange={(value) => controller.setContentTypeFilter(value ?? "")}
+                  value={controller.contentTypeFilter[0]}
+                  onChange={(value) => controller.setContentTypeFilter(value ? [value] : [])}
                   style={{ width: "100%" }}
                   options={filterOptions.contentType}
                 />
@@ -113,18 +113,18 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
                 <Select
                   allowClear
                   placeholder="复用价值"
-                  value={controller.reuseValueFilter || undefined}
-                  onChange={(value) => controller.setReuseValueFilter(value ?? "")}
+                  value={controller.contentUsageFilter[0]}
+                  onChange={(value) => controller.setContentUsageFilter(value ? [value] : [])}
                   style={{ width: "100%" }}
-                  options={filterOptions.reuseValue}
+                  options={filterOptions.contentUsage}
                 />
               </Col>
               <Col span={5}>
                 <Select
                   allowClear
                   placeholder="可复用模型"
-                  value={controller.reusableModelFilter || undefined}
-                  onChange={(value) => controller.setReusableModelFilter(value ?? "")}
+                  value={controller.reusableModelFilter[0]}
+                  onChange={(value) => controller.setReusableModelFilter(value ? [value] : [])}
                   style={{ width: "100%" }}
                   options={filterOptions.reusableModel}
                 />

@@ -25,9 +25,11 @@ export type ContentLibraryFilters = {
   has_comments?: boolean;
   feishu_push_status?: string;
   analysis_status?: string;
-  content_type?: string;
-  reuse_value?: string;
-  reusable_model?: string;
+  core_product_service?: string[];
+  content_type?: string[];
+  reusable_model?: string[];
+  content_usage?: string[];
+  search_attribute?: string[];
   sort_by?: ContentLibrarySortBy;
   page?: number;
   page_size?: number;
@@ -52,9 +54,12 @@ export type ContentLibrarySelectOption = {
 
 export type ContentLibraryFilterOptions = {
   analysisStatus?: ContentLibrarySelectOption[];
+  coreProductService?: ContentLibrarySelectOption[];
   contentType?: ContentLibrarySelectOption[];
   reuseValue?: ContentLibrarySelectOption[];
   reusableModel?: ContentLibrarySelectOption[];
+  contentUsage?: ContentLibrarySelectOption[];
+  searchAttribute?: ContentLibrarySelectOption[];
 };
 
 export type ContentLibraryCapabilities = {
@@ -165,6 +170,7 @@ export type ContentLibraryAdapter<TItem extends ContentLibraryItem = ContentLibr
   sortOptions: ContentLibrarySortOption[];
   filterOptions?: ContentLibraryFilterOptions;
   emptyState: ContentLibraryEmptyState;
+  loadFilterOptions?(): Promise<ContentLibraryFilterOptions>;
   loadItems(filters: ContentLibraryFilters): Promise<ContentLibraryPage<TItem>>;
   loadItem(itemId: number): Promise<TItem>;
   loadAssets(itemId: number): Promise<ContentLibraryPage<ContentLibraryAsset>>;
@@ -211,10 +217,13 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   hasAssetsFilter: boolean;
   hasCommentsFilter: boolean;
   feishuPushStatusFilter: string;
+  filterOptions: ContentLibraryFilterOptions;
   analysisStatusFilter: string;
-  contentTypeFilter: string;
-  reuseValueFilter: string;
-  reusableModelFilter: string;
+  coreProductServiceFilter: string[];
+  contentTypeFilter: string[];
+  reusableModelFilter: string[];
+  contentUsageFilter: string[];
+  searchAttributeFilter: string[];
   sortBy: ContentLibrarySortBy;
   page: number;
   pageSize: number;
@@ -231,9 +240,11 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   setHasCommentsFilter(value: boolean): void;
   setFeishuPushStatusFilter(value: string): void;
   setAnalysisStatusFilter(value: string): void;
-  setContentTypeFilter(value: string): void;
-  setReuseValueFilter(value: string): void;
-  setReusableModelFilter(value: string): void;
+  setCoreProductServiceFilter(value: string[]): void;
+  setContentTypeFilter(value: string[]): void;
+  setReusableModelFilter(value: string[]): void;
+  setContentUsageFilter(value: string[]): void;
+  setSearchAttributeFilter(value: string[]): void;
   setViewMode(value: ContentLibraryViewMode): void;
   setNewTagName(value: string): void;
   setBatchTagId(value: string): void;
@@ -242,6 +253,7 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   setDetailError(value: string | null): void;
   refreshItems(overrideFilters?: ContentLibraryFilters): Promise<void>;
   refreshTags(): Promise<void>;
+  refreshFilterOptions(): Promise<void>;
   clearFilters(): void;
   handleSortChange(sortBy: ContentLibrarySortBy): void;
   handlePageChange(page: number, pageSize: number): void;
