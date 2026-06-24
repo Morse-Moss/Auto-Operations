@@ -2089,7 +2089,7 @@ def test_xhs_notes_feishu_analysis_filters_are_dynamic_and_multi_select(tmp_path
                     subject_object="AI 工具",
                     content_type="教程",
                     reusable_models=["教程方法模型", "问题驱动模型"],
-                    reuse_value="正文结构参考",
+                    reuse_value="标题参考",
                     search_attribute="强搜索",
                     push_status="synced",
                 ),
@@ -2101,7 +2101,7 @@ def test_xhs_notes_feishu_analysis_filters_are_dynamic_and_multi_select(tmp_path
                     subject_object="知识管理",
                     content_type="测评",
                     reusable_models=["测评背书模型"],
-                    reuse_value="选题参考",
+                    reuse_value="选题参考、正文结构参考",
                     search_attribute="弱搜索",
                     push_status="synced",
                 ),
@@ -2131,8 +2131,17 @@ def test_xhs_notes_feishu_analysis_filters_are_dynamic_and_multi_select(tmp_path
         assert {item["value"] for item in options["coreProductService"]} >= {"AI 工具", "知识管理"}
         assert {item["value"] for item in options["contentType"]} >= {"教程", "测评", "避坑"}
         assert {item["value"] for item in options["reusableModel"]} >= {"教程方法模型", "问题驱动模型", "测评背书模型"}
-        assert {item["value"] for item in options["contentUsage"]} >= {"正文结构参考", "选题参考", "废弃"}
+        content_usage_values = {item["value"] for item in options["contentUsage"]}
+        assert content_usage_values >= {"标题参考", "正文结构参考", "选题参考", "废弃"}
+        assert "选题参考、正文结构参考" not in content_usage_values
         assert {item["value"] for item in options["searchAttribute"]} >= {"强搜索", "弱搜索"}
+
+        usage_response = client.get(
+            "/api/notes?platform=xhs&content_usage=正文结构参考",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert usage_response.status_code == 200
+        assert [item["note_id"] for item in usage_response.json()["items"]] == ["filter-2"]
 
         or_response = client.get(
             "/api/notes?platform=xhs&core_product_service=AI 工具,知识管理",
