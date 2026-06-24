@@ -78,7 +78,6 @@ type AccountForm = {
 
 type UrlForm = {
   url: string;
-  min_read_count: number;
 };
 
 type BatchKeywordResult = {
@@ -131,7 +130,7 @@ function collectSummaryText(result: WechatOfficialRedfoxCollectResponse | null):
   if (summary.filtered !== undefined) details.push(`已过滤 ${summary.filtered}`);
   if (summary.target_reached !== undefined) details.push(summary.target_reached ? "已达目标" : "未达目标");
 
-  const base = `拉取 ${summary.fetched}，保存 ${summary.saved}，10万+候选 ${summary.viral_candidates}，重复 ${summary.deduped}，API 调用 ${summary.api_calls}`;
+  const base = `拉取 ${summary.fetched}，保存 ${summary.saved}，候选 ${summary.viral_candidates}，重复 ${summary.deduped}，API 调用 ${summary.api_calls}`;
   return details.length ? `${base}，${details.join("，")}` : base;
 }
 
@@ -354,7 +353,6 @@ export function WechatOfficialDiscoveryPanel() {
     const values = await urlForm.validateFields();
     const response = await importWechatOfficialRedfoxUrl({
       url: values.url,
-      min_read_count: values.min_read_count ?? DEFAULT_MIN_READ,
       save_snapshot: true,
     });
     setLastCollectResult(response);
@@ -463,10 +461,9 @@ export function WechatOfficialDiscoveryPanel() {
         ) : null}
 
         {mode === "url" ? (
-          <Form form={urlForm} layout="inline" initialValues={{ min_read_count: DEFAULT_MIN_READ }}>
-            <Form.Item name="url" rules={[{ required: true, message: "请输入文章 URL" }]} style={{ minWidth: 360 }}><Input placeholder="https://mp.weixin.qq.com/s/..." /></Form.Item>
-            <Form.Item name="min_read_count" label="最低阅读"><InputNumber min={0} step={10000} /></Form.Item>
-            <Form.Item><Button type="primary" loading={busyAction === "import-url"} onClick={handleUrlImport}>查询并保存候选</Button></Form.Item>
+          <Form form={urlForm} layout="inline">
+            <Form.Item name="url" rules={[{ required: true, message: "请输入文章 URL" }]} style={{ minWidth: 420 }}><Input placeholder="https://mp.weixin.qq.com/s/..." /></Form.Item>
+            <Form.Item><Button type="primary" loading={busyAction === "import-url"} onClick={handleUrlImport}>直接收集并保存候选</Button></Form.Item>
           </Form>
         ) : null}
 

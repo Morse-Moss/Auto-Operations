@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import requests
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -13,8 +15,10 @@ from backend.app.models import (
     WechatOfficialArticleCommentReply,
     WechatOfficialArticleMetric,
     WechatOfficialArticleSnapshot,
+    WechatOfficialCrawlAccount,
     WechatOfficialCrawlJob,
     WechatOfficialDraftSource,
+    WechatOfficialRedfoxConfig,
 )
 from backend.app.services import wechat_official_redfox_service as redfox_service
 
@@ -211,6 +215,66 @@ class FakeTargetCountRedfoxClient:
             ],
         }
         return {"code": 2000, "data": {"list": pages[offset]}}
+
+
+class FakeFailingSearchRedfoxClient:
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+
+    def search_articles(self, *, keyword: str, offset: int, sort_type: str) -> dict:
+        response = requests.Response()
+        response.status_code = 502
+        response._content = b"bad gateway"
+        raise requests.HTTPError("502 Server Error", response=response)
+
+
+class FakeNestedArticleDetailRedfoxClient:
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        assert api_key == "redfox-collect-secret"
+
+    def query_article_detail(self, *, url: str) -> dict:
+        assert url == "https://mp.weixin.qq.com/s/nested-redfox-url"
+        return {
+            "code": 2000,
+            "data": {
+                "article": {
+                    "id": "nested-work-1",
+                    "appmsg_title": "嵌套结构爆文标题",
+                    "appmsg_digest": "嵌套结构摘要",
+                    "nickname": "嵌套公众号",
+                    "biz": "MzNestedBiz",
+                    "read_num": "1",
+                    "like_num": "3210",
+                    "comment_num": "88",
+                    "content": "嵌套详情正文",
+                }
+            },
+        }
+
+
+class FakeUnparseableArticleDetailRedfoxClient:
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        assert api_key == "redfox-collect-secret"
+
+    def query_article_detail(self, *, url: str) -> dict:
+        assert url == "https://mp.weixin.qq.com/s/unparseable-redfox-url"
+        return {"code": 2000, "data": {"article": {"read_num": 120000}}}
+
+
+class FakeTimeoutArticleDetailRedfoxClient:
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        assert api_key == "redfox-collect-secret"
+
+    def query_article_detail(self, *, url: str) -> dict:
+        assert url == "https://mp.weixin.qq.com/s/timeout-redfox-url"
+        raise requests.Timeout("detail timeout")
 
 
 class FakeDenseMatchRedfoxClient:
@@ -525,6 +589,192 @@ def test_redfox_keyword_collect_legacy_pages_preserves_historic_requested_limit(
             assert job.requested_limit == 60
             assert job.params_json["target_count"] == 60
             assert job.params_json["max_pages"] == 3
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_keyword_collect_returns_bad_gateway_when_upstream_request_fails(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeFailingSearchRedfoxClient, raising=False)
+    try:
+        headers = _register("redfox-upstream-error-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/collect/articles",
+            headers=headers,
+            json={"keyword": "浴缸", "target_count": 1, "max_pages": 1, "sort_type": "_4"},
+        )
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "Redfox search request failed with HTTP 502"
+
+        with TestingSessionLocal() as db:
+            assert db.scalar(select(WechatOfficialCrawlJob)) is None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_keyword_collect_returns_bad_request_when_api_key_cannot_be_decrypted(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("redfox-invalid-token-user")
+        user_id = int(client.get("/api/auth/me", headers=headers).json()["id"])
+        encrypted_with_other_key = Fernet(Fernet.generate_key()).encrypt(b"redfox-collect-secret").decode("utf-8")
+        with TestingSessionLocal() as db:
+            db.add(WechatOfficialRedfoxConfig(user_id=user_id, encrypted_api_key=encrypted_with_other_key))
+            db.commit()
+
+        response = client.post(
+            "/api/wechat-official/redfox/collect/articles",
+            headers=headers,
+            json={"keyword": "浴缸", "target_count": 1, "max_pages": 1, "sort_type": "_4"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Redfox API Key cannot be decrypted; please re-save the configuration"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_import_url_normalizes_nested_article_detail_and_falls_back_to_input_url(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeNestedArticleDetailRedfoxClient, raising=False)
+    try:
+        headers = _register("redfox-nested-url-user")
+        _save_config(headers)
+        article_url = "https://mp.weixin.qq.com/s/nested-redfox-url"
+
+        response = client.post(
+            "/api/wechat-official/redfox/import-url",
+            headers=headers,
+            json={"url": article_url, "min_read_count": 100000},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["saved"] == 1
+        assert payload["summary"]["viral_candidates"] == 1
+        assert len(payload["items"]) == 1
+        item = payload["items"][0]
+        assert item["title"] == "嵌套结构爆文标题"
+        assert item["digest"] == "嵌套结构摘要"
+        assert item["author_name"] == "嵌套公众号"
+        assert item["article_url"] == article_url
+        assert item["content_url"] == article_url
+        assert item["latest_metric"]["read_count"] == 1
+        assert item["latest_metric"]["like_count"] == 3210
+        assert item["latest_metric"]["comment_count"] == 88
+
+        with TestingSessionLocal() as db:
+            article = db.scalar(select(WechatOfficialArticle).where(WechatOfficialArticle.article_url == article_url))
+            assert article is not None
+            assert article.title == "嵌套结构爆文标题"
+            assert article.author_name == "嵌套公众号"
+            metric = db.scalar(select(WechatOfficialArticleMetric).where(WechatOfficialArticleMetric.article_id == article.id))
+            assert metric is not None
+            assert metric.read_count == 1
+            assert metric.like_count == 3210
+            assert metric.comment_count == 88
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_import_url_returns_gateway_timeout_when_detail_times_out(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeTimeoutArticleDetailRedfoxClient, raising=False)
+    try:
+        headers = _register("redfox-timeout-url-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/import-url",
+            headers=headers,
+            json={"url": "https://mp.weixin.qq.com/s/timeout-redfox-url"},
+        )
+
+        assert response.status_code == 504
+        assert "文章详情接口超时" in response.json()["detail"]
+
+        with TestingSessionLocal() as db:
+            assert db.scalar(select(WechatOfficialCrawlJob)) is None
+            assert db.scalar(select(WechatOfficialArticle)) is None
+            assert db.scalar(select(WechatOfficialArticleMetric)) is None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_import_url_rejects_unparseable_detail_without_saving_shell(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeUnparseableArticleDetailRedfoxClient, raising=False)
+    try:
+        headers = _register("redfox-unparseable-url-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/import-url",
+            headers=headers,
+            json={"url": "https://mp.weixin.qq.com/s/unparseable-redfox-url", "min_read_count": 100000},
+        )
+
+        assert response.status_code == 502
+        assert "未识别到文章标题" in response.json()["detail"]
+
+        with TestingSessionLocal() as db:
+            assert db.scalar(select(WechatOfficialCrawlJob)) is None
+            assert db.scalar(select(WechatOfficialArticle)) is None
+            assert db.scalar(select(WechatOfficialArticleMetric)) is None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_import_url_skips_tombstoned_article(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeRedfoxClient, raising=False)
+    try:
+        headers = _register("redfox-delete-user")
+        _save_config(headers)
+
+        first = client.post(
+            "/api/wechat-official/redfox/import-url",
+            headers=headers,
+            json={"url": "https://mp.weixin.qq.com/s/redfox-url", "min_read_count": 100000},
+        )
+        assert first.status_code == 200
+        assert first.json()["summary"]["saved"] == 1
+        article_id = first.json()["items"][0]["id"]
+
+        with TestingSessionLocal() as db:
+            article = db.get(WechatOfficialArticle, article_id)
+            assert article is not None
+            account = db.get(WechatOfficialCrawlAccount, article.account_id)
+            assert account is not None
+            owner_user_id = account.user_id
+
+        deleted = client.delete(f"/api/wechat-official/content-library/{article_id}", headers=headers)
+        assert deleted.status_code == 200
+
+        second = client.post(
+            "/api/wechat-official/redfox/import-url",
+            headers=headers,
+            json={"url": "https://mp.weixin.qq.com/s/redfox-url", "min_read_count": 100000},
+        )
+        assert second.status_code == 200
+        assert second.json()["summary"]["saved"] == 0
+        assert second.json()["items"] == []
+
+        with TestingSessionLocal() as db:
+            assert (
+                db.scalar(
+                    select(WechatOfficialArticle)
+                    .join(WechatOfficialCrawlAccount, WechatOfficialArticle.account_id == WechatOfficialCrawlAccount.id)
+                    .where(
+                        WechatOfficialArticle.article_url == "https://mp.weixin.qq.com/s/redfox-url",
+                        WechatOfficialCrawlAccount.user_id == owner_user_id,
+                    )
+                )
+                is None
+            )
     finally:
         app.dependency_overrides.pop(get_db, None)
 

@@ -34,17 +34,17 @@ class WechatOfficialRedfoxClient:
         return self._post("/story/api/gzhData/queryWorkList", payload)
 
     def query_article_detail(self, *, url: str) -> dict[str, Any]:
-        return self._post("/story/api/gzhData/queryArticleDetail", {"url": url})
+        return self._post("/story/api/gzhData/queryArticleDetail", {"url": url}, timeout=max(self.timeout, 60.0))
 
     def validate_key(self) -> dict[str, Any]:
         return self._post("/story/api/gzhData/searchArticle", {"keyword": "test", "offset": 0, "sortType": "_0"})
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, path: str, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
         response = requests.post(
             f"{self.base_url}{path}",
             headers={"REDFOX_API_KEY": self.api_key, "Content-Type": "application/json"},
             json=payload,
-            timeout=self.timeout,
+            timeout=timeout or self.timeout,
         )
         response.raise_for_status()
         data = response.json()

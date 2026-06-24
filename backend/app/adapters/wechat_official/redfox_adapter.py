@@ -31,6 +31,40 @@ SENSITIVE_KEYS = {
     "uin",
 }
 
+DETAIL_OBJECT_KEYS = (
+    "article",
+    "detail",
+    "work",
+    "info",
+    "articleInfo",
+    "workInfo",
+    "article_info",
+    "work_info",
+    "data",
+)
+
+ARTICLE_HINT_KEYS = (
+    "title",
+    "appmsg_title",
+    "msg_title",
+    "article_title",
+    "nickname",
+    "nick_name",
+    "accountName",
+    "account_name",
+    "author",
+    "readCount",
+    "read_count",
+    "read_num",
+    "readNum",
+    "content_url",
+    "contentUrl",
+    "workUrl",
+    "workUuid",
+    "article_url",
+    "url",
+)
+
 
 class WechatOfficialRedfoxAdapter:
     def normalize_article_list(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -47,26 +81,46 @@ class WechatOfficialRedfoxAdapter:
         return []
 
     def normalize_article_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        data = _extract_article_detail_data(payload)
         raw = sanitize_payload(data)
-        read_count = _int_value(data, "readCount", "read_count", "read_num")
+        read_count = _int_value(data, "readCount", "read_count", "read_num", "readNum", "read", "readcnt", "read_cnt")
         follower_count = _optional_int(data.get("followerCount") or data.get("follower_count") or data.get("fansCount") or data.get("fans_count"))
         cover_url = _text_value(data.get("coverUrl") or data.get("cover_url") or data.get("cover"))
         content_html = _text_value(data.get("html") or data.get("contentHtml") or data.get("content_html") or data.get("articleHtml") or data.get("bodyHtml"))
         content_text = _text_value(data.get("content") or data.get("text") or data.get("body") or data.get("contentText") or data.get("content_text"))
         images = _normalize_images(data, cover_url=cover_url, content_html=content_html)
         comments = _normalize_comments(data)
+        article_url = _text_value(
+            data.get("workUrl")
+            or data.get("work_url")
+            or data.get("article_url")
+            or data.get("contentUrl")
+            or data.get("content_url")
+            or data.get("url")
+            or data.get("link")
+            or data.get("source_url")
+        )
+        author_name = _text_value(
+            data.get("author")
+            or data.get("author_name")
+            or data.get("accountName")
+            or data.get("account_name")
+            or data.get("nickname")
+            or data.get("nick_name")
+            or data.get("biz_name")
+            or data.get("source_name")
+        )
         return {
             "external_id": _text_value(data.get("workUuid") or data.get("work_uuid") or data.get("id")),
-            "article_url": _text_value(data.get("workUrl") or data.get("article_url") or data.get("url") or data.get("contentUrl")),
-            "title": _text_value(data.get("title")),
-            "digest": _text_value(data.get("summary") or data.get("digest") or data.get("memo")),
-            "author_name": _text_value(data.get("author") or data.get("accountName") or data.get("account_name")),
-            "account_name": _text_value(data.get("accountName") or data.get("account_name") or data.get("author")),
-            "account": _text_value(data.get("account") or data.get("biz") or data.get("accountId")),
+            "article_url": article_url,
+            "title": _text_value(data.get("title") or data.get("appmsg_title") or data.get("msg_title") or data.get("article_title") or data.get("name")),
+            "digest": _text_value(data.get("summary") or data.get("digest") or data.get("memo") or data.get("appmsg_digest") or data.get("abstract") or data.get("desc") or data.get("description")),
+            "author_name": author_name,
+            "account_name": author_name,
+            "account": _text_value(data.get("account") or data.get("biz") or data.get("__biz") or data.get("fakeid") or data.get("fake_id") or data.get("accountId") or data.get("account_id")),
             "publish_time_remote": _text_value(data.get("publishTime") or data.get("publish_time")),
             "cover_url": cover_url,
-            "content_url": _text_value(data.get("workUrl") or data.get("contentUrl") or data.get("url")),
+            "content_url": article_url,
             "content_text": content_text,
             "content_html": content_html,
             "images": images,
@@ -80,10 +134,10 @@ class WechatOfficialRedfoxAdapter:
             },
             "metrics": {
                 "read_count": read_count,
-                "like_count": _int_value(data, "likeCount", "like_count", "old_like_count"),
-                "wow_count": _int_value(data, "watchCount", "watch_count", "wow_count"),
-                "share_count": _int_value(data, "shareCount", "share_count"),
-                "comment_count": _int_value(data, "commentCount", "comment_count"),
+                "like_count": _int_value(data, "likeCount", "like_count", "old_like_count", "like_num", "likeNum"),
+                "wow_count": _int_value(data, "watchCount", "watch_count", "wow_count", "like_num2", "old_like_count_2"),
+                "share_count": _int_value(data, "shareCount", "share_count", "share_num", "shareNum"),
+                "comment_count": _int_value(data, "commentCount", "comment_count", "comment_num", "commentNum"),
             },
             "follower_count": follower_count,
             "low_follower_label": data.get("lowFollowerLabel") or data.get("low_follower_label"),
@@ -91,7 +145,35 @@ class WechatOfficialRedfoxAdapter:
         }
 
     def _looks_like_article(self, data: dict[str, Any]) -> bool:
-        return bool(data.get("title") or data.get("workUrl") or data.get("workUuid"))
+        return _looks_like_article(data)
+
+
+def _extract_article_detail_data(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if _looks_like_article(data):
+        return data
+
+    for key in DETAIL_OBJECT_KEYS:
+        value = data.get(key)
+        if isinstance(value, dict) and _looks_like_article(value):
+            return value
+
+    for key in DETAIL_OBJECT_KEYS:
+        value = data.get(key)
+        if not isinstance(value, dict):
+            continue
+        for nested_key in DETAIL_OBJECT_KEYS:
+            nested = value.get(nested_key)
+            if isinstance(nested, dict) and _looks_like_article(nested):
+                return nested
+
+    return data
+
+
+def _looks_like_article(data: dict[str, Any]) -> bool:
+    return isinstance(data, dict) and any(data.get(key) not in (None, "") for key in ARTICLE_HINT_KEYS)
 
 
 def sanitize_payload(value: Any) -> Any:

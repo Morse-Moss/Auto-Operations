@@ -6,6 +6,7 @@ import re
 from urllib.parse import urlparse
 
 import requests
+from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -102,6 +103,14 @@ class WechatOfficialRedfoxService:
             return {"ok": True, "config": serialize_redfox_config(config), "message": "Redfox 配置可用"}
         return {"ok": False, "config": serialize_redfox_config(config), "message": config.last_error}
 
+    def _validate_imported_url_article(self, item: dict[str, Any], *, url: str) -> None:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Redfox 已返回文章详情，但未识别到文章标题；请确认 URL 可访问，或稍后重试",
+            )
+
     def list_collect_jobs(self, user_id: int, filters: dict[str, Any]) -> dict[str, Any]:
         page = max(1, int(filters.get("page") or 1))
         page_size = max(1, min(100, int(filters.get("page_size") or 20)))
@@ -176,7 +185,7 @@ class WechatOfficialRedfoxService:
         target_reached = False
 
         for page_index in range(max_pages):
-            response = client.search_articles(keyword=keyword, offset=page_index * DEFAULT_PAGE_SIZE, sort_type=sort_type)
+            response = self._search_articles_or_raise(client, keyword=keyword, offset=page_index * DEFAULT_PAGE_SIZE, sort_type=sort_type)
             api_calls += 1
             page_items = self.adapter.normalize_article_list(response)
             fetched.extend(page_items)
@@ -227,7 +236,8 @@ class WechatOfficialRedfoxService:
         normalized: list[dict[str, Any]] = []
         api_calls = 0
         for page_index in range(pages):
-            response = client.query_work_list(
+            response = self._query_work_list_or_raise(
+                client,
                 account=account,
                 account_name=account_name,
                 offset=page_index * DEFAULT_PAGE_SIZE,
@@ -262,14 +272,18 @@ class WechatOfficialRedfoxService:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="url is required")
         client = self._client(user_id)
         response = self._query_article_detail_or_raise(client, url=url)
-        normalized = [self.adapter.normalize_article_detail(response)]
+        item = self.adapter.normalize_article_detail(response)
+        item["article_url"] = item.get("article_url") or url
+        item["content_url"] = item.get("content_url") or item["article_url"]
+        self._validate_imported_url_article(item, url=url)
+        normalized = [item]
         return self._save_collection(
             user_id,
             normalized,
             source_label="redfox_url",
             keyword=url,
             requested_limit=1,
-            min_read_count=_int_or_default(payload.get("min_read_count"), default=100000),
+            min_read_count=0,
             save_snapshot=bool(payload.get("save_snapshot", True)),
             api_calls=1,
             params={"url": url},
@@ -318,11 +332,58 @@ class WechatOfficialRedfoxService:
 
         return WechatOfficialContentService(self.db).get_detail(user_id, article_id)
 
+    def _search_articles_or_raise(self, client: WechatOfficialRedfoxClient, *, keyword: str, offset: int, sort_type: str) -> dict[str, Any]:
+        try:
+            return client.search_articles(keyword=keyword, offset=offset, sort_type=sort_type)
+        except requests.Timeout as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Redfox search request timed out; please retry later") from exc
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else status.HTTP_502_BAD_GATEWAY
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox search request failed with HTTP {status_code}") from exc
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox search request failed: {exc}") from exc
+        except RedfoxApiError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox search API rejected the request: {exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Redfox search response is not valid JSON") from exc
+
+    def _query_work_list_or_raise(
+        self,
+        client: WechatOfficialRedfoxClient,
+        *,
+        account: str,
+        account_name: str,
+        offset: int,
+        sort_type: str,
+        publish_time_start: str | None,
+        publish_time_end: str | None,
+    ) -> dict[str, Any]:
+        try:
+            return client.query_work_list(
+                account=account,
+                account_name=account_name,
+                offset=offset,
+                sort_type=sort_type,
+                publish_time_start=publish_time_start,
+                publish_time_end=publish_time_end,
+            )
+        except requests.Timeout as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Redfox account request timed out; please retry later") from exc
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else status.HTTP_502_BAD_GATEWAY
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox account request failed with HTTP {status_code}") from exc
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox account request failed: {exc}") from exc
+        except RedfoxApiError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Redfox account API rejected the request: {exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Redfox account response is not valid JSON") from exc
+
     def _query_article_detail_or_raise(self, client: WechatOfficialRedfoxClient, *, url: str) -> dict[str, Any]:
         try:
             return client.query_article_detail(url=url)
         except requests.Timeout as exc:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Redfox detail request timed out; please retry later") from exc
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Redfox 文章详情接口超时；已等待较长时间仍未返回，请稍后重试或换一个公众号文章 URL") from exc
         except requests.HTTPError as exc:
             status_code = exc.response.status_code if exc.response is not None else status.HTTP_502_BAD_GATEWAY
             message = f"Redfox detail request failed with HTTP {status_code}"
@@ -543,7 +604,11 @@ class WechatOfficialRedfoxService:
         config = self._require_config(user_id)
         if not config.encrypted_api_key:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Redfox API Key is not configured")
-        return WechatOfficialRedfoxClient(base_url=config.base_url or DEFAULT_REDFOX_BASE_URL, api_key=decrypt_text(config.encrypted_api_key))
+        try:
+            api_key = decrypt_text(config.encrypted_api_key)
+        except InvalidToken as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Redfox API Key cannot be decrypted; please re-save the configuration") from exc
+        return WechatOfficialRedfoxClient(base_url=config.base_url or DEFAULT_REDFOX_BASE_URL, api_key=api_key)
 
     def _find_config(self, user_id: int) -> WechatOfficialRedfoxConfig | None:
         return self.db.scalar(select(WechatOfficialRedfoxConfig).where(WechatOfficialRedfoxConfig.user_id == user_id).order_by(WechatOfficialRedfoxConfig.id.desc()))
