@@ -357,14 +357,29 @@ def test_xhs_content_library_exposes_feishu_filters_and_actions():
     types_source = open("frontend/src/components/content-library/content-library-types.ts", encoding="utf-8").read()
     hook_source = open("frontend/src/components/content-library/use-content-library.ts", encoding="utf-8").read()
 
+    assert "飞书分析筛选" in shell_source
     assert "飞书同步状态" in shell_source
     assert "分析状态" in shell_source
+    assert "核心产品/服务" in shell_source
     assert "内容类型" in shell_source
-    assert "复用价值" in shell_source
     assert "可复用模型" in shell_source
-    assert "canFilterFeishuAnalysis" in types_source
+    assert "内容利用方式" in shell_source
+    assert "搜索属性" in shell_source
+    assert shell_source.count("renderMultiSelect({") >= 5
+    assert shell_source.count('mode="multiple"') >= 1
+    assert "controller.coreProductServiceFilter" in shell_source
+    assert "controller.contentTypeFilter" in shell_source
+    assert "controller.reusableModelFilter" in shell_source
+    assert "controller.contentUsageFilter" in shell_source
+    assert "controller.searchAttributeFilter" in shell_source
+    assert "controller.setCoreProductServiceFilter" in shell_source
+    assert "controller.setContentTypeFilter" in shell_source
+    assert "controller.setReusableModelFilter" in shell_source
+    assert "controller.setContentUsageFilter" in shell_source
+    assert "controller.setSearchAttributeFilter" in shell_source
     assert "feishuPushStatusFilter" in types_source
-    assert "feishuPushStatusFilter" in hook_source
+    assert "feishu_push_status: feishuPushStatusFilter || undefined" in hook_source
+    assert "canFilterFeishuAnalysis" in types_source
     assert "pushXhsNotesToFeishu" in adapter_source
     assert "pullXhsNotesFromFeishu" in adapter_source
     assert "同步到飞书" in adapter_source
@@ -378,17 +393,37 @@ def test_content_library_filter_options_are_platform_adapter_owned():
     xhs_adapter_source = open("frontend/src/pages/platforms/xhs/xhs-content-library-adapter.ts", encoding="utf-8").read()
     wechat_adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
     shell_source = open("frontend/src/components/content-library/content-library-shell.tsx", encoding="utf-8").read()
+    hook_source = open("frontend/src/components/content-library/use-content-library.ts", encoding="utf-8").read()
     types_source = open("frontend/src/components/content-library/content-library-types.ts", encoding="utf-8").read()
 
-    assert "filterOptions" in types_source
+    assert "loadFilterOptions" in types_source
+    assert "adapter.loadFilterOptions" in hook_source
+    assert "refreshFilterOptions" in hook_source
+    assert "filterOptions" in hook_source
+    assert "filterOptionsError" in hook_source
+    assert "core_product_service: coreProductServiceFilter.length ? coreProductServiceFilter : undefined" in hook_source
+    assert "content_type: contentTypeFilter.length ? contentTypeFilter : undefined" in hook_source
+    assert "reusable_model: reusableModelFilter.length ? reusableModelFilter : undefined" in hook_source
+    assert "content_usage: contentUsageFilter.length ? contentUsageFilter : undefined" in hook_source
+    assert "search_attribute: searchAttributeFilter.length ? searchAttributeFilter : undefined" in hook_source
+    assert "controller.filterOptions" in shell_source
+    assert "controller.filterOptionsError" in shell_source
     assert "adapter.filterOptions" in shell_source
+    assert "fetchSavedNoteFilterOptions" in xhs_adapter_source
+    assert 'loadFilterOptions: () => fetchSavedNoteFilterOptions("xhs")' in xhs_adapter_source
+    assert "场景种草模型" not in xhs_adapter_source
+    assert "测评背书模型" not in xhs_adapter_source
+    assert "问题驱动模型" not in xhs_adapter_source
+    assert "fetchSavedNoteFilterOptions" not in wechat_adapter_source
+    assert "loadFilterOptions" not in wechat_adapter_source
+    assert "canFilterFeishuAnalysis: false" in wechat_adapter_source
+    assert "核心产品/服务" in shell_source
+    assert "搜索属性" in shell_source
     assert "观点评论" in wechat_adapter_source
     assert "案例拆解" in wechat_adapter_source
     assert "标题钩子" in wechat_adapter_source
     assert "转化路径" in wechat_adapter_source
     assert "认知升级模型" in wechat_adapter_source
-    assert "场景种草模型" in xhs_adapter_source or "场景种草模型" in shell_source
-    assert "测评背书模型" in xhs_adapter_source or "测评背书模型" in shell_source
 
 
 def test_draft_workbench_labels_are_platform_adapter_owned():

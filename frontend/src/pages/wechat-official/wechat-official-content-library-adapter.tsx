@@ -389,7 +389,7 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
       canReadComments: true,
       canFilterAssets: false,
       canFilterComments: false,
-      canFilterFeishuAnalysis: true,
+      canFilterFeishuAnalysis: false,
     },
     labels: {
       savedCountTitle: "公众号文章",

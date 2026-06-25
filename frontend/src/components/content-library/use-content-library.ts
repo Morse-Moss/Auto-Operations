@@ -42,6 +42,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
   const [feishuPushStatusFilter, setFeishuPushStatusFilter] = useState("");
   const [analysisStatusFilter, setAnalysisStatusFilter] = useState("");
   const [filterOptions, setFilterOptions] = useState(adapter.filterOptions ?? {});
+  const [filterOptionsError, setFilterOptionsError] = useState<string | null>(null);
   const [coreProductServiceFilter, setCoreProductServiceFilter] = useState<string[]>([]);
   const [contentTypeFilter, setContentTypeFilter] = useState<string[]>([]);
   const [reusableModelFilter, setReusableModelFilter] = useState<string[]>([]);
@@ -113,6 +114,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
   }, [adapter]);
 
   const refreshFilterOptions = useCallback(async () => {
+    setFilterOptionsError(null);
     if (!adapter.loadFilterOptions) {
       setFilterOptions(adapter.filterOptions ?? {});
       return;
@@ -122,14 +124,83 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
       setFilterOptions(result);
     } catch {
       setFilterOptions(adapter.filterOptions ?? {});
+      setFilterOptionsError("飞书分析筛选项加载失败，请刷新后重试。");
     }
   }, [adapter]);
 
   useEffect(() => {
-    void refreshItems();
-    void refreshTags();
-    void refreshFilterOptions();
-  }, []);
+    let cancelled = false;
+
+    setKeywordFilter("");
+    setSelectedTagFilter("");
+    setHasAssetsFilter(false);
+    setHasCommentsFilter(false);
+    setFeishuPushStatusFilter("");
+    setAnalysisStatusFilter("");
+    setCoreProductServiceFilter([]);
+    setContentTypeFilter([]);
+    setReusableModelFilter([]);
+    setContentUsageFilter([]);
+    setSearchAttributeFilter([]);
+    setSortBy(adapter.defaultSortBy);
+    setPage(1);
+    setPageSize(adapter.pageSize);
+    setSelectedItemIds([]);
+    setBatchActionMessage(null);
+    resetComments();
+
+    async function loadInitialItems() {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const result = await adapter.loadItems({ sort_by: adapter.defaultSortBy, page: 1, page_size: adapter.pageSize });
+        if (cancelled) return;
+        setItems(result.items);
+        setTotal(result.total);
+        setPage(result.page);
+        setPageSize(result.page_size);
+        setSelectedItemIds([]);
+      } catch {
+        if (!cancelled) setError(adapter.messages.loadError);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }
+
+    async function loadInitialTags() {
+      try {
+        const result = await adapter.loadTags();
+        if (!cancelled) setAvailableTags(result.items);
+      } catch {
+        if (!cancelled) setAvailableTags([]);
+      }
+    }
+
+    async function loadInitialFilterOptions() {
+      setFilterOptionsError(null);
+      if (!adapter.loadFilterOptions) {
+        setFilterOptions(adapter.filterOptions ?? {});
+        return;
+      }
+      try {
+        const result = await adapter.loadFilterOptions();
+        if (!cancelled) setFilterOptions(result);
+      } catch {
+        if (!cancelled) {
+          setFilterOptions(adapter.filterOptions ?? {});
+          setFilterOptionsError("飞书分析筛选项加载失败，请刷新后重试。");
+        }
+      }
+    }
+
+    void loadInitialItems();
+    void loadInitialTags();
+    void loadInitialFilterOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter, resetComments]);
 
   const clearFilters = useCallback(() => {
     setKeywordFilter("");
@@ -480,6 +551,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     hasCommentsFilter,
     feishuPushStatusFilter,
     filterOptions,
+    filterOptionsError,
     analysisStatusFilter,
     coreProductServiceFilter,
     contentTypeFilter,

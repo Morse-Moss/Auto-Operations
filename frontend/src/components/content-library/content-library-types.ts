@@ -218,6 +218,7 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   hasCommentsFilter: boolean;
   feishuPushStatusFilter: string;
   filterOptions: ContentLibraryFilterOptions;
+  filterOptionsError: string | null;
   analysisStatusFilter: string;
   coreProductServiceFilter: string[];
   contentTypeFilter: string[];

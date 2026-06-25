@@ -3,16 +3,43 @@ import { Alert, Button, Card, Checkbox, Col, Drawer, Empty, Input, Pagination, P
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { ContentLibraryAdapter, ContentLibraryController, ContentLibraryItem } from "./content-library-types";
+import type { ContentLibraryAdapter, ContentLibraryController, ContentLibraryItem, ContentLibrarySelectOption } from "./content-library-types";
 
 const { Title, Text } = Typography;
 
 const DEFAULT_FILTER_OPTIONS = {
   analysisStatus: ["待分析", "分析中", "已完成", "废弃"].map((value) => ({ value, label: value })),
-  contentType: ["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事"].map((value) => ({ value, label: value })),
-  reuseValue: ["选题参考", "标题参考", "正文结构参考", "卖点表达参考", "可直接改写", "行业观察", "竞品参考", "废弃"].map((value) => ({ value, label: value })),
-  reusableModel: ["问题驱动模型", "情绪驱动模型", "场景种草模型", "对比反差模型", "测评背书模型", "教程方法模型", "故事案例模型", "IP/热点借势模型"].map((value) => ({ value, label: value })),
-};
+  coreProductService: [],
+  contentType: [],
+  reusableModel: [],
+  contentUsage: [],
+  searchAttribute: [],
+} satisfies Record<string, ContentLibrarySelectOption[]>;
+
+function renderMultiSelect({
+  placeholder,
+  value,
+  options,
+  onChange,
+}: {
+  placeholder: string;
+  value: string[];
+  options: ContentLibrarySelectOption[];
+  onChange: (value: string[]) => void;
+}) {
+  return (
+    <Select
+      mode="multiple"
+      allowClear
+      maxTagCount="responsive"
+      placeholder={options.length ? placeholder : `${placeholder}（暂无可选项）`}
+      value={value}
+      onChange={onChange}
+      style={{ width: "100%" }}
+      options={options}
+    />
+  );
+}
 
 export type ContentLibraryShellProps<TItem extends ContentLibraryItem> = {
   adapter: ContentLibraryAdapter<TItem>;
@@ -24,9 +51,11 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
   const emptyState = adapter.emptyState;
   const filterOptions = {
     analysisStatus: controller.filterOptions.analysisStatus ?? adapter.filterOptions?.analysisStatus ?? DEFAULT_FILTER_OPTIONS.analysisStatus,
+    coreProductService: controller.filterOptions.coreProductService ?? adapter.filterOptions?.coreProductService ?? DEFAULT_FILTER_OPTIONS.coreProductService,
     contentType: controller.filterOptions.contentType ?? adapter.filterOptions?.contentType ?? DEFAULT_FILTER_OPTIONS.contentType,
-    contentUsage: controller.filterOptions.contentUsage ?? adapter.filterOptions?.contentUsage ?? adapter.filterOptions?.reuseValue ?? DEFAULT_FILTER_OPTIONS.reuseValue,
     reusableModel: controller.filterOptions.reusableModel ?? adapter.filterOptions?.reusableModel ?? DEFAULT_FILTER_OPTIONS.reusableModel,
+    contentUsage: controller.filterOptions.contentUsage ?? adapter.filterOptions?.contentUsage ?? adapter.filterOptions?.reuseValue ?? DEFAULT_FILTER_OPTIONS.contentUsage,
+    searchAttribute: controller.filterOptions.searchAttribute ?? adapter.filterOptions?.searchAttribute ?? DEFAULT_FILTER_OPTIONS.searchAttribute,
   };
 
   return (
@@ -52,8 +81,8 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
         <Col span={6}><Card size="small"><Statistic title="平台" value={adapter.labels.platformLabel} /></Card></Col>
       </Row>
 
-      <Card size="small" style={{ marginBottom: 16 }}>
-        <Row gutter={12} align="middle">
+      <Card size="small" title="基础筛选" style={{ marginBottom: 16 }}>
+        <Row gutter={[12, 12]} align="middle">
           <Col span={5}>
             <Input placeholder={adapter.labels.filterPlaceholder} value={controller.keywordFilter} onChange={(event) => controller.setKeywordFilter(event.target.value)} allowClear />
           </Col>
@@ -72,65 +101,6 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
           <Col span={4}>
             <Select value={controller.sortBy} onChange={controller.handleSortChange} style={{ width: "100%" }} options={adapter.sortOptions} />
           </Col>
-          {adapter.capabilities.canFilterFeishuAnalysis ? (
-            <>
-              <Col span={4}>
-                <Select
-                  allowClear
-                  placeholder="飞书同步状态"
-                  value={controller.feishuPushStatusFilter || undefined}
-                  onChange={(value) => controller.setFeishuPushStatusFilter(value ?? "")}
-                  style={{ width: "100%" }}
-                  options={[
-                    { value: "not_synced", label: "未同步" },
-                    { value: "dry_run", label: "Dry-run" },
-                    { value: "synced", label: "已同步" },
-                    { value: "failed", label: "同步失败" },
-                  ]}
-                />
-              </Col>
-              <Col span={4}>
-                <Select
-                  allowClear
-                  placeholder="分析状态"
-                  value={controller.analysisStatusFilter || undefined}
-                  onChange={(value) => controller.setAnalysisStatusFilter(value ?? "")}
-                  style={{ width: "100%" }}
-                  options={filterOptions.analysisStatus}
-                />
-              </Col>
-              <Col span={4}>
-                <Select
-                  allowClear
-                  placeholder="内容类型"
-                  value={controller.contentTypeFilter[0]}
-                  onChange={(value) => controller.setContentTypeFilter(value ? [value] : [])}
-                  style={{ width: "100%" }}
-                  options={filterOptions.contentType}
-                />
-              </Col>
-              <Col span={4}>
-                <Select
-                  allowClear
-                  placeholder="复用价值"
-                  value={controller.contentUsageFilter[0]}
-                  onChange={(value) => controller.setContentUsageFilter(value ? [value] : [])}
-                  style={{ width: "100%" }}
-                  options={filterOptions.contentUsage}
-                />
-              </Col>
-              <Col span={5}>
-                <Select
-                  allowClear
-                  placeholder="可复用模型"
-                  value={controller.reusableModelFilter[0]}
-                  onChange={(value) => controller.setReusableModelFilter(value ? [value] : [])}
-                  style={{ width: "100%" }}
-                  options={filterOptions.reusableModel}
-                />
-              </Col>
-            </>
-          ) : null}
           {adapter.capabilities.canFilterAssets !== false ? (
             <Col><Checkbox checked={controller.hasAssetsFilter} onChange={(event) => controller.setHasAssetsFilter(event.target.checked)}>有素材</Checkbox></Col>
           ) : null}
@@ -142,6 +112,85 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
           <Col><Button type="primary" onClick={() => void controller.refreshItems({ page: 1 })} loading={controller.isLoading}>筛选</Button></Col>
         </Row>
       </Card>
+
+      {adapter.capabilities.canFilterFeishuAnalysis ? (
+        <Card size="small" title="飞书分析筛选" style={{ marginBottom: 16 }}>
+          {controller.filterOptionsError ? <Alert message={controller.filterOptionsError} type="warning" showIcon style={{ marginBottom: 12 }} /> : null}
+          <Row gutter={[12, 12]} align="middle">
+            <Col span={4}>
+              <Select
+                allowClear
+                placeholder="飞书同步状态"
+                value={controller.feishuPushStatusFilter || undefined}
+                onChange={(value) => controller.setFeishuPushStatusFilter(value ?? "")}
+                style={{ width: "100%" }}
+                options={[
+                  { value: "not_synced", label: "未同步" },
+                  { value: "dry_run", label: "Dry-run" },
+                  { value: "synced", label: "已同步" },
+                  { value: "failed", label: "同步失败" },
+                ]}
+              />
+            </Col>
+            <Col span={4}>
+              <Select
+                allowClear
+                placeholder="分析状态"
+                value={controller.analysisStatusFilter || undefined}
+                onChange={(value) => controller.setAnalysisStatusFilter(value ?? "")}
+                style={{ width: "100%" }}
+                options={filterOptions.analysisStatus}
+              />
+            </Col>
+            <Col span={5}>
+              {renderMultiSelect({
+                placeholder: "核心产品/服务",
+                value: controller.coreProductServiceFilter,
+                options: filterOptions.coreProductService,
+                onChange: controller.setCoreProductServiceFilter,
+              })}
+            </Col>
+            <Col span={4}>
+              {renderMultiSelect({
+                placeholder: "内容类型",
+                value: controller.contentTypeFilter,
+                options: filterOptions.contentType,
+                onChange: controller.setContentTypeFilter,
+              })}
+            </Col>
+            <Col span={5}>
+              {renderMultiSelect({
+                placeholder: "可复用模型",
+                value: controller.reusableModelFilter,
+                options: filterOptions.reusableModel,
+                onChange: controller.setReusableModelFilter,
+              })}
+            </Col>
+            <Col span={5}>
+              {renderMultiSelect({
+                placeholder: "内容利用方式",
+                value: controller.contentUsageFilter,
+                options: filterOptions.contentUsage,
+                onChange: controller.setContentUsageFilter,
+              })}
+            </Col>
+            <Col span={5}>
+              {renderMultiSelect({
+                placeholder: "搜索属性",
+                value: controller.searchAttributeFilter,
+                options: filterOptions.searchAttribute,
+                onChange: controller.setSearchAttributeFilter,
+              })}
+            </Col>
+            <Col>
+              <Space>
+                <Button onClick={controller.clearFilters}>重置</Button>
+                <Button type="primary" onClick={() => void controller.refreshItems({ page: 1 })} loading={controller.isLoading}>筛选</Button>
+              </Space>
+            </Col>
+          </Row>
+        </Card>
+      ) : null}
 
       {controller.items.length > 0 && (
         <Card size="small" style={{ marginBottom: 16 }}>

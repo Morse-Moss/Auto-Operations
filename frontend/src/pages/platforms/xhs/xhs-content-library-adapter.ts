@@ -29,6 +29,7 @@ import {
   fetchSavedNote,
   fetchSavedNoteAssets,
   fetchSavedNoteComments,
+  fetchSavedNoteFilterOptions,
   fetchSavedNotes,
   fetchTags,
   pullXhsNotesFromFeishu,
@@ -343,6 +344,7 @@ function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<
       loadingMessage();
       message.success(successMessage);
       await context.controller.refreshItems();
+      await context.controller.refreshFilterOptions();
     } catch (error) {
       const errorMessage = `同步到飞书失败：${getActionErrorMessage(error)}`;
       context.controller.setBatchActionMessage(errorMessage);
@@ -366,6 +368,7 @@ function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<
         message.success(successMessage);
       }
       await context.controller.refreshItems();
+      await context.controller.refreshFilterOptions();
     } catch (error) {
       const errorMessage = `同步全部到飞书失败：${getActionErrorMessage(error)}`;
       context.controller.setBatchActionMessage(errorMessage);
@@ -405,6 +408,7 @@ function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<
       loadingMessage();
       message.success(successMessage);
       await context.controller.refreshItems();
+      await context.controller.refreshFilterOptions();
     } catch (error) {
       const errorMessage = `从飞书回传失败：${getActionErrorMessage(error)}`;
       context.controller.setBatchActionMessage(errorMessage);
@@ -537,10 +541,14 @@ export function createXhsContentLibraryAdapter(navigate: XhsNavigate): ContentLi
       { value: "collects", label: "最多收藏" },
     ],
     filterOptions: {
-      contentType: ["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事"].map((value) => ({ value, label: value })),
-      reuseValue: ["选题参考", "标题参考", "正文结构参考", "卖点表达参考", "可直接改写", "行业观察", "竞品参考", "废弃"].map((value) => ({ value, label: value })),
-      reusableModel: ["问题驱动模型", "情绪驱动模型", "场景种草模型", "对比反差模型", "测评背书模型", "教程方法模型", "故事案例模型", "IP/热点借势模型"].map((value) => ({ value, label: value })),
+      analysisStatus: ["待分析", "分析中", "已完成", "废弃"].map((value) => ({ value, label: value })),
+      coreProductService: [],
+      contentType: [],
+      reusableModel: [],
+      contentUsage: [],
+      searchAttribute: [],
     },
+    loadFilterOptions: () => fetchSavedNoteFilterOptions("xhs"),
     emptyState: { description: "内容库还是空的", actionLabel: "去发现笔记", actionPath: "/platforms/xhs/discovery" },
     renderToolbarExtras: renderFeishuToolbar,
     loadItems: (filters) => fetchSavedNotes({ platform: "xhs", ...filters }),
