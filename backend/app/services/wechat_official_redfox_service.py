@@ -25,8 +25,10 @@ from backend.app.models import (
     WechatOfficialCrawlJob,
     WechatOfficialRedfoxConfig,
 )
+from backend.app.services.wechat_official_article_page_provider import WechatOfficialArticlePageProvider
 from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
 from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_crawl_job, serialize_metric
+from backend.app.services.wechat_official_provider_types import WechatOfficialProviderError
 from backend.app.services.wechat_official_redfox_client import RedfoxApiError, WechatOfficialRedfoxClient
 
 DEFAULT_REDFOX_BASE_URL = "https://redfox.hk"
@@ -271,11 +273,21 @@ class WechatOfficialRedfoxService:
         if not url:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="url is required")
         client = self._client(user_id)
-        response = self._query_article_detail_or_raise(client, url=url)
-        item = self.adapter.normalize_article_detail(response)
-        item["article_url"] = item.get("article_url") or url
-        item["content_url"] = item.get("content_url") or item["article_url"]
-        self._validate_imported_url_article(item, url=url)
+        summary_extra: dict[str, Any] = {}
+        try:
+            response = self._query_article_detail_or_raise(client, url=url)
+        except HTTPException as redfox_error:
+            item = self._fallback_import_url_from_article_page(url=url, redfox_error=redfox_error)
+            summary_extra = {"fallback_provider": "article_page", "fallback_reason": _redfox_detail_fallback_reason(redfox_error)}
+        else:
+            item = self.adapter.normalize_article_detail(response)
+            item["article_url"] = item.get("article_url") or url
+            item["content_url"] = item.get("content_url") or item["article_url"]
+            try:
+                self._validate_imported_url_article(item, url=url)
+            except HTTPException as redfox_error:
+                item = self._fallback_import_url_from_article_page(url=url, redfox_error=redfox_error)
+                summary_extra = {"fallback_provider": "article_page", "fallback_reason": _redfox_detail_fallback_reason(redfox_error)}
         normalized = [item]
         return self._save_collection(
             user_id,
@@ -287,7 +299,22 @@ class WechatOfficialRedfoxService:
             save_snapshot=bool(payload.get("save_snapshot", True)),
             api_calls=1,
             params={"url": url},
+            summary_extra=summary_extra,
         )
+
+    def _fallback_import_url_from_article_page(self, *, url: str, redfox_error: HTTPException) -> dict[str, Any]:
+        try:
+            return WechatOfficialArticlePageProvider().fetch_article(url=url)
+        except WechatOfficialProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "message": "公众号公开文章页兜底抓取失败；未保存空壳文章",
+                    "redfox": {"provider": "redfox", "stage": "detail", "message": str(redfox_error.detail)},
+                    "fallback": exc.to_dict(),
+                    "next_action": "请确认 URL 是公开微信公众号文章，或稍后重试 Redfox 详情接口",
+                },
+            ) from exc
 
     def refresh_article_detail(self, user_id: int, article_id: int) -> dict[str, Any]:
         article = WechatOfficialCrawlService(self.db)._get_owned_article(user_id, article_id)
@@ -427,6 +454,7 @@ class WechatOfficialRedfoxService:
         deduped = 0
         viral_candidates = 0
         for item in articles_payload:
+            item = self._materialize_public_article_page(item, enabled=save_snapshot)
             article_url = str(item.get("article_url") or item.get("content_url") or "").strip()
             if article_url and tombstones.is_tombstoned(user_id, article_url):
                 continue
@@ -469,6 +497,39 @@ class WechatOfficialRedfoxService:
             "job": serialize_crawl_job(job),
             "items": items,
         }
+
+    def _materialize_public_article_page(self, item: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
+        if not enabled:
+            return item
+        article_url = str(item.get("article_url") or item.get("content_url") or "").strip()
+        if not article_url or "mp.weixin.qq.com" not in article_url:
+            return item
+        if item.get("content_text") and item.get("content_html") and item.get("images"):
+            return item
+        try:
+            public_item = WechatOfficialArticlePageProvider().fetch_article(url=article_url)
+        except WechatOfficialProviderError as exc:
+            merged = dict(item)
+            raw = dict(merged.get("raw") or {})
+            raw["article_page_materialize_error"] = exc.to_dict()
+            merged["raw"] = sanitize_payload(raw)
+            return merged
+
+        merged = dict(item)
+        merged["content_text"] = public_item.get("content_text") or merged.get("content_text")
+        merged["content_html"] = public_item.get("content_html") or merged.get("content_html")
+        merged["images"] = public_item.get("images") or merged.get("images")
+        merged["cover_url"] = public_item.get("cover_url") or merged.get("cover_url")
+        merged["digest"] = public_item.get("digest") or merged.get("digest")
+        merged["author_name"] = public_item.get("author_name") or merged.get("author_name")
+        merged["account_name"] = public_item.get("account_name") or merged.get("account_name")
+        merged["account"] = public_item.get("account") or merged.get("account")
+        merged["publish_time_remote"] = public_item.get("publish_time_remote") or merged.get("publish_time_remote")
+        merged["detail_completeness"] = public_item.get("detail_completeness") or merged.get("detail_completeness")
+        raw = dict(merged.get("raw") or {})
+        raw["article_page_materialized"] = sanitize_payload(public_item.get("raw") or {"source": "article_page"})
+        merged["raw"] = sanitize_payload(raw)
+        return merged
 
     def _upsert_redfox_account(self, user_id: int, payload: dict[str, Any]) -> WechatOfficialCrawlAccount:
         account_name = payload.get("account_name") or payload.get("author_name") or "Redfox公众号"
@@ -713,6 +774,15 @@ def _mask_api_key(encrypted_api_key: str) -> str:
         return "****"
     suffix = api_key[-4:] if len(api_key) >= 4 else api_key
     return f"****{suffix}"
+
+
+def _redfox_detail_fallback_reason(error: HTTPException) -> str:
+    detail = str(error.detail)
+    if error.status_code == status.HTTP_504_GATEWAY_TIMEOUT or "超时" in detail or "timed out" in detail.lower():
+        return "Redfox 文章详情接口超时"
+    if "未识别到文章标题" in detail:
+        return "Redfox 已返回文章详情，但未识别到文章标题"
+    return detail
 
 
 def _first_image_url(images: Any) -> str:

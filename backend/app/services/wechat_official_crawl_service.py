@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.wechat_official.research_adapter import WechatOfficialResearchAdapter
+from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import (
     WechatOfficialArticle,
@@ -17,8 +18,11 @@ from backend.app.models import (
     WechatOfficialCrawlAccount,
     WechatOfficialCrawlJob,
 )
+from backend.app.services.wechat_official_article_page_provider import WechatOfficialArticlePageProvider
+from backend.app.services.wechat_official_backend_provider import WechatOfficialBackendProvider
 from backend.app.services.wechat_official_backend_session_service import get_valid_session
 from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
+from backend.app.services.wechat_official_provider_types import WechatOfficialProviderError
 from backend.app.services.wechat_official_credential_service import serialize_credential
 
 
@@ -28,8 +32,12 @@ class WechatOfficialCrawlService:
         self.adapter = adapter or WechatOfficialResearchAdapter()
 
     def search_accounts(self, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        get_valid_session(self.db, user_id, int(payload["backend_session_id"]))
-        accounts = self.adapter.normalize_searchbiz_accounts(payload.get("upstream_payload") or {})
+        session = get_valid_session(self.db, user_id, int(payload["backend_session_id"]))
+        upstream_payload = payload.get("upstream_payload") or {}
+        if upstream_payload:
+            accounts = self.adapter.normalize_searchbiz_accounts(upstream_payload)
+        else:
+            accounts = self._backend_provider_search_accounts(session, keyword=str(payload.get("keyword") or ""))
         items = [self._upsert_account(user_id, account) for account in accounts]
         self.db.commit()
         return {"items": [serialize_crawl_account(item) for item in items], "total": len(items)}
@@ -38,8 +46,12 @@ class WechatOfficialCrawlService:
         session = get_valid_session(self.db, user_id, int(payload["backend_session_id"]))
         account_id = payload.get("account_id") or session.account_id
         account = self._get_owned_account(user_id, int(account_id)) if account_id else None
-        articles_payload = self.adapter.normalize_appmsgpublish_articles(payload.get("upstream_payload") or {})
-        limit = int(payload.get("limit") or len(articles_payload) or 0)
+        upstream_payload = payload.get("upstream_payload") or {}
+        limit = int(payload.get("limit") or 0)
+        if upstream_payload:
+            articles_payload = self.adapter.normalize_appmsgpublish_articles(upstream_payload)
+        else:
+            articles_payload = self._backend_provider_sync_articles(session, account=account, begin=0, count=limit or 50)
         selected = articles_payload[:limit] if limit else articles_payload
         job = WechatOfficialCrawlJob(
             account_id=account.id if account else None,
@@ -56,10 +68,13 @@ class WechatOfficialCrawlService:
         tombstones = WechatOfficialContentTombstoneService(self.db)
         saved: list[WechatOfficialArticle] = []
         for article_payload in selected:
+            article_payload = self._materialize_public_article_page(article_payload)
             article_url = str(article_payload.get("article_url") or article_payload.get("content_url") or "").strip()
             if article_url and tombstones.is_tombstoned(user_id, article_url):
                 continue
             article = self._upsert_article(account.id if account else None, job.id, article_payload)
+            if article_payload.get("content_text") or article_payload.get("content_html") or article_payload.get("images"):
+                self._create_article_snapshot(article.id, article_payload)
             saved.append(article)
         job.status = "succeeded"
         job.saved_count = len(saved)
@@ -103,6 +118,70 @@ class WechatOfficialCrawlService:
         self.db.refresh(metric)
         return serialize_metric(metric)
 
+    def _backend_provider_search_accounts(self, session: WechatOfficialBackendSession, *, keyword: str) -> list[dict[str, Any]]:
+        try:
+            return WechatOfficialBackendProvider(transport=None).search_accounts(
+                keyword,
+                cookie=decrypt_text(session.encrypted_cookie or ""),
+                token=decrypt_text(session.encrypted_token or ""),
+                user_agent=session.user_agent or "",
+            )
+        except WechatOfficialProviderError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.to_dict()) from exc
+
+    def _backend_provider_sync_articles(self, session: WechatOfficialBackendSession, *, account: WechatOfficialCrawlAccount | None, begin: int, count: int) -> list[dict[str, Any]]:
+        fake_id = str((account.fake_id if account else "") or "").strip()
+        if not fake_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="account fake_id is required")
+        try:
+            return WechatOfficialBackendProvider(transport=None).sync_account_articles(
+                fake_id,
+                cookie=decrypt_text(session.encrypted_cookie or ""),
+                token=decrypt_text(session.encrypted_token or ""),
+                user_agent=session.user_agent or "",
+                begin=begin,
+                count=count,
+            )
+        except WechatOfficialProviderError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.to_dict()) from exc
+
+    def _materialize_public_article_page(self, payload: dict[str, Any]) -> dict[str, Any]:
+        article_url = str(payload.get("article_url") or payload.get("content_url") or "").strip()
+        if not article_url or "mp.weixin.qq.com" not in article_url:
+            return payload
+        if payload.get("content_text") and payload.get("content_html") and payload.get("images"):
+            return payload
+        try:
+            page_payload = WechatOfficialArticlePageProvider().fetch_article(url=article_url)
+        except WechatOfficialProviderError as exc:
+            raw = dict(payload.get("raw") or {})
+            raw["article_page_materialize_error"] = exc.to_dict()
+            return {**payload, "raw": raw}
+        return {
+            **payload,
+            "digest": page_payload.get("digest") or payload.get("digest"),
+            "author_name": page_payload.get("author_name") or payload.get("author_name"),
+            "cover_url": page_payload.get("cover_url") or payload.get("cover_url"),
+            "publish_time_remote": page_payload.get("publish_time_remote") or payload.get("publish_time_remote"),
+            "content_text": page_payload.get("content_text") or payload.get("content_text"),
+            "content_html": page_payload.get("content_html") or payload.get("content_html"),
+            "images": page_payload.get("images") or payload.get("images"),
+            "article_page_materialized": page_payload.get("raw") or {"source": "article_page"},
+        }
+
+    def _create_article_snapshot(self, article_id: int, payload: dict[str, Any]) -> WechatOfficialArticleSnapshot:
+        snapshot = WechatOfficialArticleSnapshot(
+            article_id=article_id,
+            status="captured",
+            html=str(payload.get("content_html") or ""),
+            text=str(payload.get("content_text") or payload.get("digest") or ""),
+            images_json=payload.get("images") or [],
+            raw_json={"source": "backend", "detail_completeness": payload.get("detail_completeness") or {}},
+        )
+        self.db.add(snapshot)
+        self.db.flush()
+        return snapshot
+
     def _upsert_account(self, user_id: int, payload: dict[str, Any]) -> WechatOfficialCrawlAccount:
         fake_id = payload.get("fake_id") or ""
         account = None
@@ -133,7 +212,11 @@ class WechatOfficialCrawlService:
         article.cover_url = payload.get("cover_url") or article.cover_url
         article.content_url = article_url
         article.publish_time_remote = payload.get("publish_time_remote")
-        article.raw_json = {"aid": payload.get("aid"), "raw": payload.get("raw")}
+        article.raw_json = {
+            "aid": payload.get("aid"),
+            "raw": payload.get("raw"),
+            "article_page_materialized": payload.get("article_page_materialized"),
+        }
         article.updated_at = shanghai_now()
         self.db.flush()
         return article

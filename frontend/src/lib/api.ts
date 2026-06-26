@@ -103,6 +103,9 @@ import type {
   WechatOfficialBackendSession,
   WechatOfficialAnalyzeHotspotsPayload,
   WechatOfficialAnalyzeHotspotsResponse,
+  WechatOfficialArticlesExportPayload,
+  WechatOfficialContentAutoRefreshPayload,
+  WechatOfficialContentAutoRefreshResponse,
   WechatOfficialContentDetail,
   WechatOfficialContentLibraryItem,
   WechatOfficialCreateDraftPayload,
@@ -390,6 +393,13 @@ export async function collectWechatOfficialRedfoxAccount(
   return response.data;
 }
 
+export async function importWechatOfficialArticleUrl(
+  payload: WechatOfficialRedfoxUrlImportPayload
+): Promise<WechatOfficialRedfoxCollectResponse> {
+  const response = await http.post<WechatOfficialRedfoxCollectResponse>("/wechat-official/articles/import-url", payload, { _silent: true } as never);
+  return response.data;
+}
+
 export async function importWechatOfficialRedfoxUrl(
   payload: WechatOfficialRedfoxUrlImportPayload
 ): Promise<WechatOfficialRedfoxCollectResponse> {
@@ -478,6 +488,11 @@ export async function fetchWechatOfficialContentLibrary(params?: {
   low_follower_evidence?: boolean | string;
   recommendation_status?: string;
   pool_status?: string;
+  category?: string;
+  tag?: string;
+  is_favorite?: boolean;
+  read_status?: string;
+  detail_complete?: boolean;
   keyword?: string;
   job_id?: number;
   page?: number;
@@ -513,6 +528,16 @@ export async function updateWechatOfficialRecommendation(
     `/wechat-official/content-library/${articleId}/recommendation`,
     payload
   );
+  return response.data;
+}
+
+export async function exportWechatOfficialArticles(payload: WechatOfficialArticlesExportPayload): Promise<NotesExportResponse> {
+  const response = await http.post<NotesExportResponse>("/wechat-official/content-library/export", payload);
+  return response.data;
+}
+
+export async function autoRefreshWechatOfficialContent(payload: WechatOfficialContentAutoRefreshPayload): Promise<WechatOfficialContentAutoRefreshResponse> {
+  const response = await http.post<WechatOfficialContentAutoRefreshResponse>("/wechat-official/content-library/auto-refresh", payload, { timeout: 600000 });
   return response.data;
 }
 

@@ -21,6 +21,7 @@ from backend.app.models import (
     WechatOfficialRedfoxConfig,
 )
 from backend.app.services import wechat_official_redfox_service as redfox_service
+from backend.app.services.wechat_official_redfox_client import WechatOfficialRedfoxClient
 
 client = TestClient(app)
 
@@ -229,6 +230,82 @@ class FakeFailingSearchRedfoxClient:
         raise requests.HTTPError("502 Server Error", response=response)
 
 
+class FakeListOnlyRedfoxClient:
+    def __init__(self, *, base_url: str, api_key: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        assert api_key == "redfox-collect-secret"
+
+    def search_articles(self, *, keyword: str, offset: int, sort_type: str) -> dict:
+        assert keyword == "自动补正文"
+        assert offset == 0
+        return {
+            "code": 2000,
+            "data": {
+                "list": [
+                    {
+                        "workUuid": "list-only-work-1",
+                        "title": "列表文章自动补正文",
+                        "summary": "Redfox 列表摘要，不应作为最终正文",
+                        "workUrl": "https://mp.weixin.qq.com/s/redfox-list-only",
+                        "author": "列表公众号",
+                        "readCount": 120000,
+                    }
+                ]
+            },
+        }
+
+
+class FakeMaterializeArticlePageProvider:
+    def fetch_article(self, *, url: str) -> dict:
+        assert url == "https://mp.weixin.qq.com/s/redfox-list-only"
+        return {
+            "external_id": "article_page:redfox-list-only",
+            "article_url": url,
+            "content_url": url,
+            "title": "列表文章自动补正文",
+            "digest": "公开页摘要",
+            "author_name": "列表公众号",
+            "account_name": "列表公众号",
+            "account": "列表公众号",
+            "publish_time_remote": "2026-06-25 11:00",
+            "cover_url": "https://mmbiz.qpic.cn/materialized-cover.jpg",
+            "content_text": "公开页完整正文，入库时应自动保存。",
+            "content_html": '<div id="js_content"><p>公开页完整正文，入库时应自动保存。</p><img src="https://mmbiz.qpic.cn/materialized-body.jpg" /></div>',
+            "images": [{"url": "https://mmbiz.qpic.cn/materialized-body.jpg", "type": "content", "source": "article_page"}],
+            "comments": [],
+            "detail_completeness": {"has_text": True, "has_html": True, "image_count": 1},
+            "metrics": {"read_count": 0, "like_count": 0, "wow_count": 0, "share_count": 0, "comment_count": 0},
+            "raw": {"source": "article_page"},
+        }
+
+
+def test_redfox_detail_client_retries_recoverable_ssl_disconnect(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"code": 2000, "data": {"title": "重试后成功"}}
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, "kwargs": kwargs})
+        if len(calls) == 1:
+            raise requests.exceptions.SSLError("UNEXPECTED_EOF_WHILE_READING")
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.app.services.wechat_official_redfox_client.requests.post", fake_post)
+
+    client = WechatOfficialRedfoxClient(base_url="https://redfox.hk", api_key="redfox-collect-secret")
+    result = client.query_article_detail(url="https://mp.weixin.qq.com/s/retry-redfox-url")
+
+    assert result["data"]["title"] == "重试后成功"
+    assert len(calls) == 2
+    assert calls[0]["kwargs"]["json"] == {"url": "https://mp.weixin.qq.com/s/retry-redfox-url"}
+
+
 class FakeNestedArticleDetailRedfoxClient:
     def __init__(self, *, base_url: str, api_key: str) -> None:
         self.base_url = base_url
@@ -262,7 +339,10 @@ class FakeUnparseableArticleDetailRedfoxClient:
         assert api_key == "redfox-collect-secret"
 
     def query_article_detail(self, *, url: str) -> dict:
-        assert url == "https://mp.weixin.qq.com/s/unparseable-redfox-url"
+        assert url in {
+            "https://mp.weixin.qq.com/s/unparseable-redfox-url",
+            "https://mp.weixin.qq.com/s/redfox-fallback-url",
+        }
         return {"code": 2000, "data": {"article": {"read_num": 120000}}}
 
 
@@ -273,8 +353,49 @@ class FakeTimeoutArticleDetailRedfoxClient:
         assert api_key == "redfox-collect-secret"
 
     def query_article_detail(self, *, url: str) -> dict:
-        assert url == "https://mp.weixin.qq.com/s/timeout-redfox-url"
+        assert url in {
+            "https://mp.weixin.qq.com/s/timeout-redfox-url",
+            "https://mp.weixin.qq.com/s/redfox-fallback-url",
+            "https://mp.weixin.qq.com/s/redfox-fallback-fails-url",
+        }
         raise requests.Timeout("detail timeout")
+
+
+class FakeArticlePageProvider:
+    def fetch_article(self, *, url: str) -> dict:
+        assert url == "https://mp.weixin.qq.com/s/redfox-fallback-url"
+        return {
+            "external_id": "article-page:redfox-fallback-url",
+            "article_url": url,
+            "content_url": url,
+            "title": "公开页兜底标题",
+            "digest": "",
+            "author_name": "公开页公众号",
+            "account_name": "公开页公众号",
+            "account": "公开页公众号",
+            "publish_time_remote": "2026-06-20 08:30",
+            "cover_url": "https://mmbiz.qpic.cn/cover.jpg",
+            "content_text": "公开页正文",
+            "content_html": '<div id="js_content"><p>公开页正文</p><img src="https://mmbiz.qpic.cn/body.jpg" /></div>',
+            "images": [{"url": "https://mmbiz.qpic.cn/body.jpg", "type": "content", "alt": "", "width": None, "height": None, "source": "article_page"}],
+            "comments": [],
+            "detail_completeness": {"has_text": True, "has_html": True, "image_count": 1},
+            "metrics": {"read_count": 0, "like_count": 0, "wow_count": 0, "share_count": 0, "comment_count": 0},
+            "raw": {"source": "article_page"},
+        }
+
+
+class FakeFailingArticlePageProvider:
+    def fetch_article(self, *, url: str) -> dict:
+        from backend.app.services.wechat_official_provider_types import WechatOfficialProviderError
+
+        assert url == "https://mp.weixin.qq.com/s/redfox-fallback-fails-url"
+        raise WechatOfficialProviderError(
+            provider="article_page",
+            stage="parse",
+            message="未能从公开文章页解析出标题和正文；请确认 URL 是公开微信公众号文章，或稍后重试 Redfox",
+            details={"url": url, "reason": "parse_failed", "next_action": "请换一个公开文章 URL，或稍后重试 Redfox 详情接口"},
+        )
 
 
 class FakeDenseMatchRedfoxClient:
@@ -593,6 +714,42 @@ def test_redfox_keyword_collect_legacy_pages_preserves_historic_requested_limit(
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_redfox_keyword_collect_materializes_public_article_content_when_saving(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeListOnlyRedfoxClient, raising=False)
+    monkeypatch.setattr(redfox_service, "WechatOfficialArticlePageProvider", FakeMaterializeArticlePageProvider, raising=False)
+    try:
+        headers = _register("redfox-materialize-keyword-user")
+        _save_config(headers)
+
+        response = client.post(
+            "/api/wechat-official/redfox/collect/articles",
+            headers=headers,
+            json={"keyword": "自动补正文", "target_count": 1, "max_pages": 1, "sort_type": "_4", "min_read_count": 100000, "save_snapshot": True},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["saved"] == 1
+        item = payload["items"][0]
+        assert item["title"] == "列表文章自动补正文"
+        assert item["cover_url"] == "https://mmbiz.qpic.cn/materialized-cover.jpg"
+
+        with TestingSessionLocal() as db:
+            article = db.scalar(select(WechatOfficialArticle).where(WechatOfficialArticle.article_url == "https://mp.weixin.qq.com/s/redfox-list-only"))
+            assert article is not None
+            assert article.cover_url == "https://mmbiz.qpic.cn/materialized-cover.jpg"
+            snapshot = db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article.id))
+            assert snapshot is not None
+            assert snapshot.text == "公开页完整正文，入库时应自动保存。"
+            assert snapshot.html.startswith('<div id="js_content">')
+            assert snapshot.images_json == [{"url": "https://mmbiz.qpic.cn/materialized-body.jpg", "type": "content", "source": "article_page"}]
+            assert snapshot.raw_json["source"] == "redfox"
+            assert snapshot.raw_json["detail_completeness"]["image_count"] == 1
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_redfox_keyword_collect_returns_bad_gateway_when_upstream_request_fails(tmp_path, monkeypatch):
     get_db, TestingSessionLocal = _override_database(tmp_path)
     monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeFailingSearchRedfoxClient, raising=False)
@@ -680,21 +837,67 @@ def test_redfox_import_url_normalizes_nested_article_detail_and_falls_back_to_in
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_redfox_import_url_returns_gateway_timeout_when_detail_times_out(tmp_path, monkeypatch):
+def test_redfox_import_url_falls_back_to_public_article_page_when_detail_times_out(tmp_path, monkeypatch):
     get_db, TestingSessionLocal = _override_database(tmp_path)
     monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeTimeoutArticleDetailRedfoxClient, raising=False)
+    monkeypatch.setattr(redfox_service, "WechatOfficialArticlePageProvider", FakeArticlePageProvider, raising=False)
     try:
-        headers = _register("redfox-timeout-url-user")
+        headers = _register("redfox-fallback-url-user")
+        _save_config(headers)
+        article_url = "https://mp.weixin.qq.com/s/redfox-fallback-url"
+
+        response = client.post(
+            "/api/wechat-official/redfox/import-url",
+            headers=headers,
+            json={"url": article_url, "min_read_count": 0},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["saved"] == 1
+        assert payload["summary"]["fallback_provider"] == "article_page"
+        assert payload["summary"]["fallback_reason"] == "Redfox 文章详情接口超时"
+        item = payload["items"][0]
+        assert item["title"] == "公开页兜底标题"
+        assert item["author_name"] == "公开页公众号"
+        assert item["article_url"] == article_url
+
+        with TestingSessionLocal() as db:
+            article = db.scalar(select(WechatOfficialArticle).where(WechatOfficialArticle.article_url == article_url))
+            assert article is not None
+            assert article.title == "公开页兜底标题"
+            snapshot = db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article.id))
+            assert snapshot is not None
+            assert snapshot.text == "公开页正文"
+            assert snapshot.raw_json["source"] == "redfox"
+            assert snapshot.raw_json["detail_completeness"]["image_count"] == 1
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_redfox_import_url_returns_structured_error_without_shell_when_redfox_and_fallback_fail(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeTimeoutArticleDetailRedfoxClient, raising=False)
+    monkeypatch.setattr(redfox_service, "WechatOfficialArticlePageProvider", FakeFailingArticlePageProvider, raising=False)
+    try:
+        headers = _register("redfox-fallback-fails-url-user")
         _save_config(headers)
 
         response = client.post(
             "/api/wechat-official/redfox/import-url",
             headers=headers,
-            json={"url": "https://mp.weixin.qq.com/s/timeout-redfox-url"},
+            json={"url": "https://mp.weixin.qq.com/s/redfox-fallback-fails-url"},
         )
 
-        assert response.status_code == 504
-        assert "文章详情接口超时" in response.json()["detail"]
+        assert response.status_code == 502
+        detail = response.json()["detail"]
+        assert detail["message"] == "公众号公开文章页兜底抓取失败；未保存空壳文章"
+        assert detail["redfox"]["provider"] == "redfox"
+        assert detail["redfox"]["stage"] == "detail"
+        assert detail["fallback"]["provider"] == "article_page"
+        assert detail["fallback"]["stage"] == "parse"
+        assert detail["fallback"]["details"]["reason"] == "parse_failed"
+        assert detail["next_action"] == "请确认 URL 是公开微信公众号文章，或稍后重试 Redfox 详情接口"
 
         with TestingSessionLocal() as db:
             assert db.scalar(select(WechatOfficialCrawlJob)) is None
@@ -704,9 +907,10 @@ def test_redfox_import_url_returns_gateway_timeout_when_detail_times_out(tmp_pat
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_redfox_import_url_rejects_unparseable_detail_without_saving_shell(tmp_path, monkeypatch):
+def test_redfox_import_url_falls_back_when_detail_is_unparseable(tmp_path, monkeypatch):
     get_db, TestingSessionLocal = _override_database(tmp_path)
     monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeUnparseableArticleDetailRedfoxClient, raising=False)
+    monkeypatch.setattr(redfox_service, "WechatOfficialArticlePageProvider", FakeArticlePageProvider, raising=False)
     try:
         headers = _register("redfox-unparseable-url-user")
         _save_config(headers)
@@ -714,16 +918,25 @@ def test_redfox_import_url_rejects_unparseable_detail_without_saving_shell(tmp_p
         response = client.post(
             "/api/wechat-official/redfox/import-url",
             headers=headers,
-            json={"url": "https://mp.weixin.qq.com/s/unparseable-redfox-url", "min_read_count": 100000},
+            json={"url": "https://mp.weixin.qq.com/s/redfox-fallback-url", "min_read_count": 100000},
         )
 
-        assert response.status_code == 502
-        assert "未识别到文章标题" in response.json()["detail"]
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["saved"] == 1
+        assert payload["summary"]["fallback_provider"] == "article_page"
+        assert payload["summary"]["fallback_reason"] == "Redfox 已返回文章详情，但未识别到文章标题"
+        item = payload["items"][0]
+        assert item["title"] == "公开页兜底标题"
+        assert item["article_url"] == "https://mp.weixin.qq.com/s/redfox-fallback-url"
 
         with TestingSessionLocal() as db:
-            assert db.scalar(select(WechatOfficialCrawlJob)) is None
-            assert db.scalar(select(WechatOfficialArticle)) is None
-            assert db.scalar(select(WechatOfficialArticleMetric)) is None
+            article = db.scalar(select(WechatOfficialArticle).where(WechatOfficialArticle.article_url == "https://mp.weixin.qq.com/s/redfox-fallback-url"))
+            assert article is not None
+            assert article.title == "公开页兜底标题"
+            snapshot = db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article.id))
+            assert snapshot is not None
+            assert snapshot.text == "公开页正文"
     finally:
         app.dependency_overrides.pop(get_db, None)
 

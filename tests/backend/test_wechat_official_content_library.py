@@ -8,6 +8,7 @@ from backend.app.main import app
 from backend.app.core.security import encrypt_text
 from backend.app.models import (
     ModelConfig,
+    Notification,
     WechatOfficialArticle,
     WechatOfficialArticleComment,
     WechatOfficialArticleCommentReply,
@@ -318,6 +319,119 @@ def test_content_library_filters_by_job_id_for_owned_articles(tmp_path):
 
         invalid = client.get("/api/wechat-official/content-library?job_id=0", headers=headers)
         assert invalid.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_curates_tags_favorite_read_status_and_completeness_filters(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("content-library-curation-user")
+        complete_id = _create_article(headers, title="完整私域案例", url="https://mp.weixin.qq.com/s/curation-complete", read_count=130000)
+        incomplete_id = _create_article(headers, title="未读行业观察", url="https://mp.weixin.qq.com/s/curation-incomplete", read_count=90000)
+
+        with TestingSessionLocal() as db:
+            db.add(
+                WechatOfficialArticleSnapshot(
+                    article_id=complete_id,
+                    status="captured",
+                    text="完整正文",
+                    html="<p>完整正文</p>",
+                    images_json=[{"url": "https://img.example/curation.jpg", "type": "content"}],
+                )
+            )
+            db.commit()
+
+        update = client.patch(
+            f"/api/wechat-official/content-library/{complete_id}/recommendation",
+            headers=headers,
+            json={
+                "pool_status": "shortlisted",
+                "category": "私域增长",
+                "tags": ["案例", "转化"],
+                "is_favorite": True,
+                "read_status": "read",
+            },
+        )
+        assert update.status_code == 200
+        analysis = update.json()["analysis"]
+        assert analysis["category"] == "私域增长"
+        assert analysis["tags"] == ["案例", "转化"]
+        assert analysis["is_favorite"] is True
+        assert analysis["read_status"] == "read"
+        assert update.json()["detail_status"]["completeness"] == "complete"
+
+        client.patch(
+            f"/api/wechat-official/content-library/{incomplete_id}/recommendation",
+            headers=headers,
+            json={"pool_status": "shortlisted", "category": "行业观察", "tags": ["趋势"], "read_status": "unread"},
+        )
+
+        favorite_response = client.get("/api/wechat-official/content-library?pool_status=shortlisted&category=私域增长&tag=转化&is_favorite=true&read_status=read&detail_complete=true", headers=headers)
+        assert favorite_response.status_code == 200
+        assert favorite_response.json()["total"] == 1
+        assert favorite_response.json()["items"][0]["id"] == complete_id
+        assert favorite_response.json()["items"][0]["detail_status"]["has_text"] is True
+
+        incomplete_response = client.get("/api/wechat-official/content-library?pool_status=shortlisted&detail_complete=false", headers=headers)
+        assert incomplete_response.status_code == 200
+        assert {item["id"] for item in incomplete_response.json()["items"]} == {incomplete_id}
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_exports_json_csv_and_rss_feed(tmp_path):
+    get_db, _ = _override_database(tmp_path)
+    try:
+        headers = _register("content-library-export-user")
+        article_id = _create_article(headers, title="导出案例", url="https://mp.weixin.qq.com/s/export-target", read_count=150000)
+        client.patch(
+            f"/api/wechat-official/content-library/{article_id}/recommendation",
+            headers=headers,
+            json={"pool_status": "shortlisted", "category": "私域增长", "tags": ["案例", "转化"], "is_favorite": True, "read_status": "read"},
+        )
+
+        json_export = client.post("/api/wechat-official/content-library/export", headers=headers, json={"article_ids": [article_id], "format": "json"})
+        assert json_export.status_code == 200
+        assert json_export.json()["exported_count"] == 1
+        assert json_export.json()["file_name"].startswith("wechat_official-articles-u1-")
+        assert json_export.json()["download_url"].startswith("/api/files/exports/")
+
+        csv_export = client.post("/api/wechat-official/content-library/export", headers=headers, json={"article_ids": [article_id], "format": "csv"})
+        assert csv_export.status_code == 200
+        assert csv_export.json()["file_name"].endswith(".csv")
+
+        rss = client.get("/api/wechat-official/content-library/feed.rss?pool_status=shortlisted", headers=headers)
+        assert rss.status_code == 200
+        assert "application/rss+xml" in rss.headers["content-type"]
+        assert "导出案例" in rss.text
+        assert "https://mp.weixin.qq.com/s/export-target" in rss.text
+        assert "私域增长" in rss.text
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_auto_refreshes_incomplete_articles_and_notifies(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(redfox_service, "WechatOfficialRedfoxClient", FakeRedfoxDetailClient, raising=False)
+    try:
+        headers = _register("content-library-auto-refresh-user")
+        article_id = _create_article(headers, title="待自动补全", url="https://mp.weixin.qq.com/s/auto-refresh", read_count=0)
+        config = client.post("/api/wechat-official/redfox/config", headers=headers, json={"api_key": "refresh-secret"})
+        assert config.status_code == 200
+
+        response = client.post("/api/wechat-official/content-library/auto-refresh", headers=headers, json={"article_ids": [article_id]})
+        assert response.status_code == 200
+        assert response.json()["refreshed_count"] == 1
+        assert response.json()["failed_count"] == 0
+
+        with TestingSessionLocal() as db:
+            assert db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article_id)) is not None
+            notification = db.scalar(select(Notification).where(Notification.source_type == "wechat_official_content_auto_refresh"))
+            assert notification is not None
+            assert notification.user_id == 1
+            assert notification.level == "info"
+            assert "已自动补全" in notification.title
     finally:
         app.dependency_overrides.pop(get_db, None)
 

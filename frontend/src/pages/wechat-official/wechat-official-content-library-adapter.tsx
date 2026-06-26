@@ -1,5 +1,5 @@
-import { CloudSyncOutlined, DeleteOutlined, FileTextOutlined, LinkOutlined, MessageOutlined, ReadOutlined, StarOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Checkbox, Col, Descriptions, Image, List, message, Row, Space, Table, Tag, Typography } from "antd";
+import { CloudSyncOutlined, DeleteOutlined, FileTextOutlined, LinkOutlined, MessageOutlined, ReadOutlined, StarFilled, StarOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Checkbox, Col, Descriptions, Image, List, message, Row, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import React from "react";
 
@@ -13,13 +13,17 @@ import type {
 } from "../../components/content-library";
 import {
   analyzeWechatOfficialHotspots,
+  autoRefreshWechatOfficialContent,
   createWechatOfficialDraft,
   deleteWechatOfficialContentLibraryItem,
+  downloadExportFile,
+  exportWechatOfficialArticles,
   fetchWechatOfficialContentDetail,
   fetchWechatOfficialContentLibrary,
   pullWechatOfficialArticlesFromFeishu,
   pushWechatOfficialArticlesToFeishu,
   refreshWechatOfficialContentDetail,
+  updateWechatOfficialRecommendation,
 } from "../../lib/api";
 import type {
   WechatOfficialArticleComment,
@@ -33,6 +37,21 @@ const { Text, Paragraph } = Typography;
 const h = React.createElement;
 
 type WechatOfficialNavigate = (path: string) => void;
+
+type CurationFilter = { id: number; name: string; color: string; param: "category" | "tag" | "is_favorite" | "read_status" | "detail_complete"; value: string | boolean };
+
+const CURATION_FILTERS: CurationFilter[] = [
+  { id: 1001, name: "私域增长", color: "cyan", param: "category", value: "私域增长" },
+  { id: 1002, name: "行业观察", color: "cyan", param: "category", value: "行业观察" },
+  { id: 1003, name: "案例拆解", color: "cyan", param: "category", value: "案例拆解" },
+  { id: 2001, name: "案例", color: "geekblue", param: "tag", value: "案例" },
+  { id: 2002, name: "转化", color: "geekblue", param: "tag", value: "转化" },
+  { id: 2003, name: "趋势", color: "geekblue", param: "tag", value: "趋势" },
+  { id: 3001, name: "已收藏", color: "gold", param: "is_favorite", value: true },
+  { id: 3002, name: "已读", color: "green", param: "read_status", value: "read" },
+  { id: 3003, name: "正文/图片完整", color: "green", param: "detail_complete", value: true },
+  { id: 3004, name: "待补正文素材", color: "gold", param: "detail_complete", value: false },
+];
 
 export type WechatOfficialContentLibraryViewItem = ContentLibraryItem & {
   article: WechatOfficialContentLibraryItem;
@@ -90,6 +109,29 @@ function materialLabel(article: WechatOfficialContentLibraryItem): string {
   return "待补全";
 }
 
+function completenessLabel(article: WechatOfficialContentLibraryItem): string {
+  const completeness = article.detail_status?.completeness;
+  if (completeness === "complete") return "正文/图片完整";
+  if (completeness === "partial") return "部分补全";
+  return "待补正文素材";
+}
+
+function readStatusLabel(value?: string): string {
+  if (value === "read") return "已读";
+  if (value === "reading") return "在读";
+  return "未读";
+}
+
+function curationTags(article: WechatOfficialContentLibraryItem) {
+  const analysis = article.analysis || {};
+  const tags: Array<{ id: number; name: string; color: string }> = [];
+  if (analysis.category) tags.push({ id: 101, name: String(analysis.category), color: "cyan" });
+  (analysis.tags || []).forEach((tag, index) => tags.push({ id: 200 + index, name: String(tag), color: "geekblue" }));
+  if (analysis.is_favorite) tags.push({ id: 301, name: "收藏", color: "gold" });
+  tags.push({ id: 302, name: readStatusLabel(analysis.read_status), color: analysis.read_status === "read" ? "green" : "default" });
+  return tags;
+}
+
 function displayTime(article: WechatOfficialContentLibraryItem): string {
   return article.publish_time_remote || article.updated_at || article.created_at || "";
 }
@@ -99,6 +141,8 @@ function derivedTags(article: WechatOfficialContentLibraryItem) {
     { id: 1, name: poolStatusLabel(poolStatus(article)), color: statusColor(poolStatus(article)) },
     { id: 2, name: lowFollowerLabel(article), color: "blue" },
     { id: 3, name: materialLabel(article), color: "purple" },
+    { id: 4, name: completenessLabel(article), color: article.detail_status?.is_complete ? "green" : "gold" },
+    ...curationTags(article),
   ];
   return tags.filter((tag, index, list) => list.findIndex((candidate) => candidate.name === tag.name) === index);
 }
@@ -160,6 +204,7 @@ function actionError(error: unknown): string {
 
 function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<WechatOfficialContentLibraryViewItem>["controller"] }) {
   const selectedIds = context.controller.selectedItemIds;
+  const selectedFilter = CURATION_FILTERS.find((filter) => String(filter.id) === context.controller.selectedTagFilter);
 
   async function pushSelectedToFeishu() {
     if (!selectedIds.length) {
@@ -205,7 +250,43 @@ function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<
     }
   }
 
+  async function autoRefreshSelected() {
+    if (!selectedIds.length) {
+      context.controller.setBatchActionMessage("请先选择要自动补全的公众号文章。");
+      return;
+    }
+    const loadingMessage = message.loading(`正在自动补全 ${selectedIds.length} 篇公众号文章…`, 0);
+    try {
+      const result = await autoRefreshWechatOfficialContent({ article_ids: selectedIds });
+      const text = `自动补全完成：成功 ${result.refreshed_count} / 失败 ${result.failed_count}；已写入系统通知。`;
+      context.controller.setBatchActionMessage(text);
+      loadingMessage();
+      message.success(text);
+      await context.controller.refreshItems();
+    } catch (error) {
+      const text = `自动补全失败：${actionError(error)}`;
+      context.controller.setBatchActionMessage(text);
+      loadingMessage();
+      message.error(text);
+    }
+  }
+
   return h(Space, { wrap: true },
+    h(Select, {
+      allowClear: true,
+      placeholder: "运营筛选",
+      value: context.controller.selectedTagFilter || undefined,
+      onChange: (value: unknown) => {
+        const selectedValue = typeof value === "string" ? value : "";
+        context.controller.setSelectedTagFilter(selectedValue);
+        const filter = CURATION_FILTERS.find((candidate) => String(candidate.id) === selectedValue);
+        void context.controller.refreshItems({ page: 1, category: undefined, tag: undefined, is_favorite: undefined, read_status: undefined, detail_complete: undefined, ...(filter ? { [filter.param]: filter.value } : {}) });
+      },
+      style: { width: 180 },
+      options: CURATION_FILTERS.map((filter) => ({ value: String(filter.id), label: filter.name })),
+    }),
+    selectedFilter ? h(Tag, { color: selectedFilter.color }, `当前：${selectedFilter.name}`) : null,
+    h(Button, { disabled: !selectedIds.length, onClick: () => void autoRefreshSelected() }, selectedIds.length ? `自动补全 ${selectedIds.length} 篇` : "自动补全正文素材"),
     h(Button, { icon: h(CloudSyncOutlined), disabled: !selectedIds.length, onClick: () => void pushSelectedToFeishu() }, selectedIds.length ? `推送 ${selectedIds.length} 篇到飞书分析` : "推送飞书分析"),
     h(Button, { disabled: !selectedIds.length, onClick: () => void pullSelectedFromFeishu() }, selectedIds.length ? `回拉 ${selectedIds.length} 篇飞书标注` : "回拉飞书标注"),
   );
@@ -217,7 +298,8 @@ function createTableColumns(context: ContentLibraryRenderContext<WechatOfficialC
     { title: "公众号", dataIndex: "author_name", width: 140, ellipsis: true },
     { title: "阅读", key: "read", width: 100, render: (_, item) => formatMetric(item.article.latest_metric?.read_count) },
     { title: "状态", key: "status", width: 120, render: (_, item) => h(Tag, { color: statusColor(item.pool_status) }, poolStatusLabel(item.pool_status)) },
-    { title: "素材", key: "material", width: 110, render: (_, item) => h(Tag, { color: "blue" }, materialLabel(item.article)) },
+    { title: "素材", key: "material", width: 130, render: (_, item) => h(Tag, { color: item.article.detail_status?.is_complete ? "green" : "gold" }, completenessLabel(item.article)) },
+    { title: "分类", key: "category", width: 130, render: (_, item) => item.article.analysis?.category ? h(Tag, { color: "cyan" }, String(item.article.analysis.category)) : h(Text, { type: "secondary" }, "未分类") },
     { title: "时间", dataIndex: "created_at", width: 160, ellipsis: true },
     { title: "操作", key: "actions", width: 80, render: (_, item) => h(Button, { type: "text", danger: true, icon: h(DeleteOutlined), size: "small", onClick: (event: React.MouseEvent) => { event.stopPropagation(); void context.deleteItem(item); } }) },
   ];
@@ -251,7 +333,7 @@ function renderCardGrid(context: ContentLibraryRenderContext<WechatOfficialConte
           h(Text, { type: "secondary", style: { fontSize: 12 } }, `${item.author_name}${article.publish_time_remote ? ` · ${article.publish_time_remote}` : ""}`),
           h("div", { style: { marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, color: "rgba(255,255,255,.55)" } },
             h("span", null, h(ReadOutlined), ` 阅读 ${formatMetric(article.latest_metric?.read_count)}`),
-            h("span", null, h(StarOutlined), ` 在看 ${formatMetric(article.latest_metric?.wow_count)}`),
+            h("span", null, article.analysis?.is_favorite ? h(StarFilled) : h(StarOutlined), article.analysis?.is_favorite ? " 已收藏" : ` 在看 ${formatMetric(article.latest_metric?.wow_count)}`),
             h("span", null, h(MessageOutlined), ` 评论 ${formatMetric(article.latest_metric?.comment_count)}`),
           ),
           h("div", { style: { marginTop: 6 } },
@@ -298,6 +380,20 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
     }
   };
 
+  const updateCuration = async (patch: { category?: string | null; tags?: string[] | null; is_favorite?: boolean | null; read_status?: string | null }) => {
+    controller.setDetailError(null);
+    controller.setDetailActionMessage(null);
+    try {
+      const updated = await updateWechatOfficialRecommendation(article.id, patch);
+      controller.replaceSelectedItem(mapArticle(updated, item.detail));
+      await controller.refreshSelectedItem();
+      await controller.refreshItems();
+      controller.setDetailActionMessage("运营标记已更新。分类、标签、收藏和已读状态会进入内容库筛选。");
+    } catch (error) {
+      controller.setDetailError(error instanceof Error ? error.message : "运营标记更新失败。");
+    }
+  };
+
   const analyzeHotspots = async () => {
     controller.setDetailError(null);
     controller.setDetailActionMessage(null);
@@ -319,6 +415,43 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
       h(Descriptions.Item, { label: "链接" }, article.article_url || article.content_url ? h("a", { href: article.article_url || article.content_url, target: "_blank", rel: "noreferrer" }, article.article_url || article.content_url) : "无"),
       h(Descriptions.Item, { label: "指标" }, `阅读 ${detail?.latest_metric?.read_count ?? article.latest_metric?.read_count ?? 0} / 点赞 ${detail?.latest_metric?.like_count ?? article.latest_metric?.like_count ?? 0} / 在看 ${detail?.latest_metric?.wow_count ?? article.latest_metric?.wow_count ?? 0} / 评论 ${detail?.latest_metric?.comment_count ?? article.latest_metric?.comment_count ?? 0}`),
       h(Descriptions.Item, { label: "状态" }, h(Tag, { color: statusColor(status) }, poolStatusLabel(status))),
+      h(Descriptions.Item, { label: "完整度" }, h(Tag, { color: article.detail_status?.is_complete ? "green" : "gold" }, completenessLabel(article))),
+      h(Descriptions.Item, { label: "分类/标签" }, h(Space, { wrap: true },
+        article.analysis?.category ? h(Tag, { color: "cyan" }, String(article.analysis.category)) : h(Text, { type: "secondary" }, "未分类"),
+        ...(article.analysis?.tags || []).map((tag) => h(Tag, { color: "geekblue", key: tag }, tag)),
+        h(Tag, { color: article.analysis?.is_favorite ? "gold" : "default" }, article.analysis?.is_favorite ? "已收藏" : "未收藏"),
+        h(Tag, { color: article.analysis?.read_status === "read" ? "green" : "default" }, readStatusLabel(article.analysis?.read_status)),
+      )),
+    ),
+    h(Card, { size: "small", title: "运营标记" },
+      h(Space, { direction: "vertical", style: { width: "100%" } },
+        h(Space, { wrap: true },
+          h(Select, {
+            placeholder: "分类",
+            value: article.analysis?.category || undefined,
+            allowClear: true,
+            style: { width: 160 },
+            options: ["私域增长", "行业观察", "案例拆解", "方法论", "转化路径"].map((value) => ({ value, label: value })),
+            onChange: (value: unknown) => void updateCuration({ category: typeof value === "string" ? value : null }),
+          }),
+          h(Select, {
+            mode: "tags",
+            placeholder: "标签",
+            value: article.analysis?.tags || [],
+            style: { minWidth: 240 },
+            options: ["案例", "转化", "趋势", "标题", "结构", "素材"].map((value) => ({ value, label: value })),
+            onChange: (value: unknown) => void updateCuration({ tags: Array.isArray(value) ? value.map(String) : [] }),
+          }),
+          h(Select, {
+            value: article.analysis?.read_status || "unread",
+            style: { width: 120 },
+            options: [{ value: "unread", label: "未读" }, { value: "reading", label: "在读" }, { value: "read", label: "已读" }],
+            onChange: (value: unknown) => void updateCuration({ read_status: typeof value === "string" ? value : "unread" }),
+          }),
+          h(Button, { icon: article.analysis?.is_favorite ? h(StarFilled) : h(StarOutlined), onClick: () => void updateCuration({ is_favorite: !article.analysis?.is_favorite }) }, article.analysis?.is_favorite ? "取消收藏" : "收藏"),
+        ),
+        h(Text, { type: "secondary" }, "这些标记只影响本地内容运营筛选，不会同步公众号后台、发布或群发。"),
+      ),
     ),
     h(Space, { wrap: true },
       item.article.article_url ? h(Button, { icon: h(LinkOutlined), href: item.article.article_url, target: "_blank", rel: "noreferrer" }, "原文") : null,
@@ -385,7 +518,7 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
       canDelete: true,
       canBatchDelete: false,
       canTag: false,
-      canExport: false,
+      canExport: true,
       canReadComments: true,
       canFilterAssets: false,
       canFilterComments: false,
@@ -417,13 +550,13 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
       batchNoSelection: "请先选择公众号文章。",
       batchCreateDraftsSuccess: (count) => `已生成 ${count} 篇公众号草稿。`,
       batchCreateDraftsError: "批量生成草稿暂未开放。",
-      exportSuccess: (count) => `已准备 ${count} 篇文章导出。`,
-      exportError: "公众号内容库导出暂未开放。",
+      exportSuccess: (count) => `已准备 ${count} 篇公众号文章导出。`,
+      exportError: "公众号内容库导出失败。",
       batchDeleteSuccess: (count) => `已删除 ${count} 篇公众号文章。`,
       batchDeletePartialFailure: (count) => `已删除 ${count} 篇公众号文章，剩余文章删除失败。`,
       batchDeleteError: "批量删除暂未开放。",
       downloadSuccess: (fileName) => `已下载 ${fileName}`,
-      downloadError: "下载暂未开放。",
+      downloadError: "公众号导出文件下载失败。",
       commentsLoadError: "评论加载失败。",
       tagRequired: "公众号内容库第一阶段不支持标签。",
       tagBatchAddSuccess: (count) => `已处理 ${count} 篇文章。`,
@@ -501,11 +634,11 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
     onDraftCreated() {
       navigate("/platforms/wechat-official/drafts");
     },
-    async exportItems() {
-      throw new Error("公众号内容库第一阶段不支持导出。");
+    async exportItems(itemIds, format) {
+      return exportWechatOfficialArticles({ article_ids: itemIds, format });
     },
-    async downloadExport() {
-      throw new Error("公众号内容库第一阶段不支持导出。");
+    async downloadExport(exportFile) {
+      await downloadExportFile(exportFile.download_url, exportFile.file_name);
     },
     getCopyText(item) {
       return [item.title, item.author_name, item.article.digest, item.detail?.latest_snapshot?.text].filter(Boolean).join("\n\n");

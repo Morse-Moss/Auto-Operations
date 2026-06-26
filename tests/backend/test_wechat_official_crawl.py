@@ -6,8 +6,67 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
 from backend.app.models import WechatOfficialArticle, WechatOfficialArticleSnapshot, WechatOfficialCrawlAccount, WechatOfficialCrawlJob
+from backend.app.services import wechat_official_crawl_service as crawl_service
 
 client = TestClient(app)
+
+
+class FakeHistoryMaterializeArticlePageProvider:
+    def fetch_article(self, *, url: str) -> dict:
+        assert url == "https://mp.weixin.qq.com/s/provider-history-1"
+        return {
+            "external_id": "article_page:provider-history-1",
+            "article_url": url,
+            "content_url": url,
+            "title": "Provider 历史文章",
+            "digest": "公开页历史摘要",
+            "author_name": "Provider 作者",
+            "account_name": "Provider 公众号",
+            "account": "provider-fakeid-001",
+            "publish_time_remote": "1710000000",
+            "cover_url": "https://img.example/provider-materialized-cover.jpg",
+            "content_text": "Provider 历史文章公开页正文",
+            "content_html": '<div id="js_content"><p>Provider 历史文章公开页正文</p></div>',
+            "images": [{"url": "https://img.example/provider-materialized-cover.jpg", "type": "cover", "source": "article_page"}],
+            "raw": {"source": "article_page"},
+        }
+
+
+class FakeBackendProvider:
+    def __init__(self, *, transport=None) -> None:
+        self.transport = transport
+
+    def search_accounts(self, keyword: str, cookie: str, token: str, user_agent: str) -> list[dict]:
+        assert keyword == "真实搜索"
+        assert cookie == "cookie-secret"
+        assert token == "token-secret"
+        return [
+            {
+                "fake_id": "provider-fakeid-001",
+                "name": "Provider 公众号",
+                "alias": "provider_alias",
+                "avatar_url": "https://img.example/provider-avatar.jpg",
+                "raw": {"from": "provider"},
+            }
+        ]
+
+    def sync_account_articles(self, fake_id: str, cookie: str, token: str, user_agent: str, begin: int = 0, count: int = 5) -> list[dict]:
+        assert fake_id == "provider-fakeid-001"
+        assert cookie == "cookie-secret"
+        assert token == "token-secret"
+        assert begin == 0
+        assert count == 2
+        return [
+            {
+                "article_url": "https://mp.weixin.qq.com/s/provider-history-1",
+                "title": "Provider 历史文章",
+                "digest": "Provider 摘要",
+                "author_name": "Provider 作者",
+                "cover_url": "https://img.example/provider-cover.jpg",
+                "publish_time_remote": "1710000000",
+                "raw": {"aid": "provider-aid-1"},
+            }
+        ]
 
 
 def _override_database(tmp_path):
@@ -100,6 +159,83 @@ def test_search_accounts_normalizes_searchbiz_payload_and_upserts_accounts(tmp_p
             assert len(accounts) == 1
             assert accounts[0].user_id == 1
             assert accounts[0].name == "增长研究所新版"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_search_accounts_uses_backend_provider_when_upstream_payload_missing(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(crawl_service, "WechatOfficialBackendProvider", FakeBackendProvider, raising=False)
+    try:
+        headers = _register("crawl-provider-search-user")
+        backend_session_id = _create_backend_session(headers)
+
+        response = client.post(
+            "/api/wechat-official/crawl/accounts/search",
+            headers=headers,
+            json={"backend_session_id": backend_session_id, "keyword": "真实搜索"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["fake_id"] == "provider-fakeid-001"
+        assert payload["items"][0]["name"] == "Provider 公众号"
+        assert payload["items"][0]["alias"] == "provider_alias"
+
+        with TestingSessionLocal() as db:
+            account = db.scalar(select(WechatOfficialCrawlAccount).where(WechatOfficialCrawlAccount.fake_id == "provider-fakeid-001"))
+            assert account is not None
+            assert account.name == "Provider 公众号"
+            assert account.raw_json["raw"] == {"from": "provider"}
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_articles_sync_uses_backend_provider_when_upstream_payload_missing(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    monkeypatch.setattr(crawl_service, "WechatOfficialBackendProvider", FakeBackendProvider, raising=False)
+    monkeypatch.setattr(crawl_service, "WechatOfficialArticlePageProvider", FakeHistoryMaterializeArticlePageProvider, raising=False)
+    try:
+        headers = _register("crawl-provider-article-user")
+        backend_session_id = _create_backend_session(headers)
+        search_response = client.post(
+            "/api/wechat-official/crawl/accounts/search",
+            headers=headers,
+            json={"backend_session_id": backend_session_id, "keyword": "真实搜索"},
+        )
+        account_id = search_response.json()["items"][0]["id"]
+
+        response = client.post(
+            "/api/wechat-official/crawl/articles/sync",
+            headers=headers,
+            json={"backend_session_id": backend_session_id, "account_id": account_id, "limit": 2},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["job"]["source"] == "backend"
+        assert payload["job"]["requested_limit"] == 2
+        assert payload["job"]["saved_count"] == 1
+        assert payload["items"][0]["title"] == "Provider 历史文章"
+        assert payload["items"][0]["article_url"] == "https://mp.weixin.qq.com/s/provider-history-1"
+
+        with TestingSessionLocal() as db:
+            job = db.scalar(select(WechatOfficialCrawlJob).order_by(WechatOfficialCrawlJob.id.desc()))
+            assert job is not None
+            assert job.params_json["backend_session_id"] == backend_session_id
+            assert "cookie-secret" not in str(job.params_json)
+            assert "token-secret" not in str(job.params_json)
+            article = db.scalar(select(WechatOfficialArticle).where(WechatOfficialArticle.article_url == "https://mp.weixin.qq.com/s/provider-history-1"))
+            assert article is not None
+            assert article.account_id == account_id
+            assert article.cover_url == "https://img.example/provider-materialized-cover.jpg"
+            assert article.raw_json["raw"] == {"aid": "provider-aid-1"}
+            assert article.raw_json["article_page_materialized"]["source"] == "article_page"
+            snapshot = db.scalar(select(WechatOfficialArticleSnapshot).where(WechatOfficialArticleSnapshot.article_id == article.id))
+            assert snapshot is not None
+            assert snapshot.text == "Provider 历史文章公开页正文"
+            assert snapshot.images_json == [{"url": "https://img.example/provider-materialized-cover.jpg", "type": "cover", "source": "article_page"}]
     finally:
         app.dependency_overrides.pop(get_db, None)
 

@@ -6,7 +6,7 @@ from typing import Iterable
 from backend.app.core.platforms import PlatformId
 
 MEDIA_OWNER_KINDS = {"upload", "asset", "image"}
-EXPORT_OWNER_KINDS = {"notes", "report"}
+EXPORT_OWNER_KINDS = {"notes", "report", "articles"}
 _DEFAULT_PLATFORM = PlatformId.XHS.value
 _ALLOWED_PLATFORMS = {platform.value for platform in PlatformId}
 

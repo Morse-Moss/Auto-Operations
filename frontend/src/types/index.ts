@@ -213,6 +213,10 @@ export type WechatOfficialHotspotBreakdown = {
 export type WechatOfficialArticleAnalysis = {
   recommendation_status?: string;
   pool_status?: WechatOfficialPoolStatus | string;
+  category?: string;
+  tags?: string[];
+  is_favorite?: boolean;
+  read_status?: "unread" | "read" | "reading" | string;
   low_follower_evidence?: boolean | "unknown" | "manual" | "inferred" | string;
   low_follower_note?: string;
   business_direction?: string;
@@ -242,6 +246,7 @@ export type WechatOfficialArticle = {
   publish_time_remote?: string | null;
   latest_metric?: WechatOfficialArticleMetric | null;
   analysis?: WechatOfficialArticleAnalysis;
+  detail_status?: WechatOfficialDetailStatus;
   is_candidate: boolean;
   created_at?: string | null;
   updated_at?: string | null;
@@ -318,6 +323,10 @@ export type WechatOfficialArticleComment = {
 export type WechatOfficialRecommendationUpdatePayload = {
   recommendation_status?: string | null;
   pool_status?: WechatOfficialPoolStatus | string | null;
+  category?: string | null;
+  tags?: string[] | null;
+  is_favorite?: boolean | null;
+  read_status?: "unread" | "read" | "reading" | string | null;
   low_follower_evidence?: boolean | "unknown" | "manual" | "inferred" | string | null;
   low_follower_note?: string | null;
   business_direction?: string | null;
@@ -346,6 +355,8 @@ export type WechatOfficialDetailStatus = {
   has_html: boolean;
   image_count: number;
   comment_count: number;
+  completeness?: "complete" | "partial" | "missing" | string;
+  is_complete?: boolean;
   can_refresh_from_redfox: boolean;
 };
 
@@ -816,6 +827,22 @@ export type FeishuPullWechatOfficialArticlesPayload = {
   article_ids?: number[];
   dry_run?: boolean;
   records?: Array<Record<string, unknown>>;
+};
+
+export type WechatOfficialArticlesExportPayload = {
+  article_ids: number[];
+  format?: "json" | "csv";
+};
+
+export type WechatOfficialContentAutoRefreshPayload = {
+  article_ids: number[];
+};
+
+export type WechatOfficialContentAutoRefreshResponse = {
+  requested_count: number;
+  refreshed_count: number;
+  failed_count: number;
+  failed: Array<Record<string, unknown>>;
 };
 
 export type FeishuSyncResponse = {

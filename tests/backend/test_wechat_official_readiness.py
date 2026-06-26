@@ -84,6 +84,32 @@ def test_wechat_official_readiness_empty_workspace_returns_actionable_missing_ch
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_wechat_official_browser_fallback_plan_is_manual_safe_and_actionable(tmp_path):
+    get_db, _ = _override_database(tmp_path)
+    try:
+        headers = _register("browser-fallback-user")
+
+        response = client.post(
+            "/api/wechat-official/browser-fallback/plan",
+            headers=headers,
+            json={"url": "https://mp.weixin.qq.com/s/browser-fallback", "reason": "verification_required"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["mode"] == "manual_browser_verification"
+        assert payload["url"] == "https://mp.weixin.qq.com/s/browser-fallback"
+        assert payload["safe_to_automate"] is False
+        assert payload["retry_policy"] == "do_not_auto_retry"
+        assert payload["blocked_actions"] == ["captcha_bypass", "risk_control_evasion", "high_frequency_retry"]
+        assert any("浏览器" in step["label"] for step in payload["steps"])
+        assert any("完成人工验证" in step["instruction"] for step in payload["steps"])
+        assert "cookie" not in str(payload).lower()
+        assert "token" not in str(payload).lower()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_wechat_official_readiness_counts_config_sessions_content_and_drafts_without_network(tmp_path, monkeypatch):
     get_db, TestingSessionLocal = _override_database(tmp_path)
     try:

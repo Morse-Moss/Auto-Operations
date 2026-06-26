@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from backend.app.api.platforms.wechat_official.schemas import WechatOfficialCreateDraftRequest, WechatOfficialHotspotAnalyzeRequest, WechatOfficialRecommendationUpdateRequest
+from backend.app.api.platforms.wechat_official.schemas import WechatOfficialContentAutoRefreshRequest, WechatOfficialContentExportRequest, WechatOfficialCreateDraftRequest, WechatOfficialHotspotAnalyzeRequest, WechatOfficialRecommendationUpdateRequest
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.models import User
@@ -23,6 +23,11 @@ def list_content_library(
     low_follower_evidence: Optional[str] = None,
     recommendation_status: Optional[str] = None,
     pool_status: Optional[str] = None,
+    category: Optional[str] = None,
+    tag: Optional[str] = None,
+    is_favorite: Optional[bool] = None,
+    read_status: Optional[str] = None,
+    detail_complete: Optional[bool] = None,
     keyword: Optional[str] = None,
     job_id: Optional[int] = Query(default=None, ge=1),
     page: int = Query(default=1, ge=1),
@@ -38,12 +43,53 @@ def list_content_library(
             "low_follower_evidence": low_follower_evidence,
             "recommendation_status": recommendation_status,
             "pool_status": pool_status,
+            "category": category,
+            "tag": tag,
+            "is_favorite": is_favorite,
+            "read_status": read_status,
+            "detail_complete": detail_complete,
             "keyword": keyword,
             "job_id": job_id,
             "page": page,
             "page_size": page_size,
         },
     )
+
+
+@router.post("/export")
+def export_content_library_articles(payload: WechatOfficialContentExportRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WechatOfficialContentService(db).export_articles(current_user.id, payload.model_dump())
+
+
+@router.get("/feed.rss")
+def content_library_rss_feed(
+    pool_status: Optional[str] = None,
+    category: Optional[str] = None,
+    tag: Optional[str] = None,
+    is_favorite: Optional[bool] = None,
+    read_status: Optional[str] = None,
+    detail_complete: Optional[bool] = None,
+    keyword: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return WechatOfficialContentService(db).rss_feed(
+        current_user.id,
+        {
+            "pool_status": pool_status,
+            "category": category,
+            "tag": tag,
+            "is_favorite": is_favorite,
+            "read_status": read_status,
+            "detail_complete": detail_complete,
+            "keyword": keyword,
+        },
+    )
+
+
+@router.post("/auto-refresh")
+def auto_refresh_content_library_articles(payload: WechatOfficialContentAutoRefreshRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WechatOfficialContentService(db).auto_refresh(current_user.id, payload.model_dump())
 
 
 @router.get("/{article_id}")

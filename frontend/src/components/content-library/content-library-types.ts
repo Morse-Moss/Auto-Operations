@@ -30,6 +30,11 @@ export type ContentLibraryFilters = {
   reusable_model?: string[];
   content_usage?: string[];
   search_attribute?: string[];
+  category?: string;
+  tag?: string;
+  is_favorite?: boolean;
+  read_status?: string;
+  detail_complete?: boolean;
   sort_by?: ContentLibrarySortBy;
   page?: number;
   page_size?: number;

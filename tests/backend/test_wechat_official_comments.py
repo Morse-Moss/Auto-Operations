@@ -5,6 +5,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
+from datetime import datetime
+
 from backend.app.models import WechatOfficialArticleComment, WechatOfficialArticleCommentReply
 
 client = TestClient(app)
@@ -34,6 +36,27 @@ def _register(username: str) -> dict:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def _import_credential(headers: dict) -> int:
+    response = client.post(
+        "/api/wechat-official/credentials/import",
+        headers=headers,
+        json={
+            "biz": "MzA-comment",
+            "uin": "123456",
+            "key": "article-key-secret",
+            "pass_ticket": "pass-ticket-secret",
+            "wap_sid2": "wap-sid2-secret",
+            "appmsg_token": "appmsg-token-secret",
+            "cookie": "credential-cookie-secret",
+            "timestamp": 1780000000,
+            "nickname": "Comment Account",
+            "captured_at": datetime.now().replace(microsecond=0).isoformat(),
+        },
+    )
+    assert response.status_code == 200
+    return response.json()["id"]
+
+
 def _create_article(headers: dict) -> int:
     start = client.post("/api/wechat-official/accounts/login/qrcode", headers=headers)
     assert start.status_code == 200
@@ -58,6 +81,7 @@ def test_article_comments_store_first_n_comments_and_replies(tmp_path):
     try:
         headers = _register("comments-user")
         article_id = _create_article(headers)
+        credential_id = _import_credential(headers)
         comments = [
             {
                 "content_id": "c1",
@@ -75,7 +99,7 @@ def test_article_comments_store_first_n_comments_and_replies(tmp_path):
         response = client.post(
             f"/api/wechat-official/crawl/articles/{article_id}/comments",
             headers=headers,
-            json={"comments_payload": {"elected_comment": comments}, "limit": 2},
+            json={"credential_id": credential_id, "comments_payload": {"elected_comment": comments}, "limit": 2},
         )
 
         assert response.status_code == 200
@@ -96,17 +120,39 @@ def test_article_comments_store_first_n_comments_and_replies(tmp_path):
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_article_comments_rejects_missing_credential_without_saving(tmp_path):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("comments-missing-credential-user")
+        article_id = _create_article(headers)
+
+        response = client.post(
+            f"/api/wechat-official/crawl/articles/{article_id}/comments",
+            headers=headers,
+            json={"comments_payload": {"elected_comment": [{"content_id": "c1", "content": "不应保存"}]}},
+        )
+
+        assert response.status_code == 422
+        assert "credential_id" in str(response.json())
+        with TestingSessionLocal() as db:
+            assert db.scalars(select(WechatOfficialArticleComment)).all() == []
+            assert db.scalars(select(WechatOfficialArticleCommentReply)).all() == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_article_comments_default_limit_is_50(tmp_path):
     get_db, _ = _override_database(tmp_path)
     try:
         headers = _register("comments-limit-user")
         article_id = _create_article(headers)
+        credential_id = _import_credential(headers)
         comments = [{"content_id": f"c{i}", "nick_name": f"读者{i}", "content": f"评论{i}"} for i in range(60)]
 
         response = client.post(
             f"/api/wechat-official/crawl/articles/{article_id}/comments",
             headers=headers,
-            json={"comments_payload": {"elected_comment": comments}},
+            json={"credential_id": credential_id, "comments_payload": {"elected_comment": comments}},
         )
 
         assert response.status_code == 200

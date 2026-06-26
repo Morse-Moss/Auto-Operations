@@ -31,7 +31,7 @@ import {
   deleteWechatOfficialContentLibraryItem,
   fetchWechatOfficialContentLibrary,
   fetchWechatOfficialRedfoxCollectJobs,
-  importWechatOfficialRedfoxUrl,
+  importWechatOfficialArticleUrl,
   updateWechatOfficialRecommendation,
 } from "../../lib/api";
 
@@ -351,7 +351,7 @@ export function WechatOfficialDiscoveryPanel() {
 
   const handleUrlImport = () => runAction("import-url", "文章 URL 已作为候选保存", async () => {
     const values = await urlForm.validateFields();
-    const response = await importWechatOfficialRedfoxUrl({
+    const response = await importWechatOfficialArticleUrl({
       url: values.url,
       save_snapshot: true,
     });

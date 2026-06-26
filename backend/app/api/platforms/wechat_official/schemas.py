@@ -111,13 +111,27 @@ class WechatOfficialArticleMetricsRequest(BaseModel):
 
 
 class WechatOfficialArticleCommentsRequest(BaseModel):
+    credential_id: int
     comments_payload: dict[str, Any] = Field(default_factory=dict)
     limit: int = Field(default=50, ge=1, le=100)
+
+
+class WechatOfficialContentExportRequest(BaseModel):
+    article_ids: list[int] = Field(min_length=1)
+    format: str = "json"
+
+
+class WechatOfficialContentAutoRefreshRequest(BaseModel):
+    article_ids: list[int] = Field(min_length=1)
 
 
 class WechatOfficialRecommendationUpdateRequest(BaseModel):
     recommendation_status: str | None = None
     pool_status: str | None = None
+    category: str | None = None
+    tags: list[str] | None = None
+    is_favorite: bool | None = None
+    read_status: str | None = None
     low_follower_evidence: bool | str | None = None
     low_follower_note: str | None = None
     business_direction: str | None = None

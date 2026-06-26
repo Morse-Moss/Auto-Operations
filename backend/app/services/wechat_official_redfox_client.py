@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import requests
@@ -34,18 +35,30 @@ class WechatOfficialRedfoxClient:
         return self._post("/story/api/gzhData/queryWorkList", payload)
 
     def query_article_detail(self, *, url: str) -> dict[str, Any]:
-        return self._post("/story/api/gzhData/queryArticleDetail", {"url": url}, timeout=max(self.timeout, 60.0))
+        return self._post("/story/api/gzhData/queryArticleDetail", {"url": url}, timeout=max(self.timeout, 60.0), retries=2)
 
     def validate_key(self) -> dict[str, Any]:
         return self._post("/story/api/gzhData/searchArticle", {"keyword": "test", "offset": 0, "sortType": "_0"})
 
-    def _post(self, path: str, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
-        response = requests.post(
-            f"{self.base_url}{path}",
-            headers={"REDFOX_API_KEY": self.api_key, "Content-Type": "application/json"},
-            json=payload,
-            timeout=timeout or self.timeout,
-        )
+    def _post(self, path: str, payload: dict[str, Any], *, timeout: float | None = None, retries: int = 0) -> dict[str, Any]:
+        last_error: requests.RequestException | None = None
+        for attempt in range(retries + 1):
+            try:
+                response = requests.post(
+                    f"{self.base_url}{path}",
+                    headers={"REDFOX_API_KEY": self.api_key, "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=timeout or self.timeout,
+                )
+                break
+            except (requests.exceptions.ConnectionError, requests.exceptions.SSLError) as exc:
+                last_error = exc
+                if attempt >= retries:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+        else:
+            assert last_error is not None
+            raise last_error
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):

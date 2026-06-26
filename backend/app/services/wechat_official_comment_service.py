@@ -15,7 +15,9 @@ class WechatOfficialCommentService:
         self.adapter = adapter or WechatOfficialResearchAdapter()
 
     def store_comments(self, user_id: int, article_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        article = WechatOfficialCrawlService(self.db, self.adapter)._get_owned_article(user_id, article_id)
+        crawl_service = WechatOfficialCrawlService(self.db, self.adapter)
+        article = crawl_service._get_owned_article(user_id, article_id)
+        crawl_service._get_owned_valid_credential(user_id, int(payload["credential_id"]))
         limit = int(payload.get("limit") or 50)
         comments = self.adapter.normalize_comments(payload.get("comments_payload") or {}, limit=limit)
         for comment_payload in comments:
