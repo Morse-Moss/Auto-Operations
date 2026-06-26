@@ -1538,6 +1538,7 @@ export type SendDraftToPublishPayload = {
   privacy_type?: 0 | 1 | null;
   is_private?: boolean | null;
   asset_file_path?: string | null;
+  asset_file_paths?: string[] | null;
 };
 
 export type PublishJobUpdatePayload = {

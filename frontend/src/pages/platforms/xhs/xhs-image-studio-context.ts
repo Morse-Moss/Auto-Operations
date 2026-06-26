@@ -48,6 +48,7 @@ export function saveImageStudioDraftContext(context: Omit<XhsImageStudioDraftCon
   return saveDraftImageStudioContext(XHS_IMAGE_STUDIO_DRAFT_CONTEXT_KEY, {
     platform: "xhs",
     ...context,
+    created_at: context.created_at ?? Date.now(),
   });
 }
 

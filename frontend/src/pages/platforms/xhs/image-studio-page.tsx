@@ -1,4 +1,6 @@
 import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
   DeleteOutlined,
   FileImageOutlined,
   InboxOutlined,
@@ -67,6 +69,14 @@ const IMAGE_GENERATION_MAX_POLLS = 220;
 type ImageAspectRatio = "auto" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
 type ImageStudioDraftContext = XhsImageStudioDraftContext | WechatOfficialImageStudioDraftContext;
 
+type FinalPublishImage = {
+  key: string;
+  url: string;
+  publishPath: string;
+  source: "draft_asset" | "source_note" | "manual" | "generated" | "asset";
+  label: string;
+};
+
 function isRenderableImage(value: string): boolean {
   return (
     value.startsWith("http://") ||
@@ -78,6 +88,14 @@ function isRenderableImage(value: string): boolean {
 
 function isServerManagedMediaPath(value: unknown): value is string {
   return typeof value === "string" && value.startsWith("/api/files/media/");
+}
+
+function isPublishableFinalImagePath(value: string): boolean {
+  return (
+    value.startsWith("/api/files/media/") ||
+    value.startsWith("http://") ||
+    value.startsWith("https://")
+  );
 }
 
 function generatedPublishMediaPath(result: GenerateImageResult): string | null {
@@ -153,6 +171,7 @@ export function XhsImageStudioPage() {
   const [generatedPreview, setGeneratedPreview] = useState<string | null>(null);
   const [generatedMediaPath, setGeneratedMediaPath] = useState<string | null>(null);
   const [draftContext, setDraftContext] = useState<ImageStudioDraftContext | null>(null);
+  const [finalPublishImages, setFinalPublishImages] = useState<FinalPublishImage[]>([]);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
   const [isAttachingDraftAsset, setIsAttachingDraftAsset] = useState(false);
 
@@ -164,6 +183,46 @@ export function XhsImageStudioPage() {
     [draftContext],
   );
   const referenceLimitReached = referenceImages.length >= RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT;
+
+  function addFinalPublishImage(image: Omit<FinalPublishImage, "key">) {
+    setFinalPublishImages((prev) => {
+      if (prev.some((item) => item.publishPath === image.publishPath)) return prev;
+      return [...prev, { ...image, key: image.publishPath }];
+    });
+  }
+
+  function removeFinalPublishImage(publishPath: string) {
+    setFinalPublishImages((prev) => prev.filter((image) => image.publishPath !== publishPath));
+  }
+
+  function moveFinalPublishImage(index: number, direction: -1 | 1) {
+    setFinalPublishImages((prev) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  }
+
+  function isFinalPublishImageSelected(publishPath: string) {
+    return finalPublishImages.some((image) => image.publishPath === publishPath);
+  }
+
+  function candidateToFinalImage(
+    image: ImageStudioDraftContext["candidate_images"][number],
+    index: number,
+  ): FinalPublishImage | null {
+    if (!image.url) return null;
+    if (image.source === "article_cover" || image.source === "snapshot_image") return null;
+    return {
+      key: image.url,
+      url: image.url,
+      publishPath: image.url,
+      source: image.source,
+      label: `${candidateImageSourceLabel(image.source)} ${index + 1}`,
+    };
+  }
 
   // For the reference picker modal: which callback mode
   const [pickerMode, setPickerMode] = useState<"reference" | "describe">(
@@ -217,8 +276,17 @@ export function XhsImageStudioPage() {
             throw new Error("图片任务已完成，但结果为空。请到任务中心查看详情。");
           }
           const mediaPath = generatedPublishMediaPath(result);
-          setGeneratedPreview(mediaPath ?? result.url);
+          const publishPath = mediaPath ?? result.url;
+          setGeneratedPreview(publishPath);
           setGeneratedMediaPath(mediaPath);
+          if (isPublishableFinalImagePath(publishPath)) {
+            addFinalPublishImage({
+              url: publishPath,
+              publishPath,
+              source: "generated",
+              label: "AI 生成图",
+            });
+          }
           if (result.asset) {
             setAssets((prev) => [result.asset!, ...prev]);
           } else {
@@ -315,6 +383,12 @@ export function XhsImageStudioPage() {
         size: uploaded.size,
       };
       setUserImages((prev) => [newItem, ...prev]);
+      addFinalPublishImage({
+        url: uploaded.download_url,
+        publishPath: uploaded.download_url,
+        source: "manual",
+        label: uploaded.file_name,
+      });
     } catch {
       setError("文件上传失败。");
     }
@@ -328,6 +402,7 @@ export function XhsImageStudioPage() {
       clearImageStudioDraftContext();
     }
     setDraftContext(null);
+    setFinalPublishImages([]);
     setMessage("已清除草稿上下文，当前图片工坊内容不会再自动关联草稿。");
   }
 
@@ -345,10 +420,14 @@ export function XhsImageStudioPage() {
     }
   }
 
-  async function handleSendGeneratedToPublish() {
-    if (!draftContext || !generatedMediaPath) return;
+  async function handleSendFinalImagesToPublish() {
+    if (!draftContext) return;
     if (isWechatOfficialDraftContext(draftContext)) {
       setMessage("公众号图片工坊第一版只做生成/整理/下载和本地资产回挂，material_upload_blocked：不上传公众号素材，也不送发布中心。");
+      return;
+    }
+    if (finalPublishImages.length === 0) {
+      setError("请先选择至少 1 张最终发布图片。可以使用原图、上传图或 AI 生成图。");
       return;
     }
     setIsSendingPublish(true);
@@ -357,10 +436,11 @@ export function XhsImageStudioPage() {
     try {
       const job = await sendDraftToPublish(draftContext.draft_id, {
         publish_mode: "immediate",
-        asset_file_path: generatedMediaPath,
+        asset_file_paths: finalPublishImages.map((image) => image.publishPath),
       });
       clearImageStudioDraftContext();
       setDraftContext(null);
+      setFinalPublishImages([]);
       setMessage(`已创建发布中心待发布任务 #${job.id}，不会自动发布。`);
       navigate(`/platforms/xhs/publish?jobId=${job.id}`);
     } catch (err) {
@@ -379,12 +459,24 @@ export function XhsImageStudioPage() {
     const context: ImageStudioDraftContext | null = isWechatOfficialRoute
       ? loadWechatOfficialImageStudioDraftContext({ requireFresh: true })
       : loadImageStudioDraftContext({ requireFresh: true });
-    navigate(isWechatOfficialRoute ? "/platforms/wechat-official/image-studio" : "/platforms/xhs/image-studio", { replace: true });
+    if (isWechatOfficialRoute) {
+      navigate("/platforms/wechat-official/image-studio", { replace: true });
+    } else {
+      navigate("/platforms/xhs/image-studio", { replace: true });
+    }
     if (!context) {
       setMessage("草稿上下文已过期，请从草稿工坊重新进入图片工坊。");
       return;
     }
     setDraftContext(context);
+    if (isWechatOfficialDraftContext(context)) {
+      setFinalPublishImages([]);
+    } else {
+      const firstCandidate = context.candidate_images
+        .map((image, index) => candidateToFinalImage(image, index))
+        .find((image): image is FinalPublishImage => Boolean(image));
+      setFinalPublishImages(firstCandidate ? [firstCandidate] : []);
+    }
     setPrompt((current) => (current.trim() ? current : buildDraftImagePrompt(context)));
     setReferenceImages((current) => {
       if (current.length > 0) return current;
@@ -398,6 +490,14 @@ export function XhsImageStudioPage() {
   useEffect(() => {
     void loadAssets();
   }, []);
+
+  const generatedFinalPublishPath = generatedPreview ? (generatedMediaPath ?? generatedPreview) : "";
+  const isGeneratedFinalPublishPathValid = Boolean(
+    generatedPreview && isPublishableFinalImagePath(generatedFinalPublishPath),
+  );
+  const isGeneratedFinalPublishSelected = Boolean(
+    generatedPreview && isFinalPublishImageSelected(generatedFinalPublishPath),
+  );
 
   return (
     <div>
@@ -476,22 +576,39 @@ export function XhsImageStudioPage() {
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   候选图 {draftContext.candidate_images.length} 张；已带入 {draftReferenceUrls.length} 张参考图（上限 {RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT} 张）
                 </Text>
-                <Space size={8} wrap>
-                  {draftContext.candidate_images.slice(0, 4).map((image, index) => (
-                    <div key={`${image.url}-${index}`} style={{ width: 56 }}>
-                      <div style={{ height: 56, borderRadius: 6, overflow: "hidden", background: "#1a1a1a", border: "1px solid #3b2a12" }}>
-                        {isRenderableImage(image.url) ? (
-                          <img src={image.url} alt={`candidate-${index}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                        ) : (
-                          <PictureOutlined style={{ fontSize: 20, color: "#666", margin: 18 }} />
-                        )}
-                      </div>
-                      <Text type="secondary" ellipsis style={{ display: "block", fontSize: 10, marginTop: 2 }}>
-                        {candidateImageSourceLabel(image.source)}
-                      </Text>
-                    </div>
-                  ))}
-                </Space>
+                <div style={{ maxHeight: 220, overflowY: "auto", paddingRight: 4 }}>
+                  <Space size={8} wrap>
+                    {draftContext.candidate_images.map((image, index) => {
+                      const finalImage = candidateToFinalImage(image, index);
+                      const isSelected = finalImage ? isFinalPublishImageSelected(finalImage.publishPath) : false;
+                      return (
+                        <div key={`${image.url}-${index}`} style={{ width: 72 }}>
+                          <div style={{ height: 56, borderRadius: 6, overflow: "hidden", background: "#1a1a1a", border: "1px solid #3b2a12" }}>
+                            {isRenderableImage(image.url) ? (
+                              <img src={image.url} alt={`candidate-${index}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            ) : (
+                              <PictureOutlined style={{ fontSize: 20, color: "#666", margin: 18 }} />
+                            )}
+                          </div>
+                          <Text type="secondary" ellipsis style={{ display: "block", fontSize: 10, marginTop: 2 }}>
+                            {candidateImageSourceLabel(image.source)}
+                          </Text>
+                          {!isWechatOfficialDraftContext(draftContext) && finalImage && (
+                            <Button
+                              size="small"
+                              type={isSelected ? "default" : "link"}
+                              disabled={isSelected}
+                              onClick={() => addFinalPublishImage(finalImage)}
+                              style={{ width: "100%", padding: 0, fontSize: 11 }}
+                            >
+                              {isSelected ? "已加入" : "加入最终"}
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </Space>
+                </div>
                 {draftReferenceUrls.length > 0 && referenceImages.length === 0 && (
                   <Button size="small" onClick={() => setReferenceImages(draftReferenceUrls)}>
                     使用候选图作为参考图
@@ -710,13 +827,25 @@ export function XhsImageStudioPage() {
                     {draftContext && !isWechatOfficialDraftContext(draftContext) && (
                       <Button
                         type="primary"
-                        icon={<SendOutlined />}
-                        onClick={handleSendGeneratedToPublish}
-                        loading={isSendingPublish}
-                        disabled={isGenerating || !generatedMediaPath}
-                        title={generatedMediaPath ? undefined : "生成图需要先保存为服务器媒体资产"}
+                        icon={<PlusOutlined />}
+                        onClick={() => {
+                          if (!generatedPreview || !isGeneratedFinalPublishPathValid) return;
+                          addFinalPublishImage({
+                            url: generatedPreview,
+                            publishPath: generatedFinalPublishPath,
+                            source: "generated",
+                            label: "AI 生成图",
+                          });
+                        }}
+                        disabled={
+                          isGenerating ||
+                          !generatedPreview ||
+                          !isGeneratedFinalPublishPathValid ||
+                          isGeneratedFinalPublishSelected
+                        }
+                        title={!isGeneratedFinalPublishPathValid ? "生成图需要先保存为服务器媒体资产，或返回可访问图片 URL" : undefined}
                       >
-                        用这张图送发布中心
+                        {isGeneratedFinalPublishSelected ? "已加入最终发布" : "加入最终发布图片"}
                       </Button>
                     )}
                     {isWechatOfficialDraftContext(draftContext) && (
@@ -806,6 +935,103 @@ export function XhsImageStudioPage() {
         </Col>
       </Row>
 
+      {draftContext && !isWechatOfficialDraftContext(draftContext) && (
+        <Card
+          title={
+            <Space>
+              <SendOutlined /> 最终发布图片
+              <Tag color="gold">已选择 {finalPublishImages.length} 张</Tag>
+            </Space>
+          }
+          style={{ marginBottom: 24 }}
+          extra={
+            <Space>
+              <Button
+                size="small"
+                onClick={() => setFinalPublishImages([])}
+                disabled={finalPublishImages.length === 0 || isSendingPublish}
+              >
+                清空选择
+              </Button>
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={handleSendFinalImagesToPublish}
+                loading={isSendingPublish}
+              >
+                送入发布中心
+              </Button>
+            </Space>
+          }
+        >
+          <Paragraph type="secondary" style={{ marginTop: 0 }}>
+            发布中心将按当前顺序使用这些图片。可以从原图、上传图或 AI 生成图中选择。
+          </Paragraph>
+          {finalPublishImages.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无最终发布图片。" />
+          ) : (
+            <Row gutter={[12, 12]}>
+              {finalPublishImages.map((image, index) => (
+                <Col xs={12} sm={8} md={6} lg={4} key={image.key}>
+                  <Card size="small" styles={{ body: { padding: 8 } }}>
+                    <div
+                      style={{
+                        position: "relative",
+                        height: 120,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        marginBottom: 6,
+                        overflow: "hidden",
+                        borderRadius: 4,
+                        background: "#1a1a1a",
+                      }}
+                    >
+                      <Tag color="gold" style={{ position: "absolute", left: 6, top: 6, zIndex: 1 }}>
+                        #{index + 1}
+                      </Tag>
+                      {isRenderableImage(image.url) ? (
+                        <Image
+                          alt={image.label}
+                          src={image.url}
+                          style={{ maxHeight: 120, objectFit: "contain" }}
+                        />
+                      ) : (
+                        <PictureOutlined style={{ fontSize: 28, color: "#555" }} />
+                      )}
+                    </div>
+                    <Text strong ellipsis style={{ display: "block", fontSize: 12 }}>
+                      {image.label}
+                    </Text>
+                    <Space size={4} style={{ width: "100%", marginTop: 6 }}>
+                      <Button
+                        size="small"
+                        icon={<ArrowUpOutlined />}
+                        disabled={index === 0 || isSendingPublish}
+                        onClick={() => moveFinalPublishImage(index, -1)}
+                      />
+                      <Button
+                        size="small"
+                        icon={<ArrowDownOutlined />}
+                        disabled={index === finalPublishImages.length - 1 || isSendingPublish}
+                        onClick={() => moveFinalPublishImage(index, 1)}
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        disabled={isSendingPublish}
+                        onClick={() => removeFinalPublishImage(image.publishPath)}
+                      />
+                    </Space>
+                  </Card>
+                </Col>
+              ))}
+            </Row>
+          )}
+        </Card>
+      )}
+
       {/* ---- Bottom: Tabs ---- */}
       <Tabs
         defaultActiveKey="ai_assets"
@@ -889,12 +1115,30 @@ export function XhsImageStudioPage() {
                               {formatShanghaiTime(asset.created_at)}
                             </Text>
                           </div>
+                          {draftContext && !isWechatOfficialDraftContext(draftContext) && (
+                            <Button
+                              type="link"
+                              size="small"
+                              icon={<PlusOutlined />}
+                              disabled={isFinalPublishImageSelected(asset.file_path)}
+                              onClick={() => addFinalPublishImage({
+                                url: asset.file_path,
+                                publishPath: asset.file_path,
+                                source: "asset",
+                                label: "AI 图片资产",
+                              })}
+                              style={{ width: "100%", marginTop: 4 }}
+                            >
+                              {isFinalPublishImageSelected(asset.file_path) ? "已加入最终" : "加入最终"}
+                            </Button>
+                          )}
                           <Button
                             type="text" danger size="small" icon={<DeleteOutlined />}
                             onClick={async () => {
                               try {
                                 await deleteGeneratedImageAsset(asset.id);
                                 setAssets((prev) => prev.filter((a) => a.id !== asset.id));
+                                removeFinalPublishImage(asset.file_path);
                               } catch { /* global interceptor shows error */ }
                             }}
                             style={{ width: "100%", marginTop: 4 }}
@@ -976,12 +1220,30 @@ export function XhsImageStudioPage() {
                           <Text type="secondary" style={{ fontSize: 10 }}>
                             {(img.size / 1024).toFixed(1)} KB
                           </Text>
+                          {draftContext && !isWechatOfficialDraftContext(draftContext) && (
+                            <Button
+                              type="link"
+                              size="small"
+                              icon={<PlusOutlined />}
+                              disabled={isFinalPublishImageSelected(img.url)}
+                              onClick={() => addFinalPublishImage({
+                                url: img.url,
+                                publishPath: img.url,
+                                source: "manual",
+                                label: img.file_name,
+                              })}
+                              style={{ width: "100%", marginTop: 4 }}
+                            >
+                              {isFinalPublishImageSelected(img.url) ? "已加入最终" : "加入最终"}
+                            </Button>
+                          )}
                           <Button
                             type="text" danger size="small" icon={<DeleteOutlined />}
                             onClick={async () => {
                               try {
                                 await deleteUserImage(img.file_name);
                                 setUserImages((prev) => prev.filter((i) => i.file_name !== img.file_name));
+                                removeFinalPublishImage(img.url);
                               } catch { /* global interceptor shows error */ }
                             }}
                             style={{ width: "100%", marginTop: 4 }}

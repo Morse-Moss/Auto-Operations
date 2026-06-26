@@ -4,12 +4,12 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session as SqlAlchemySession, sessionmaker
 
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, hash_password
 from backend.app.main import app
-from backend.app.models import AiDraft, DraftAsset, Note, PlatformAccount, PublishAsset, PublishJob, User
+from backend.app.models import AiDraft, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User
 
 client = TestClient(app)
 
@@ -134,6 +134,87 @@ def test_create_update_and_list_draft_uses_internal_draft_name(tmp_path):
         list_response = client.get("/api/drafts", headers=headers, params={"platform": "xhs"})
         assert list_response.status_code == 200
         assert list_response.json()["items"][0]["draft_name"] == "浴缸案例图替换 - B版"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_create_draft_from_source_note_copies_note_assets_to_draft_assets(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-create-source-assets-owner")
+            account = PlatformAccount(
+                user_id=owner.id,
+                platform="xhs",
+                sub_type="pc",
+                external_user_id=f"source-account-{owner.id}",
+                nickname="来源账号",
+                status="active",
+            )
+            db.add(account)
+            db.flush()
+            source_note = Note(
+                user_id=owner.id,
+                platform_account_id=account.id,
+                platform="xhs",
+                note_id=f"source-note-with-assets-{owner.id}",
+                title="来源标题",
+                content="来源正文",
+                author_name="来源作者",
+            )
+            db.add(source_note)
+            db.flush()
+            db.add_all([
+                NoteAsset(
+                    note_id=source_note.id,
+                    asset_type="image",
+                    url="https://example.test/source-a.webp",
+                    local_path="notes/source-a.webp",
+                    sort_order=0,
+                ),
+                NoteAsset(
+                    note_id=source_note.id,
+                    asset_type="image",
+                    url="https://example.test/source-b.webp",
+                    local_path="notes/source-b.webp",
+                    sort_order=1,
+                ),
+            ])
+            db.commit()
+            headers = auth_headers(owner)
+            source_note_id = source_note.id
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/drafts",
+            headers=headers,
+            json={"platform": "xhs", "source_note_id": source_note_id, "intent": "rewrite"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["source_note_id"] == source_note_id
+        assert payload["title"] == "来源标题"
+        assert payload["body"] == "来源正文"
+
+        db = SessionLocal()
+        try:
+            copied_assets = db.scalars(
+                select(DraftAsset)
+                .where(DraftAsset.draft_id == payload["id"])
+                .order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
+            ).all()
+            assert [
+                (asset.asset_type, asset.url, asset.local_path, asset.sort_order)
+                for asset in copied_assets
+            ] == [
+                ("image", "https://example.test/source-a.webp", "notes/source-a.webp", 0),
+                ("image", "https://example.test/source-b.webp", "notes/source-b.webp", 1),
+            ]
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -272,6 +353,651 @@ def test_send_draft_to_publish_accepts_current_user_existing_managed_media_path(
             assert publish_assets[0].asset_type == "image"
             assert publish_assets[0].file_path == f"/api/files/media/{file_name}"
             assert publish_assets[0].upload_status == "pending"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_accepts_ordered_asset_file_paths(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-multi-image-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            file_name = f"xhs-image-u{owner.id}-generated-final.png"
+            download_a = f"xhs-asset-u{owner.id}-download-a.jpg"
+            download_b = f"xhs-asset-u{owner.id}-download-b.jpg"
+            (media_dir / file_name).write_bytes(b"fake-image")
+            (media_dir / download_a).write_bytes(b"download-a")
+            (media_dir / download_b).write_bytes(b"download-b")
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            monkeypatch.setattr(
+                "backend.app.api.drafts.download_asset_to_local",
+                lambda url, user_id, asset_type, platform="xhs": {
+                    "https://cdn.example.test/final-a.webp": download_a,
+                    "https://cdn.example.test/final-b.webp": download_b,
+                }.get(url),
+                raising=False,
+            )
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={
+                "publish_mode": "immediate",
+                "asset_file_paths": [
+                    "https://cdn.example.test/final-a.webp",
+                    "",
+                    f"/api/files/media/{file_name}",
+                    "https://cdn.example.test/final-a.webp",
+                    "https://cdn.example.test/final-b.webp",
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "pending"
+        assert payload["source_draft_id"] == draft_id
+
+        db = SessionLocal()
+        try:
+            publish_assets = db.scalars(
+                select(PublishAsset)
+                .where(PublishAsset.publish_job_id == payload["id"])
+                .order_by(PublishAsset.id.asc())
+            ).all()
+            assert [asset.asset_type for asset in publish_assets] == ["image", "image", "image"]
+            assert [asset.file_path for asset in publish_assets] == [
+                f"/api/files/media/{download_a}",
+                f"/api/files/media/{file_name}",
+                f"/api/files/media/{download_b}",
+            ]
+            assert [asset.upload_status for asset in publish_assets] == ["pending", "pending", "pending"]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_empty_explicit_asset_file_paths_before_creating_job(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-empty-multi-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_paths": ["", "   "]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_paths must include at least one usable image"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_too_many_asset_file_paths_before_creating_job(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    download_calls = []
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-too-many-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        def fail_if_downloaded(url, user_id, asset_type, platform="xhs"):
+            download_calls.append((url, user_id, asset_type, platform))
+            raise AssertionError("download_asset_to_local should not be called for too many explicit assets")
+
+        monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fail_if_downloaded, raising=False)
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={
+                "publish_mode": "immediate",
+                "asset_file_paths": [f"https://cdn.example.test/generated-{idx:02d}.webp" for idx in range(19)],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_paths supports at most 18 images"
+        assert download_calls == []
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_external_asset_file_path_when_download_fails_before_creating_job(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    (storage_dir / "media").mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-download-fails-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            monkeypatch.setattr(
+                "backend.app.api.drafts.download_asset_to_local",
+                lambda url, user_id, asset_type, platform="xhs": None,
+                raising=False,
+            )
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_paths": ["https://cdn.example.test/final-a.webp"]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path external image download failed"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_video_media_path_in_asset_file_paths_before_creating_job(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-video-media-path-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            file_name = f"xhs-image-u{owner.id}-not-image.mp4"
+            (media_dir / file_name).write_bytes(b"fake-video")
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_paths": [f"/api/files/media/{file_name}"]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be an image media file"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_external_asset_file_path_downloaded_as_video_and_cleans_file(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-external-video-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            file_name = f"xhs-asset-u{owner.id}-downloaded-video.mp4"
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+
+            def fake_download(url, user_id, asset_type, platform="xhs"):
+                (media_dir / file_name).write_bytes(b"fake-video")
+                return file_name
+
+            monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_paths": ["https://cdn.example.test/video.mp4"]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be an image media file"
+        assert not (media_dir / file_name).exists()
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_cleans_previous_external_download_when_later_download_fails(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    first_url = "https://cdn.example.test/final-a.jpg"
+    second_url = "https://cdn.example.test/final-b.jpg"
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-clean-explicit-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            first_file_name = f"xhs-asset-u{owner.id}-downloaded-a.jpg"
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+
+            def fake_download(url, user_id, asset_type, platform="xhs"):
+                if url == first_url:
+                    (media_dir / first_file_name).write_bytes(b"fake-image")
+                    return first_file_name
+                if url == second_url:
+                    return None
+                raise AssertionError(f"unexpected download url: {url}")
+
+            monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate", "asset_file_paths": [first_url, second_url]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path external image download failed"
+        assert not (media_dir / first_file_name).exists()
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_cleans_fallback_external_download_when_later_draft_asset_download_fails(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    first_url = "https://cdn.example.test/fallback-a.jpg"
+    second_url = "https://cdn.example.test/fallback-b.jpg"
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-clean-fallback-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            db.add_all(
+                [
+                    DraftAsset(
+                        draft_id=draft.id,
+                        asset_type="image",
+                        url=first_url,
+                        local_path="",
+                        sort_order=0,
+                    ),
+                    DraftAsset(
+                        draft_id=draft.id,
+                        asset_type="image",
+                        url=second_url,
+                        local_path="",
+                        sort_order=1,
+                    ),
+                ]
+            )
+            first_file_name = f"xhs-asset-u{owner.id}-downloaded-a.jpg"
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+
+            def fake_download(url, user_id, asset_type, platform="xhs"):
+                if url == first_url:
+                    (media_dir / first_file_name).write_bytes(b"fake-image")
+                    return first_file_name
+                if url == second_url:
+                    return None
+                raise AssertionError(f"unexpected download url: {url}")
+
+            monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path external image download failed"
+        assert not (media_dir / first_file_name).exists()
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_cleans_explicit_external_download_when_db_commit_fails(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-explicit-commit-fail-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            file_name = f"xhs-asset-u{owner.id}-commit-fail.jpg"
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+
+            def fake_download(url, user_id, asset_type, platform="xhs"):
+                assert url == "https://cdn.example.test/a.jpg"
+                (media_dir / file_name).write_bytes(b"fake-image")
+                return file_name
+
+            monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        def fail_commit(self):
+            raise RuntimeError("commit failed after download")
+
+        monkeypatch.setattr(SqlAlchemySession, "commit", fail_commit)
+
+        try:
+            response = client.post(
+                f"/api/drafts/{draft_id}/send-to-publish",
+                headers=headers,
+                json={"publish_mode": "immediate", "asset_file_paths": ["https://cdn.example.test/a.jpg"]},
+            )
+        except RuntimeError as exc:
+            assert "commit failed after download" in str(exc)
+        else:
+            assert response.status_code == 500
+
+        assert not (media_dir / file_name).exists()
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_cleans_fallback_external_download_when_db_commit_fails(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-fallback-commit-fail-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            source_url = "https://cdn.example.test/fallback-a.jpg"
+            db.add(
+                DraftAsset(
+                    draft_id=draft.id,
+                    asset_type="image",
+                    url=source_url,
+                    local_path="",
+                    sort_order=0,
+                )
+            )
+            file_name = f"xhs-asset-u{owner.id}-commit-fail.jpg"
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+
+            def fake_download(url, user_id, asset_type, platform="xhs"):
+                assert url == source_url
+                (media_dir / file_name).write_bytes(b"fake-image")
+                return file_name
+
+            monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        def fail_commit(self):
+            raise RuntimeError("commit failed after download")
+
+        monkeypatch.setattr(SqlAlchemySession, "commit", fail_commit)
+
+        try:
+            response = client.post(
+                f"/api/drafts/{draft_id}/send-to-publish",
+                headers=headers,
+                json={"publish_mode": "immediate"},
+            )
+        except RuntimeError as exc:
+            assert "commit failed after download" in str(exc)
+        else:
+            assert response.status_code == 500
+
+        assert not (media_dir / file_name).exists()
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_localizes_external_draft_asset_urls_in_fallback_before_creating_assets(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    download_calls = []
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-fallback-external-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            image_asset = db.scalars(
+                select(DraftAsset).where(DraftAsset.draft_id == draft.id, DraftAsset.asset_type == "image")
+            ).first()
+            image_asset.local_path = ""
+            image_asset.url = "https://cdn.example.test/fallback-a.webp"
+            file_name = f"xhs-asset-u{owner.id}-fallback-a.jpg"
+            (media_dir / file_name).write_bytes(b"downloaded-image")
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+
+            def fake_download(url, user_id, asset_type, platform="xhs"):
+                download_calls.append((url, user_id, asset_type, platform))
+                if url == "https://cdn.example.test/fallback-a.webp":
+                    return file_name
+                return None
+
+            monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert download_calls == [("https://cdn.example.test/fallback-a.webp", owner.id, "image", "xhs")]
+
+        db = SessionLocal()
+        try:
+            publish_assets = db.scalars(
+                select(PublishAsset)
+                .where(PublishAsset.publish_job_id == payload["id"])
+                .order_by(PublishAsset.id.asc())
+            ).all()
+            image_assets = [asset for asset in publish_assets if asset.asset_type == "image"]
+            assert [asset.file_path for asset in image_assets] == [f"/api/files/media/{file_name}"]
+            assert all(not asset.file_path.startswith("https://") for asset in image_assets)
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_too_many_fallback_image_assets_before_creating_job(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-fallback-too-many-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            for idx in range(19):
+                file_name = f"xhs-image-u{owner.id}-fallback-{idx}.png"
+                (media_dir / file_name).write_bytes(b"fake-image")
+                db.add(
+                    DraftAsset(
+                        draft_id=draft.id,
+                        asset_type="image",
+                        url=f"https://example.test/fallback-{idx}.png",
+                        local_path=file_name,
+                        sort_order=idx,
+                    )
+                )
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={"publish_mode": "immediate"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_paths supports at most 18 images"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_invalid_managed_path_in_asset_file_paths_before_creating_job(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    storage_dir = tmp_path / "storage"
+    (storage_dir / "media").mkdir(parents=True)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-multi-invalid-owner")
+            draft = create_original_draft_with_assets(db, owner)
+            monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=storage_dir))
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers=headers,
+            json={
+                "publish_mode": "immediate",
+                "asset_file_paths": [
+                    "/api/files/media/xhs-image-u999999-stolen.png",
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be a current-user managed media file"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
         finally:
             db.close()
     finally:

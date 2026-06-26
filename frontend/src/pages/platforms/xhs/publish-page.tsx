@@ -469,20 +469,24 @@ export function XhsPublishPage() {
                         {imageAssets.length > 0 && (
                           <div style={{ marginBottom: 12 }}>
                             <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 6 }}>
-                              <PictureOutlined /> 图片素材 ({imageAssets.length})
+                              <PictureOutlined /> 最终发布图片 ({imageAssets.length})
                             </Text>
                             <Image.PreviewGroup>
                               <Space size={8} wrap>
-                                {imageAssets.map((asset) => (
-                                  <Image
-                                    key={asset.id}
-                                    src={asset.file_path}
-                                    width={80}
-                                    height={80}
-                                    style={{ objectFit: "cover", borderRadius: 6 }}
-                                    referrerPolicy="no-referrer"
-                                    fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0iODAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjgwIiBoZWlnaHQ9IjgwIiBmaWxsPSIjMjYyNjI2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGRvbWluYW50LWJhc2VsaW5lPSJtaWRkbGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM4YzhjOGMiIGZvbnQtc2l6ZT0iMTIiPuWbvueJhzwvdGV4dD48L3N2Zz4="
-                                  />
+                                {imageAssets.map((asset, index) => (
+                                  <div key={asset.id} style={{ width: 88 }}>
+                                    <Image
+                                      src={asset.file_path}
+                                      width={80}
+                                      height={80}
+                                      style={{ objectFit: "cover", borderRadius: 6 }}
+                                      referrerPolicy="no-referrer"
+                                      fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0iODAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZyI+PHJlY3Qgd2lkdGg9IjgwIiBoZWlnaHQ9IjgwIiBmaWxsPSIjMjYyNjI2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGRvbWluYW50LWJhc2VsaW5lPSJtaWRkbGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM4YzhjOGMiIGZvbnQtc2l6ZT0iMTIiPuWbvueJhzwvdGV4dD48L3N2Zz4="
+                                    />
+                                    <Text type="secondary" ellipsis style={{ display: "block", fontSize: 10, marginTop: 2 }}>
+                                      #{index + 1} · {asset.upload_status}
+                                    </Text>
+                                  </div>
                                 ))}
                               </Space>
                             </Image.PreviewGroup>
@@ -504,7 +508,14 @@ export function XhsPublishPage() {
                           </div>
                         )}
 
-                        {!hasAnyAsset && <Text type="secondary">暂无素材</Text>}
+                        {!hasAnyAsset && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="暂无最终发布图片"
+                            description="请从草稿工坊进入图片工坊，选择原图、上传图或 AI 生成图后再送入发布中心。"
+                          />
+                        )}
 
                         {selectedJob.publish_options?.draft_tags && Array.isArray(selectedJob.publish_options.draft_tags) && selectedJob.publish_options.draft_tags.length > 0 && (
                           <div style={{ marginTop: 12 }}>

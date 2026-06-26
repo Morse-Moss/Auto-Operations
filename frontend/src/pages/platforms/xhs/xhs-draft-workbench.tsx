@@ -92,6 +92,37 @@ function sourceNoteImageCandidates(note: SavedNote | null, existingUrls = new Se
     .map((url) => ({ url, source: "source_note" }));
 }
 
+function renderDraftSourceAssetPreview(sourceAssets: DraftAsset[]) {
+  const imageAssets = sourceAssets.filter((asset) => asset.asset_type === "image" && isUsableImageUrl(asset.url));
+  if (imageAssets.length === 0) {
+    return (
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        这个草稿暂无来源图片，可在图片工坊上传参考图继续。
+      </Text>
+    );
+  }
+
+  const visibleAssets = imageAssets.slice(0, 6);
+  const hiddenCount = imageAssets.length - visibleAssets.length;
+  return (
+    <Space direction="vertical" size={6} style={{ width: "100%" }}>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        这些图片会随“送入图片工坊”一起带入，后续可选择最终发布图。
+      </Text>
+      <Space size={8} wrap>
+        {visibleAssets.map((asset, index) => (
+          <div key={asset.id} style={{ width: 56 }}>
+            <div style={{ width: 56, height: 56, borderRadius: 6, overflow: "hidden", background: "#1a1a1a", border: "1px solid #303030" }}>
+              <img src={asset.url} alt={`来源图片 ${index + 1}`} referrerPolicy="no-referrer" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </div>
+          </div>
+        ))}
+        {hiddenCount > 0 ? <Tag color="blue">+{hiddenCount}</Tag> : null}
+      </Space>
+    </Space>
+  );
+}
+
 export function XhsDraftsPage() {
   const navigate = useNavigate();
   const adapter = useMemo(() => createXhsDraftWorkbenchAdapter(), []);
@@ -295,6 +326,9 @@ export function XhsDraftsPage() {
                 </Tag>
                 <Text type="secondary">素材 {sourceAssets.length} 项</Text>
               </Space>
+              <div style={{ marginTop: 10 }}>
+                {renderDraftSourceAssetPreview(sourceAssets)}
+              </div>
             </Card>
           ) : null}
 
