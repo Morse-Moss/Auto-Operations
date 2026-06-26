@@ -3,6 +3,7 @@ import type { DraftAsset } from "../../../lib/api";
 import {
   clearDraftImageStudioContext,
   DRAFT_IMAGE_STUDIO_CONTEXT_TTL_MS,
+  draftAssetImageUrl,
   draftAssetToImageStudioCandidate,
   isUsableImageUrl,
   loadDraftImageStudioContext,
@@ -60,7 +61,7 @@ export function clearImageStudioDraftContext(): void {
   clearDraftImageStudioContext(XHS_IMAGE_STUDIO_DRAFT_CONTEXT_KEY);
 }
 
-export { isUsableImageUrl };
+export { draftAssetImageUrl, isUsableImageUrl };
 
 export function draftAssetToCandidate(asset: DraftAsset): XhsImageStudioCandidateImage | null {
   const candidate = draftAssetToImageStudioCandidate(asset);

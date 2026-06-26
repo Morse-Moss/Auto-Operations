@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session as SqlAlchemySession, sessionmaker
 
 from backend.app.core.database import Base, get_db
@@ -39,6 +40,13 @@ def create_user(db, username: str) -> User:
 
 def auth_headers(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(user.id)}"}
+
+
+def set_draft_media_storage(monkeypatch, tmp_path):
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr("backend.app.api.drafts.get_settings", lambda: SimpleNamespace(storage_dir=str(tmp_path)))
+    return media_dir
 
 
 def create_original_draft_with_assets(db, user: User) -> AiDraft:
@@ -193,7 +201,7 @@ def test_create_draft_from_source_note_copies_note_assets_to_draft_assets(tmp_pa
             json={"platform": "xhs", "source_note_id": source_note_id, "intent": "rewrite"},
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.json()
         payload = response.json()
         assert payload["source_note_id"] == source_note_id
         assert payload["title"] == "来源标题"
@@ -213,6 +221,526 @@ def test_create_draft_from_source_note_copies_note_assets_to_draft_assets(tmp_pa
                 ("image", "https://example.test/source-a.webp", "notes/source-a.webp", 0),
                 ("image", "https://example.test/source-b.webp", "notes/source-b.webp", 1),
             ]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_returns_existing_local_path(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-existing-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://example.test/existing.jpg",
+                local_path=f"xhs-asset-u{owner.id}-existing.jpg",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            expected_local_path = asset.local_path
+            media_dir.joinpath(expected_local_path).write_bytes(b"fake image")
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        def fail_if_downloaded(url, user_id, asset_type, platform="xhs"):
+            raise AssertionError("download_asset_to_local should not be called for existing local_path")
+
+        monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fail_if_downloaded, raising=False)
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["id"] == asset_id
+        assert payload["local_path"] == expected_local_path
+        assert payload["url"] == f"/api/files/media/{expected_local_path}"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_rejects_existing_non_image_local_path(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-existing-video-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            file_name = f"xhs-asset-u{owner.id}-existing.mp4"
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://example.test/existing.jpg",
+                local_path=file_name,
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            media_dir.joinpath(file_name).write_bytes(b"fake video")
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be an image media file"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_downloads_external_url(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    download_calls = []
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-download-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://cdn.example.test/a.jpg",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+            file_name = f"xhs-asset-u{owner.id}-new.jpg"
+        finally:
+            db.close()
+
+        def fake_download(url, user_id, asset_type, platform="xhs"):
+            download_calls.append((url, user_id, asset_type, platform))
+            media_dir.joinpath(file_name).write_bytes(b"fake image")
+            return file_name
+
+        monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["id"] == asset_id
+        assert payload["local_path"] == file_name
+        assert payload["url"] == f"/api/files/media/{file_name}"
+        assert download_calls == [("https://cdn.example.test/a.jpg", owner.id, "image", "xhs")]
+
+        db = SessionLocal()
+        try:
+            persisted = db.get(DraftAsset, asset_id)
+            assert persisted.local_path == file_name
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_rejects_downloaded_non_image_and_deletes_file(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-download-video-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://cdn.example.test/a.mp4",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+            file_name = f"xhs-asset-u{owner.id}-downloaded.mp4"
+        finally:
+            db.close()
+
+        def fake_download(url, user_id, asset_type, platform="xhs"):
+            media_dir.joinpath(file_name).write_bytes(b"fake video")
+            return file_name
+
+        monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be an image media file"
+        assert not media_dir.joinpath(file_name).exists()
+
+        db = SessionLocal()
+        try:
+            persisted = db.get(DraftAsset, asset_id)
+            assert persisted.local_path == ""
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_deletes_download_when_commit_fails(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-commit-failure-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://cdn.example.test/a.jpg",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+            file_name = f"xhs-asset-u{owner.id}-commit-failure.jpg"
+        finally:
+            db.close()
+
+        def fake_download(url, user_id, asset_type, platform="xhs"):
+            media_dir.joinpath(file_name).write_bytes(b"fake image")
+            return file_name
+
+        def fail_commit(self):
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+        monkeypatch.setattr(SqlAlchemySession, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert not media_dir.joinpath(file_name).exists()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_deletes_download_when_conditional_update_loses_race(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-concurrent-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://cdn.example.test/a.jpg",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+            downloaded_file_name = f"xhs-asset-u{owner.id}-downloaded-race.jpg"
+            existing_file_name = f"xhs-asset-u{owner.id}-existing-race.jpg"
+            media_dir.joinpath(existing_file_name).write_bytes(b"existing image")
+        finally:
+            db.close()
+
+        def fake_download(url, user_id, asset_type, platform="xhs"):
+            media_dir.joinpath(downloaded_file_name).write_bytes(b"downloaded image")
+            return downloaded_file_name
+
+        original_execute = SqlAlchemySession.execute
+
+        def simulate_lost_conditional_update(self, statement, *args, **kwargs):
+            if getattr(statement, "is_update", False):
+                compiled = statement.compile(compile_kwargs={"literal_binds": True})
+                if "draft_assets" in str(compiled) and f"draft_assets.id = {asset_id}" in str(compiled):
+                    concurrent_db = SessionLocal()
+                    try:
+                        original_execute(
+                            concurrent_db,
+                            update(DraftAsset)
+                            .where(DraftAsset.id == asset_id)
+                            .values(local_path=existing_file_name),
+                        )
+                        concurrent_db.commit()
+                    finally:
+                        concurrent_db.close()
+                    return SimpleNamespace(rowcount=0)
+            return original_execute(self, statement, *args, **kwargs)
+
+        monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fake_download, raising=False)
+        monkeypatch.setattr(SqlAlchemySession, "execute", simulate_lost_conditional_update)
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["local_path"] == existing_file_name
+        assert payload["url"] == f"/api/files/media/{existing_file_name}"
+        assert not media_dir.joinpath(downloaded_file_name).exists()
+
+        db = SessionLocal()
+        try:
+            persisted = db.get(DraftAsset, asset_id)
+            assert persisted.local_path == existing_file_name
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_rejects_download_failure(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-failure-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://cdn.example.test/missing.jpg",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        monkeypatch.setattr(
+            "backend.app.api.drafts.download_asset_to_local",
+            lambda url, user_id, asset_type, platform="xhs": None,
+            raising=False,
+        )
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "图片本地化失败，请先上传本地图或更换图片。"
+
+        db = SessionLocal()
+        try:
+            persisted = db.get(DraftAsset, asset_id)
+            assert persisted.local_path == ""
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_rejects_non_image_asset(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-video-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="video",
+                url="https://cdn.example.test/a.mp4",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Only image draft assets can be localized"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_rejects_non_http_url(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    download_calls = []
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-local-url-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="/api/files/media/missing.jpg",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        def fail_if_downloaded(url, user_id, asset_type, platform="xhs"):
+            download_calls.append((url, user_id, asset_type, platform))
+            raise AssertionError("download_asset_to_local should not be called for non-http urls")
+
+        monkeypatch.setattr("backend.app.api.drafts.download_asset_to_local", fail_if_downloaded, raising=False)
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "图片本地化失败，请先上传本地图或更换图片。"
+        assert download_calls == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_draft_asset_rejects_other_user_asset(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-localize-owner")
+            intruder = create_user(db, "draft-localize-intruder")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type="image",
+                url="https://cdn.example.test/a.jpg",
+                local_path="",
+                sort_order=0,
+            )
+            db.add(asset)
+            db.commit()
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(intruder)
+        finally:
+            db.close()
+
+        response = client.post(f"/api/drafts/{draft_id}/assets/{asset_id}/localize", headers=headers)
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Draft not found"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_delete_draft_asset_does_not_delete_source_note_asset(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-delete-source-asset-owner")
+            account = PlatformAccount(
+                user_id=owner.id,
+                platform="xhs",
+                sub_type="pc",
+                external_user_id=f"delete-source-account-{owner.id}",
+                nickname="来源账号",
+                status="active",
+            )
+            db.add(account)
+            db.flush()
+            source_note = Note(
+                user_id=owner.id,
+                platform_account_id=account.id,
+                platform="xhs",
+                note_id=f"delete-source-note-{owner.id}",
+                title="来源标题",
+                content="来源正文",
+                author_name="来源作者",
+            )
+            db.add(source_note)
+            db.flush()
+            source_asset = NoteAsset(
+                note_id=source_note.id,
+                asset_type="image",
+                url="https://example.test/source.jpg",
+                local_path="notes/source.jpg",
+                sort_order=0,
+            )
+            draft = AiDraft(
+                user_id=owner.id,
+                platform="xhs",
+                title="草稿",
+                body="正文",
+                tags=[],
+                source_note_id=source_note.id,
+            )
+            db.add_all([source_asset, draft])
+            db.flush()
+            draft_asset = DraftAsset(
+                draft_id=draft.id,
+                asset_type=source_asset.asset_type,
+                url=source_asset.url,
+                local_path=source_asset.local_path,
+                sort_order=source_asset.sort_order,
+            )
+            db.add(draft_asset)
+            db.commit()
+            draft_id = draft.id
+            draft_asset_id = draft_asset.id
+            source_asset_id = source_asset.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.delete(f"/api/drafts/{draft_id}/assets/{draft_asset_id}", headers=headers)
+
+        assert response.status_code == 200
+
+        db = SessionLocal()
+        try:
+            assert db.get(DraftAsset, draft_asset_id) is None
+            assert db.get(NoteAsset, source_asset_id) is not None
         finally:
             db.close()
     finally:
@@ -282,6 +810,133 @@ def test_update_wechat_official_draft_preserves_markdown_body_and_tags(tmp_path)
         assert "**重点**" in payload["body"]
         assert "- 第一条" in payload["body"]
         assert payload["tags"] == tags
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_add_draft_asset_rejects_wrong_user_local_path(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-add-asset-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.commit()
+            wrong_user_file_name = f"xhs-upload-u{owner.id + 999}-stolen.jpg"
+            media_dir.joinpath(wrong_user_file_name).write_bytes(b"fake-image")
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/assets",
+            headers=headers,
+            json={"asset_type": "image", "local_path": wrong_user_file_name},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be a current-user managed media file"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_add_draft_asset_accepts_current_user_upload_file_name(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-add-asset-upload-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.commit()
+            file_name = f"xhs-upload-u{owner.id}-local.jpg"
+            media_dir.joinpath(file_name).write_bytes(b"fake-image")
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/drafts/{draft_id}/assets",
+            headers=headers,
+            json={"asset_type": "image", "local_path": file_name},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["local_path"] == file_name
+        assert payload["url"] == f"/api/files/media/{file_name}"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_update_draft_asset_rejects_wrong_user_local_path(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-update-asset-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            asset = DraftAsset(draft_id=draft.id, asset_type="image", url="https://example.test/a.jpg", local_path="", sort_order=0)
+            db.add(asset)
+            db.commit()
+            wrong_user_file_name = f"xhs-upload-u{owner.id + 999}-stolen.jpg"
+            media_dir.joinpath(wrong_user_file_name).write_bytes(b"fake-image")
+            draft_id = draft.id
+            asset_id = asset.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.patch(
+            f"/api/drafts/{draft_id}/assets/{asset_id}",
+            headers=headers,
+            json={"local_path": wrong_user_file_name},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be a current-user managed media file"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_send_draft_to_publish_rejects_wrong_user_fallback_local_path(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    media_dir = set_draft_media_storage(monkeypatch, tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-publish-fallback-wrong-user-owner")
+            draft = AiDraft(user_id=owner.id, platform="xhs", title="草稿", body="正文", tags=[])
+            db.add(draft)
+            db.flush()
+            wrong_user_file_name = f"xhs-upload-u{owner.id + 999}-stolen.jpg"
+            media_dir.joinpath(wrong_user_file_name).write_bytes(b"fake-image")
+            db.add(DraftAsset(draft_id=draft.id, asset_type="image", url="", local_path=wrong_user_file_name, sort_order=0))
+            db.commit()
+            draft_id = draft.id
+            headers = auth_headers(owner)
+        finally:
+            db.close()
+
+        response = client.post(f"/api/drafts/{draft_id}/send-to-publish", headers=headers, json={"publish_mode": "immediate"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "asset_file_path must be a current-user managed media file"
+
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(PublishJob)).all() == []
+            assert db.scalars(select(PublishAsset)).all() == []
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)
 

@@ -163,6 +163,26 @@ def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
     assert "采集完成" in crawler_page_source
 
 
+def test_image_studio_draft_asset_url_resolver_contract():
+    source = open("frontend/src/components/image-studio/draft-image-studio-context.ts", encoding="utf-8").read()
+    xhs_source = open("frontend/src/pages/platforms/xhs/xhs-image-studio-context.ts", encoding="utf-8").read()
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+
+    assert "export function draftAssetImageUrl(asset: DraftAsset): string" in source
+    assert "if (isUsableImageUrl(asset.url)) return asset.url;" in source
+    assert "const rawLocalPath: unknown = asset.local_path;" in source
+    assert "if (isUsableImageUrl(rawLocalPath)) return rawLocalPath;" in source
+    assert r"replace(/^\/api\/files\/media\//" in source
+    assert "`/api/files/media/${fileName}`" in source
+    assert 'asset.asset_type !== "image"' in source
+    assert re.search(
+        r"draftAssetToImageStudioCandidate[\s\S]*?draftAssetImageUrl\(asset\)",
+        source,
+    )
+    assert "draftAssetImageUrl" in xhs_source
+    assert "export async function localizeDraftAsset" in api_source
+    assert "`/drafts/${draftId}/assets/${assetId}/localize`" in api_source
+
 def test_frontend_exposes_task_10_to_14_api_and_type_contracts():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()

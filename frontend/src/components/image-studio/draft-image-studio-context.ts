@@ -170,11 +170,26 @@ export function isUsableImageUrl(value: unknown): value is string {
   return typeof value === "string" && (/^https?:\/\//i.test(value) || value.startsWith("/api/")) && !/\.(mp4|mov|m4v|avi|webm)(\?|#|$)/i.test(value);
 }
 
+export function draftAssetImageUrl(asset: DraftAsset): string {
+  if (asset.asset_type !== "image") return "";
+  if (isUsableImageUrl(asset.url)) return asset.url;
+
+  const rawLocalPath: unknown = asset.local_path;
+  if (isUsableImageUrl(rawLocalPath)) return rawLocalPath;
+
+  const localPath = typeof rawLocalPath === "string" ? rawLocalPath.trim() : "";
+  if (!localPath) return "";
+
+  const fileName = localPath.replace(/^\/api\/files\/media\//, "").split(/[\\/]/).pop()?.trim() ?? "";
+  return fileName ? `/api/files/media/${fileName}` : "";
+}
+
 export function draftAssetToImageStudioCandidate(asset: DraftAsset): DraftImageStudioCandidateImage | null {
-  if (asset.asset_type !== "image" || !isUsableImageUrl(asset.url)) return null;
+  const url = draftAssetImageUrl(asset);
+  if (!url) return null;
   return {
     id: asset.id,
-    url: asset.url,
+    url,
     local_path: asset.local_path,
     source: "draft_asset",
   };

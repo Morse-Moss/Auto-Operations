@@ -1082,6 +1082,11 @@ export async function updateDraftAsset(draftId: number, assetId: number, payload
   return response.data;
 }
 
+export async function localizeDraftAsset(draftId: number, assetId: number): Promise<DraftAsset> {
+  const response = await http.post<DraftAsset>(`/drafts/${draftId}/assets/${assetId}/localize`);
+  return response.data;
+}
+
 export async function reorderDraftAssets(draftId: number, assetIds: number[]): Promise<void> {
   await http.put(`/drafts/${draftId}/assets/reorder`, { asset_ids: assetIds });
 }

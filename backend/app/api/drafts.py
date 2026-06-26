@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -123,6 +123,12 @@ def _validate_handoff_asset_file_path(file_path: str, current_user: User, *, req
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path must be an image media file")
 
 
+def _validate_draft_asset_local_path(local_path: str, current_user: User, *, require_image: bool = False) -> str:
+    file_name = _media_file_name_from_path(f"/api/files/media/{local_path}")
+    _validate_handoff_asset_file_path(f"/api/files/media/{file_name}", current_user, require_image=require_image)
+    return file_name
+
+
 def _is_external_image_url(file_path: str) -> bool:
     return file_path.startswith("http://") or file_path.startswith("https://")
 
@@ -191,9 +197,18 @@ def _normalize_handoff_asset_file_paths(payload: DraftSendToPublishRequest, curr
 
 def _publish_file_path_from_draft_asset(asset: DraftAsset, current_user: User, downloaded_file_names: list[str]) -> str:
     if asset.local_path:
-        if asset.asset_type == "image" and not _is_image_media_file(asset.local_path):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_file_path must be an image media file")
-        return f"/api/files/media/{asset.local_path}"
+        try:
+            file_name = _validate_draft_asset_local_path(
+                asset.local_path,
+                current_user,
+                require_image=asset.asset_type == "image",
+            )
+            return f"/api/files/media/{file_name}"
+        except HTTPException:
+            if asset.asset_type != "image":
+                return asset.url
+            if not (asset.url and _is_external_image_url(asset.url)):
+                raise
     if asset.url and _is_external_image_url(asset.url):
         file_name = download_asset_to_local(asset.url, current_user.id, asset.asset_type, platform="xhs")
         if not file_name:
@@ -583,18 +598,78 @@ def add_draft_asset(
     draft = db.get(AiDraft, draft_id)
     if draft is None or draft.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Draft not found")
+    local_path = payload.local_path
+    if local_path:
+        local_path = _validate_draft_asset_local_path(
+            local_path,
+            current_user,
+            require_image=payload.asset_type == "image",
+        )
     max_order = db.scalar(select(func.max(DraftAsset.sort_order)).where(DraftAsset.draft_id == draft.id)) or 0
     asset = DraftAsset(
         draft_id=draft.id,
         asset_type=payload.asset_type,
         url=payload.url,
-        local_path=payload.local_path,
+        local_path=local_path,
         sort_order=max_order + 1,
     )
     db.add(asset)
     db.commit()
     db.refresh(asset)
     return _serialize_draft_asset(asset)
+
+
+@router.post("/{draft_id}/assets/{asset_id}/localize")
+def localize_draft_asset(
+    draft_id: int,
+    asset_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = db.get(AiDraft, draft_id)
+    if draft is None or draft.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
+    asset = db.scalars(select(DraftAsset).where(DraftAsset.id == asset_id, DraftAsset.draft_id == draft.id)).first()
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    if asset.asset_type != "image":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image draft assets can be localized")
+    if asset.local_path:
+        _validate_draft_asset_local_path(asset.local_path, current_user, require_image=True)
+        return _serialize_draft_asset(asset)
+    if not asset.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片本地化失败，请先上传本地图或更换图片。")
+    file_name = download_asset_to_local(asset.url, current_user.id, "image", platform="xhs")
+    if not file_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片本地化失败，请先上传本地图或更换图片。")
+
+    downloaded_file_names = [file_name]
+    try:
+        _validate_handoff_asset_file_path(f"/api/files/media/{file_name}", current_user, require_image=True)
+
+        result = db.execute(
+            update(DraftAsset)
+            .where(DraftAsset.id == asset.id, DraftAsset.local_path == "")
+            .values(local_path=file_name)
+        )
+        if result.rowcount == 1:
+            db.commit()
+            downloaded_file_names.clear()
+            db.refresh(asset)
+            return _serialize_draft_asset(asset)
+
+        db.rollback()
+        _delete_downloaded_media_files(downloaded_file_names)
+        downloaded_file_names.clear()
+        existing_asset = db.scalars(select(DraftAsset).where(DraftAsset.id == asset_id, DraftAsset.draft_id == draft.id)).first()
+        if existing_asset is None or not existing_asset.local_path:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Draft asset localization was updated concurrently; please retry.")
+        _validate_draft_asset_local_path(existing_asset.local_path, current_user, require_image=True)
+        return _serialize_draft_asset(existing_asset)
+    except Exception:
+        db.rollback()
+        _delete_downloaded_media_files(downloaded_file_names)
+        raise
 
 
 @router.delete("/{draft_id}/assets/{asset_id}")
@@ -637,7 +712,11 @@ def update_draft_asset(
     if payload.url is not None:
         asset.url = payload.url
     if payload.local_path is not None:
-        asset.local_path = payload.local_path
+        asset.local_path = _validate_draft_asset_local_path(
+            payload.local_path,
+            current_user,
+            require_image=asset.asset_type == "image",
+        ) if payload.local_path else ""
     db.commit()
     db.refresh(asset)
     return _serialize_draft_asset(asset)

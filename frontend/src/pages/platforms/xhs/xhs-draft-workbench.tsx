@@ -1,20 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Card, Collapse, Empty, Input, Space, Tag, Typography, message as antMessage } from "antd";
-import { EditOutlined, LinkOutlined, PictureOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Collapse, Empty, Input, Modal, Select, Space, Tag, Typography, Upload, message as antMessage } from "antd";
+import { DeleteOutlined, EditOutlined, LinkOutlined, PictureOutlined, ReloadOutlined, SaveOutlined, UploadOutlined } from "@ant-design/icons";
 
 import { DraftWorkbenchShell, useDraftWorkbench } from "../../../components/draft-workbench";
 import {
+  addDraftAsset,
+  deleteDraftAsset,
   fetchDraftAssets,
   fetchSavedNote,
+  fetchTask,
   generateTagOptions,
   generateTitleOptions,
+  localizeDraftAsset,
   rewriteDraftWithAi,
   sendDraftToPublish,
+  startImageGenerationTask,
   updateDraft,
+  uploadAssetFile,
 } from "../../../lib/api";
 import type { DraftAsset } from "../../../lib/api";
-import type { SavedNote } from "../../../types";
+import type { GeneratedImageAsset, GenerateImageResult, SavedNote, TaskRecord } from "../../../types";
 
 import { createXhsDraftWorkbenchAdapter } from "./xhs-draft-workbench-adapter";
 import type { RewriteTemplateKey } from "./rewrite-templates";
@@ -26,11 +32,41 @@ import {
   toRewriteCandidate,
 } from "./xhs-rewrite-candidates";
 import type { RewriteCandidateMap } from "./xhs-rewrite-candidates";
-import { draftAssetToCandidate, isUsableImageUrl, saveImageStudioDraftContext } from "./xhs-image-studio-context";
+import { draftAssetImageUrl, draftAssetToCandidate, isUsableImageUrl, saveImageStudioDraftContext } from "./xhs-image-studio-context";
 import type { XhsImageStudioCandidateImage } from "./xhs-image-studio-context";
 
 const { Paragraph, Text } = Typography;
 const { TextArea } = Input;
+const IMAGE_GENERATION_POLL_INTERVAL_MS = 3000;
+const IMAGE_GENERATION_MAX_POLLS = 220;
+type ImageAspectRatio = "auto" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function imageResultFromTask(task: TaskRecord): GenerateImageResult | null {
+  const taskRecord = task as TaskRecord & { result?: unknown };
+  const result = taskRecord.result ?? task.payload.result ?? task.payload;
+  if (!result || typeof result !== "object") return null;
+  const record = result as Record<string, unknown>;
+  return typeof record.url === "string" && record.url
+    ? {
+      url: record.url,
+      raw: record.raw,
+      asset: record.asset as GeneratedImageAsset | undefined,
+    }
+    : null;
+}
+
+function taskErrorMessage(task: TaskRecord): string {
+  const error = task.payload.error;
+  return typeof error === "string" && error ? error : "AI 图片生成失败，请检查任务详情。";
+}
+
+function fileNameFrom(filePath: string): string {
+  return filePath.replace(/^\/api\/files\/media\//, "").split(/[\\/]/).pop() ?? filePath;
+}
 
 function getNoteUrl(note: SavedNote): string {
   const raw = note.raw_json ?? {};
@@ -39,6 +75,20 @@ function getNoteUrl(note: SavedNote): string {
     if (typeof value === "string" && value.startsWith("http")) return value;
   }
   return `https://www.xiaohongshu.com/explore/${note.note_id}`;
+}
+
+function normalizeTagName(value: string): string {
+  return value.replace(/^[#\s]+/, "").trim();
+}
+
+function appendHashtag(body: string, tagName: string): string {
+  const clean = normalizeTagName(tagName);
+  if (!clean) return body;
+
+  const hashtag = `#${clean}`;
+  if (body.includes(hashtag)) return body;
+  if (!body.trim()) return hashtag;
+  return `${body.trimEnd()}\n\n${hashtag}`;
 }
 
 function collectImageUrls(value: unknown, urls: Set<string>): void {
@@ -92,8 +142,8 @@ function sourceNoteImageCandidates(note: SavedNote | null, existingUrls = new Se
     .map((url) => ({ url, source: "source_note" }));
 }
 
-function renderDraftSourceAssetPreview(sourceAssets: DraftAsset[]) {
-  const imageAssets = sourceAssets.filter((asset) => asset.asset_type === "image" && isUsableImageUrl(asset.url));
+function renderDraftSourceAssetPreview(draftAssets: DraftAsset[]) {
+  const imageAssets = draftAssets.filter((asset) => asset.asset_type === "image" && Boolean(draftAssetImageUrl(asset)));
   if (imageAssets.length === 0) {
     return (
       <Text type="secondary" style={{ fontSize: 12 }}>
@@ -113,7 +163,7 @@ function renderDraftSourceAssetPreview(sourceAssets: DraftAsset[]) {
         {visibleAssets.map((asset, index) => (
           <div key={asset.id} style={{ width: 56 }}>
             <div style={{ width: 56, height: 56, borderRadius: 6, overflow: "hidden", background: "#1a1a1a", border: "1px solid #303030" }}>
-              <img src={asset.url} alt={`来源图片 ${index + 1}`} referrerPolicy="no-referrer" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <img src={draftAssetImageUrl(asset)} alt={`来源图片 ${index + 1}`} referrerPolicy="no-referrer" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
           </div>
         ))}
@@ -128,7 +178,9 @@ export function XhsDraftsPage() {
   const adapter = useMemo(() => createXhsDraftWorkbenchAdapter(), []);
   const controller = useDraftWorkbench(adapter);
   const [sourceNote, setSourceNote] = useState<SavedNote | null>(null);
-  const [sourceAssets, setSourceAssets] = useState<DraftAsset[]>([]);
+  const [draftAssets, setDraftAssets] = useState<DraftAsset[]>([]);
+  const [draftAssetUrl, setDraftAssetUrl] = useState("");
+  const [isUpdatingDraftAssets, setIsUpdatingDraftAssets] = useState(false);
   const [rewriteTemplate, setRewriteTemplate] = useState<RewriteTemplateKey>(DEFAULT_REWRITE_TEMPLATE_KEY);
   const [instruction, setInstruction] = useState(REWRITE_TEMPLATES[DEFAULT_REWRITE_TEMPLATE_KEY].instruction);
   const [systemPrompt, setSystemPrompt] = useState("你是小红书内容创作助手，擅长写吸引人的标题和正文。");
@@ -138,6 +190,10 @@ export function XhsDraftsPage() {
   const [isSendingPublish, setIsSendingPublish] = useState(false);
   const [isSendingImageStudio, setIsSendingImageStudio] = useState(false);
   const [rewriteCandidates, setRewriteCandidates] = useState<RewriteCandidateMap>({});
+  const [editingAsset, setEditingAsset] = useState<DraftAsset | null>(null);
+  const [editImagePrompt, setEditImagePrompt] = useState("");
+  const [editImageAspectRatio, setEditImageAspectRatio] = useState<ImageAspectRatio>("auto");
+  const [isEditingImage, setIsEditingImage] = useState(false);
 
   const selectedDraft = controller.selectedDraft;
   const selectedSourceNoteId = selectedDraft?.source_note_id ?? null;
@@ -145,31 +201,41 @@ export function XhsDraftsPage() {
   const hasSourceNote = Boolean(selectedSourceNoteId);
   const activeRewriteTemplate = REWRITE_TEMPLATES[rewriteTemplate];
   const activeRewriteCandidate = getRewriteCandidate(rewriteCandidates, rewriteTemplate);
+  const draftImageAssets = draftAssets.filter((asset) => asset.asset_type === "image" && Boolean(draftAssetImageUrl(asset)));
 
   useEffect(() => {
     setSourceNote(null);
-    setSourceAssets([]);
-    if (!selectedDraft?.source_note_id) {
+    setDraftAssets([]);
+    if (!selectedDraft) {
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const [note, assets] = await Promise.all([
-          fetchSavedNote(selectedDraft.source_note_id!),
-          fetchDraftAssets(selectedDraft.id),
-        ]);
+        const assets = await fetchDraftAssets(selectedDraft.id);
         if (!cancelled) {
-          setSourceNote(note);
-          setSourceAssets(assets.items);
+          setDraftAssets(assets.items);
         }
       } catch {
         if (!cancelled) {
-          setSourceNote(null);
-          setSourceAssets([]);
+          setDraftAssets([]);
         }
       }
     })();
+    if (selectedDraft.source_note_id) {
+      (async () => {
+        try {
+          const note = await fetchSavedNote(selectedDraft.source_note_id!);
+          if (!cancelled) {
+            setSourceNote(note);
+          }
+        } catch {
+          if (!cancelled) {
+            setSourceNote(null);
+          }
+        }
+      })();
+    }
     return () => {
       cancelled = true;
     };
@@ -177,7 +243,122 @@ export function XhsDraftsPage() {
 
   useEffect(() => {
     setRewriteCandidates({});
+    setDraftAssetUrl("");
   }, [selectedDraft?.id]);
+
+  async function refreshDraftAssets(draftId = selectedDraft?.id) {
+    if (!draftId) {
+      setDraftAssets([]);
+      return;
+    }
+    const assets = await fetchDraftAssets(draftId);
+    setDraftAssets(assets.items);
+  }
+
+  async function handleAddDraftAssetUrl() {
+    if (!selectedDraft) return;
+    const url = draftAssetUrl.trim();
+    if (!isUsableImageUrl(url)) {
+      antMessage.warning("请输入有效的图片 URL。");
+      return;
+    }
+    setIsUpdatingDraftAssets(true);
+    try {
+      await addDraftAsset(selectedDraft.id, { asset_type: "image", url });
+      setDraftAssetUrl("");
+      await refreshDraftAssets(selectedDraft.id);
+      antMessage.success("已添加草稿图片。");
+    } catch (error) {
+      antMessage.error(error instanceof Error ? error.message : "添加草稿图片失败");
+    } finally {
+      setIsUpdatingDraftAssets(false);
+    }
+  }
+
+  async function handleUploadDraftAsset(file: File) {
+    if (!selectedDraft) return false;
+    setIsUpdatingDraftAssets(true);
+    try {
+      const uploaded = await uploadAssetFile(file);
+      await addDraftAsset(selectedDraft.id, { asset_type: "image", local_path: uploaded.file_name });
+      await refreshDraftAssets(selectedDraft.id);
+      antMessage.success("已上传草稿图片。");
+    } catch (error) {
+      antMessage.error(error instanceof Error ? error.message : "上传草稿图片失败");
+    } finally {
+      setIsUpdatingDraftAssets(false);
+    }
+    return false;
+  }
+
+  async function handleDeleteDraftAsset(asset: DraftAsset) {
+    if (!selectedDraft) return;
+    setIsUpdatingDraftAssets(true);
+    try {
+      await deleteDraftAsset(selectedDraft.id, asset.id);
+      await refreshDraftAssets(selectedDraft.id);
+      antMessage.success("已删除草稿图片。");
+    } catch (error) {
+      antMessage.error(error instanceof Error ? error.message : "删除草稿图片失败");
+    } finally {
+      setIsUpdatingDraftAssets(false);
+    }
+  }
+
+  function openImageEditModal(asset: DraftAsset) {
+    setEditingAsset(asset);
+    setEditImagePrompt("");
+    setEditImageAspectRatio("auto");
+  }
+
+  async function handleEditDraftAssetImage() {
+    if (!selectedDraft || !editingAsset) return;
+    const prompt = editImagePrompt.trim();
+    if (!prompt) {
+      antMessage.warning("请填写 AI 编辑提示词。");
+      return;
+    }
+    setIsEditingImage(true);
+    try {
+      const localizedAsset = await localizeDraftAsset(selectedDraft.id, editingAsset.id);
+      const referenceUrl = draftAssetImageUrl(localizedAsset);
+      if (!referenceUrl.startsWith("/api/files/media/")) {
+        throw new Error("图片本地化失败，请先上传本地图或更换图片。");
+      }
+      const startedTask = await startImageGenerationTask({
+        prompt,
+        reference_images: [referenceUrl],
+        save_to_assets: true,
+        aspect_ratio: editImageAspectRatio,
+      });
+      for (let index = 0; index < IMAGE_GENERATION_MAX_POLLS; index += 1) {
+        await sleep(IMAGE_GENERATION_POLL_INTERVAL_MS);
+        const task = await fetchTask(startedTask.task_id);
+        if (task.status === "completed") {
+          const result = imageResultFromTask(task);
+          if (!result?.asset?.file_path) {
+            throw new Error("AI 图片任务已完成，但没有返回可新增的图片资产。");
+          }
+          await addDraftAsset(selectedDraft.id, {
+            asset_type: "image",
+            local_path: fileNameFrom(result.asset.file_path),
+          });
+          await refreshDraftAssets(selectedDraft.id);
+          setEditingAsset(null);
+          antMessage.success("AI 编辑图已新增。");
+          return;
+        }
+        if (["failed", "cancelled", "exhausted"].includes(task.status)) {
+          throw new Error(taskErrorMessage(task));
+        }
+      }
+      throw new Error(`AI 图片生成任务仍在运行（#${startedTask.task_id}），请稍后到任务中心查看。`);
+    } catch (error) {
+      antMessage.error(error instanceof Error ? error.message : "AI 编辑图片失败");
+    } finally {
+      setIsEditingImage(false);
+    }
+  }
 
   async function handleRewrite() {
     if (!selectedDraft) return;
@@ -211,6 +392,16 @@ export function XhsDraftsPage() {
   function handleDiscardRewriteCandidate() {
     setRewriteCandidates((current) => clearRewriteCandidate(current, rewriteTemplate));
     antMessage.success("已放弃当前模式候选。");
+  }
+
+  function handleAdoptTagOption(option: string) {
+    const clean = normalizeTagName(option);
+    if (!clean) return;
+
+    if (!controller.tags.some((tag) => tag.name === clean)) {
+      controller.setTags([...controller.tags, { id: clean, name: clean }]);
+    }
+    controller.setBody(appendHashtag(controller.body, clean));
   }
 
   async function handleGenerateTitles() {
@@ -274,6 +465,7 @@ export function XhsDraftsPage() {
         tags: controller.tags,
       });
       const assets = await fetchDraftAssets(saved.id);
+      setDraftAssets(assets.items);
       const draftAssetCandidates = assets.items
         .map(draftAssetToCandidate)
         .filter((item): item is XhsImageStudioCandidateImage => Boolean(item));
@@ -308,53 +500,93 @@ export function XhsDraftsPage() {
   }
 
   return (
-    <DraftWorkbenchShell
+    <>
+      <DraftWorkbenchShell
       adapter={adapter}
       controller={controller}
-      renderEditorExtras={() => (
-        <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          {hasSourceNote && currentSourceNote ? (
-            <Card size="small" title="草稿内容" extra={<a href={getNoteUrl(currentSourceNote)} target="_blank" rel="noreferrer"><Button type="link" size="small" icon={<LinkOutlined />}>查看原文</Button></a>}>
-              <Text strong style={{ display: "block", marginBottom: 4 }}>{currentSourceNote.title}</Text>
-              <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: "展开" }} type="secondary" style={{ marginBottom: 8 }}>
-                {currentSourceNote.content}
-              </Paragraph>
-              <Space size={4} wrap>
-                <Tag color="blue">来源草稿已独立化</Tag>
-                <Tag color={sourceAssets.some((asset) => asset.asset_type === "video") ? "purple" : "green"}>
-                  {sourceAssets.some((asset) => asset.asset_type === "video") ? "视频" : "图文"}
-                </Tag>
-                <Text type="secondary">素材 {sourceAssets.length} 项</Text>
-              </Space>
-              <div style={{ marginTop: 10 }}>
-                {renderDraftSourceAssetPreview(sourceAssets)}
-              </div>
-            </Card>
-          ) : null}
-
-          {titleOptions.length > 0 ? (
-            <Card size="small" title="标题候选">
-              <Space wrap>
-                {titleOptions.map((option) => (
-                  <Button key={option} size="small" onClick={() => controller.setTitle(option)}>{option}</Button>
-                ))}
-              </Space>
-            </Card>
-          ) : null}
-
-          {tagOptions.length > 0 ? (
-            <Card size="small" title="标签候选">
-              <Space wrap>
-                {tagOptions.map((option) => (
-                  <Tag key={option} color="blue">{option}</Tag>
-                ))}
-              </Space>
-            </Card>
-          ) : null}
-        </Space>
+      renderSourcePanel={() => (
+        hasSourceNote && currentSourceNote ? (
+          <Card size="small" title="草稿内容" extra={<a href={getNoteUrl(currentSourceNote)} target="_blank" rel="noreferrer"><Button type="link" size="small" icon={<LinkOutlined />}>查看原文</Button></a>}>
+            <Text strong style={{ display: "block", marginBottom: 4 }}>{currentSourceNote.title}</Text>
+            <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: "展开" }} type="secondary" style={{ marginBottom: 8 }}>
+              {currentSourceNote.content}
+            </Paragraph>
+            <Space size={4} wrap>
+              <Tag color="blue">来源草稿已独立化</Tag>
+              <Tag color={draftAssets.some((asset) => asset.asset_type === "video") ? "purple" : "green"}>
+                {draftAssets.some((asset) => asset.asset_type === "video") ? "视频" : "图文"}
+              </Tag>
+              <Text type="secondary">素材 {draftAssets.length} 项</Text>
+            </Space>
+            <div style={{ marginTop: 10 }}>
+              {renderDraftSourceAssetPreview(draftAssets)}
+            </div>
+          </Card>
+        ) : null
       )}
-      renderAssistantExtras={() => (
-        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+      renderEditorExtras={() => (
+        <Card size="small" title="草稿图片素材">
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Space.Compact style={{ width: "100%" }}>
+              <Input
+                value={draftAssetUrl}
+                onChange={(event) => setDraftAssetUrl(event.target.value)}
+                onPressEnter={() => void handleAddDraftAssetUrl()}
+                placeholder="粘贴图片 URL"
+                disabled={isUpdatingDraftAssets}
+              />
+              <Button type="primary" onClick={() => void handleAddDraftAssetUrl()} loading={isUpdatingDraftAssets}>
+                添加
+              </Button>
+            </Space.Compact>
+
+            <Upload accept="image/*" showUploadList={false} beforeUpload={(file) => handleUploadDraftAsset(file)} disabled={isUpdatingDraftAssets || !selectedDraft}>
+              <Button icon={<UploadOutlined />} loading={isUpdatingDraftAssets}>
+                上传图片
+              </Button>
+            </Upload>
+
+            {draftImageAssets.length > 0 ? (
+              <Space size={[10, 10]} wrap>
+                {draftImageAssets.map((asset, index) => (
+                  <div key={asset.id} style={{ width: 112 }}>
+                    <div style={{ position: "relative", width: 112, height: 112, borderRadius: 8, overflow: "hidden", background: "#1a1a1a", border: "1px solid #303030" }}>
+                      <img src={draftAssetImageUrl(asset)} alt={`草稿图片 ${index + 1}`} referrerPolicy="no-referrer" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      <Tag color="blue" style={{ position: "absolute", top: 6, left: 6, margin: 0 }}>#{index + 1}</Tag>
+                    </div>
+                    <Space direction="vertical" size={6} style={{ width: "100%", marginTop: 6 }}>
+                      <Button
+                        size="small"
+                        block
+                        icon={<EditOutlined />}
+                        disabled={isUpdatingDraftAssets || isEditingImage}
+                        onClick={() => openImageEditModal(asset)}
+                      >
+                        编辑
+                      </Button>
+                      <Button
+                        danger
+                        size="small"
+                        block
+                        icon={<DeleteOutlined />}
+                        loading={isUpdatingDraftAssets}
+                        disabled={isEditingImage}
+                        onClick={() => void handleDeleteDraftAsset(asset)}
+                      >
+                        删除
+                      </Button>
+                    </Space>
+                  </div>
+                ))}
+              </Space>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前草稿暂无图片" />
+            )}
+          </Space>
+        </Card>
+      )}
+        renderAssistantExtras={() => (
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Collapse
             size="small"
             items={[
@@ -398,6 +630,26 @@ export function XhsDraftsPage() {
               送发布中心
             </Button>
           </Space>
+
+          {titleOptions.length > 0 ? (
+            <Card size="small" title="标题候选">
+              <Space wrap>
+                {titleOptions.map((option) => (
+                  <Button key={option} size="small" onClick={() => controller.setTitle(option)}>{option}</Button>
+                ))}
+              </Space>
+            </Card>
+          ) : null}
+
+          {tagOptions.length > 0 ? (
+            <Card size="small" title="标签候选">
+              <Space wrap>
+                {tagOptions.map((option) => (
+                  <Tag key={option} color="blue" onClick={() => handleAdoptTagOption(option)} style={{ cursor: "pointer" }}>{option}</Tag>
+                ))}
+              </Space>
+            </Card>
+          ) : null}
 
           {activeRewriteCandidate ? (
             <Card
@@ -452,5 +704,61 @@ export function XhsDraftsPage() {
         </Space>
       )}
     />
+      <Modal
+        title="AI 编辑图片"
+        open={Boolean(editingAsset)}
+        onCancel={() => {
+          if (!isEditingImage) setEditingAsset(null);
+        }}
+        onOk={() => void handleEditDraftAssetImage()}
+        okText="生成 AI 编辑图"
+        cancelText="取消"
+        confirmLoading={isEditingImage}
+        okButtonProps={{ disabled: !editImagePrompt.trim() }}
+        maskClosable={!isEditingImage}
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Text type="secondary">
+            原图会保留，生成成功后会把 AI 编辑图新增到当前草稿图片素材。
+          </Text>
+          {editingAsset ? (
+            <div style={{ width: 160, height: 160, borderRadius: 10, overflow: "hidden", background: "#1a1a1a", border: "1px solid #303030" }}>
+              <img src={draftAssetImageUrl(editingAsset)} alt="AI 编辑原图" referrerPolicy="no-referrer" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </div>
+          ) : null}
+          <div>
+            <Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+              编辑提示词
+            </Text>
+            <TextArea
+              rows={4}
+              value={editImagePrompt}
+              onChange={(event) => setEditImagePrompt(event.target.value)}
+              placeholder="例如：保留主体和构图，改成暖色自然光、干净背景、小红书封面质感"
+              disabled={isEditingImage}
+            />
+          </div>
+          <div>
+            <Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+              图片比例
+            </Text>
+            <Select<ImageAspectRatio>
+              value={editImageAspectRatio}
+              onChange={setEditImageAspectRatio}
+              disabled={isEditingImage}
+              style={{ width: 180 }}
+              options={[
+                { value: "auto", label: "自动" },
+                { value: "1:1", label: "1:1" },
+                { value: "3:4", label: "3:4" },
+                { value: "4:3", label: "4:3" },
+                { value: "9:16", label: "9:16" },
+                { value: "16:9", label: "16:9" },
+              ]}
+            />
+          </div>
+        </Space>
+      </Modal>
+    </>
   );
 }
