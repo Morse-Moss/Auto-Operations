@@ -16,7 +16,7 @@ export const XHS_IMAGE_STUDIO_DRAFT_CONTEXT_KEY = "xhs:image-studio:draft-contex
 export const IMAGE_STUDIO_DRAFT_CONTEXT_TTL_MS = DRAFT_IMAGE_STUDIO_CONTEXT_TTL_MS;
 
 export type XhsImageStudioCandidateImage = DraftImageStudioCandidateImage & {
-  source: "draft_asset" | "source_note" | "manual";
+  source: "draft_asset" | "source_note" | "manual" | "ai_edit";
 };
 
 export type XhsImageStudioDraftContext = Omit<
@@ -39,7 +39,7 @@ function toXhsContext(context: DraftImageStudioDraftContext | null): XhsImageStu
     tags: context.tags,
     source_note_id: context.source_note_id ?? null,
     candidate_images: context.candidate_images.filter((image): image is XhsImageStudioCandidateImage =>
-      image.source === "draft_asset" || image.source === "source_note" || image.source === "manual",
+      image.source === "draft_asset" || image.source === "source_note" || image.source === "manual" || image.source === "ai_edit",
     ),
     created_at: context.created_at,
   };

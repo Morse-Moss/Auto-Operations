@@ -9,6 +9,7 @@ export const DRAFT_IMAGE_STUDIO_CANDIDATE_IMAGE_SOURCES = [
   "article_cover",
   "snapshot_image",
   "manual",
+  "ai_edit",
 ] as const;
 
 export type DraftImageStudioPlatform = "xhs" | "wechat_official" | string;

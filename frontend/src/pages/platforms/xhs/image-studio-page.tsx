@@ -32,7 +32,7 @@ import {
   Typography,
   Upload,
 } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
@@ -53,6 +53,8 @@ import type { GeneratedImageAsset, GenerateImageResult, TaskRecord, UserImageFil
 import {
   clearImageStudioDraftContext,
   loadImageStudioDraftContext,
+  saveImageStudioDraftContext,
+  type XhsImageStudioCandidateImage,
   type XhsImageStudioDraftContext,
 } from "./xhs-image-studio-context";
 import {
@@ -60,6 +62,17 @@ import {
   loadWechatOfficialImageStudioDraftContext,
   type WechatOfficialImageStudioDraftContext,
 } from "../../wechat-official/wechat-official-image-studio-context";
+import {
+  buildInitialFinalPublishImages as buildInitialXhsFinalPublishImages,
+  candidateImageSourceLabel as xhsCandidateImageSourceLabel,
+  candidateToFinalImage as xhsCandidateToFinalImage,
+  fileNameFromMediaPath,
+  isPublishableFinalImagePath,
+  replaceReferenceSelectionsWithGenerated,
+  upsertCandidateImage,
+  validateFinalPublishImages,
+  type FinalPublishImage,
+} from "./image-studio-finalization";
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -68,14 +81,6 @@ const IMAGE_GENERATION_POLL_INTERVAL_MS = 3000;
 const IMAGE_GENERATION_MAX_POLLS = 220;
 type ImageAspectRatio = "auto" | "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
 type ImageStudioDraftContext = XhsImageStudioDraftContext | WechatOfficialImageStudioDraftContext;
-
-type FinalPublishImage = {
-  key: string;
-  url: string;
-  publishPath: string;
-  source: "draft_asset" | "source_note" | "manual" | "generated" | "asset";
-  label: string;
-};
 
 function isRenderableImage(value: string): boolean {
   return (
@@ -90,20 +95,17 @@ function isServerManagedMediaPath(value: unknown): value is string {
   return typeof value === "string" && value.startsWith("/api/files/media/");
 }
 
-function isPublishableFinalImagePath(value: string): boolean {
-  return (
-    value.startsWith("/api/files/media/") ||
-    value.startsWith("http://") ||
-    value.startsWith("https://")
-  );
-}
-
 function generatedPublishMediaPath(result: GenerateImageResult): string | null {
   return isServerManagedMediaPath(result.asset?.file_path) ? result.asset.file_path : null;
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isPageReloadNavigation(): boolean {
+  const entry = window.performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  return entry?.type === "reload";
 }
 
 function imageResultFromTask(task: TaskRecord): GenerateImageResult | null {
@@ -139,16 +141,33 @@ function buildDraftImagePrompt(context: ImageStudioDraftContext): string {
   ].filter(Boolean).join("\n");
 }
 
-function candidateImageSourceLabel(source: ImageStudioDraftContext["candidate_images"][number]["source"]): string {
-  if (source === "draft_asset") return "草稿素材";
-  if (source === "source_note") return "原笔记案例图";
+function candidateImageSourceLabel(source: ImageStudioDraftContext["candidate_images"][number]["source"] | FinalPublishImage["source"]): string {
   if (source === "article_cover") return "文章封面";
   if (source === "snapshot_image") return "正文配图";
-  return "手动添加";
+  return xhsCandidateImageSourceLabel(source);
 }
 
 function isWechatOfficialDraftContext(context: ImageStudioDraftContext | null): context is WechatOfficialImageStudioDraftContext {
   return Boolean(context && "platform" in context && context.platform === "wechat_official");
+}
+
+function loadDraftContextForCurrentRoute(isWechatOfficialRoute: boolean): ImageStudioDraftContext | null {
+  return isWechatOfficialRoute
+    ? loadWechatOfficialImageStudioDraftContext({ requireFresh: true })
+    : loadImageStudioDraftContext({ requireFresh: true });
+}
+
+function candidateToFinalImage(
+  image: ImageStudioDraftContext["candidate_images"][number],
+  index: number,
+): FinalPublishImage | null {
+  if (image.source === "article_cover" || image.source === "snapshot_image") return null;
+  return xhsCandidateToFinalImage(image as XhsImageStudioCandidateImage, index);
+}
+
+function buildInitialFinalPublishImages(context: ImageStudioDraftContext): FinalPublishImage[] {
+  if (isWechatOfficialDraftContext(context)) return [];
+  return buildInitialXhsFinalPublishImages(context.candidate_images);
 }
 
 export function XhsImageStudioPage() {
@@ -171,9 +190,14 @@ export function XhsImageStudioPage() {
   const [generatedPreview, setGeneratedPreview] = useState<string | null>(null);
   const [generatedMediaPath, setGeneratedMediaPath] = useState<string | null>(null);
   const [draftContext, setDraftContext] = useState<ImageStudioDraftContext | null>(null);
+  const draftContextRef = useRef<ImageStudioDraftContext | null>(null);
   const [finalPublishImages, setFinalPublishImages] = useState<FinalPublishImage[]>([]);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
   const [isAttachingDraftAsset, setIsAttachingDraftAsset] = useState(false);
+
+  useEffect(() => {
+    draftContextRef.current = draftContext;
+  }, [draftContext]);
 
   const draftReferenceUrls = useMemo(
     () => (draftContext?.candidate_images ?? [])
@@ -183,12 +207,40 @@ export function XhsImageStudioPage() {
     [draftContext],
   );
   const referenceLimitReached = referenceImages.length >= RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT;
+  const effectiveSaveToAssets = Boolean(draftContext && !isWechatOfficialDraftContext(draftContext)) || saveToAssets;
 
   function addFinalPublishImage(image: Omit<FinalPublishImage, "key">) {
     setFinalPublishImages((prev) => {
       if (prev.some((item) => item.publishPath === image.publishPath)) return prev;
       return [...prev, { ...image, key: image.publishPath }];
     });
+  }
+
+  function toggleFinalPublishImage(image: FinalPublishImage) {
+    setFinalPublishImages((prev) => {
+      if (prev.some((item) => item.publishPath === image.publishPath)) {
+        return prev.filter((item) => item.publishPath !== image.publishPath);
+      }
+      return [...prev, image];
+    });
+  }
+
+  function selectAllDraftAssetImages() {
+    if (!draftContext || isWechatOfficialDraftContext(draftContext)) return;
+    const draftAssetImages = draftContext.candidate_images.filter((image) => image.source === "draft_asset");
+    setFinalPublishImages(buildInitialXhsFinalPublishImages(draftAssetImages));
+  }
+
+  function updateXhsDraftCandidates(currentContext: XhsImageStudioDraftContext, nextCandidates: XhsImageStudioCandidateImage[]) {
+    const createdAt = Date.now();
+    const nextContext: XhsImageStudioDraftContext = {
+      ...currentContext,
+      candidate_images: nextCandidates,
+      created_at: createdAt,
+    };
+    draftContextRef.current = nextContext;
+    setDraftContext(nextContext);
+    saveImageStudioDraftContext(nextContext);
   }
 
   function removeFinalPublishImage(publishPath: string) {
@@ -207,21 +259,6 @@ export function XhsImageStudioPage() {
 
   function isFinalPublishImageSelected(publishPath: string) {
     return finalPublishImages.some((image) => image.publishPath === publishPath);
-  }
-
-  function candidateToFinalImage(
-    image: ImageStudioDraftContext["candidate_images"][number],
-    index: number,
-  ): FinalPublishImage | null {
-    if (!image.url) return null;
-    if (image.source === "article_cover" || image.source === "snapshot_image") return null;
-    return {
-      key: image.url,
-      url: image.url,
-      publishPath: image.url,
-      source: image.source,
-      label: `${candidateImageSourceLabel(image.source)} ${index + 1}`,
-    };
   }
 
   // For the reference picker modal: which callback mode
@@ -257,12 +294,16 @@ export function XhsImageStudioPage() {
     setMessage(null);
     setGeneratedPreview(null);
     setGeneratedMediaPath(null);
+    const generationDraftContext = draftContextRef.current;
+    const generationHadDraftContext = Boolean(generationDraftContext);
+    const generationReferenceImages = [...referenceImages];
+    const shouldSaveToAssets = Boolean(generationDraftContext && !isWechatOfficialDraftContext(generationDraftContext)) || saveToAssets;
     try {
       const startedTask = await startImageGenerationTask({
         prompt: prompt.trim(),
         reference_images:
-          referenceImages.length > 0 ? referenceImages : undefined,
-        save_to_assets: saveToAssets,
+          generationReferenceImages.length > 0 ? generationReferenceImages : undefined,
+        save_to_assets: shouldSaveToAssets,
         aspect_ratio: aspectRatio,
       });
       setMessage(`图片生成任务已提交（#${startedTask.task_id}），正在后台生成...`);
@@ -279,20 +320,71 @@ export function XhsImageStudioPage() {
           const publishPath = mediaPath ?? result.url;
           setGeneratedPreview(publishPath);
           setGeneratedMediaPath(mediaPath);
-          if (isPublishableFinalImagePath(publishPath)) {
-            addFinalPublishImage({
-              url: publishPath,
-              publishPath,
-              source: "generated",
-              label: "AI 生成图",
-            });
+
+          if (generationDraftContext && !isWechatOfficialDraftContext(generationDraftContext)) {
+            if (!mediaPath || !isPublishableFinalImagePath(mediaPath)) {
+              throw new Error("AI 图片已生成，但未保存为可发布素材，请重新生成并开启保存到资产。");
+            }
+            const latestDraftContext = draftContextRef.current;
+            if (
+              !latestDraftContext ||
+              isWechatOfficialDraftContext(latestDraftContext) ||
+              latestDraftContext.draft_id !== generationDraftContext.draft_id
+            ) {
+              setMessage("AI 改图已生成，但草稿关联已变更；已保留预览，未写回旧草稿。");
+            } else {
+              let addedAsset;
+              try {
+                addedAsset = await addDraftAsset(latestDraftContext.draft_id, {
+                  asset_type: "image",
+                  local_path: fileNameFromMediaPath(mediaPath),
+                });
+              } catch {
+                throw new Error("AI 改图生成成功，但保存到草稿失败，已保留预览，请重试保存。");
+              }
+              const latestDraftContextAfterSave = draftContextRef.current;
+              if (
+                !latestDraftContextAfterSave ||
+                isWechatOfficialDraftContext(latestDraftContextAfterSave) ||
+                latestDraftContextAfterSave.draft_id !== latestDraftContext.draft_id
+              ) {
+                setMessage("AI 改图已保存，但草稿关联已变更；已保留预览，未更新当前页面选择。");
+                return;
+              }
+              const candidateLocalPath = addedAsset.local_path || fileNameFromMediaPath(mediaPath);
+              const candidateUrl = addedAsset.url || (addedAsset.local_path ? `/api/files/media/${fileNameFromMediaPath(addedAsset.local_path)}` : mediaPath) || mediaPath;
+              const aiEditCandidate: XhsImageStudioCandidateImage = {
+                id: addedAsset.id,
+                url: candidateUrl,
+                local_path: candidateLocalPath,
+                source: "ai_edit",
+              };
+              const nextCandidates = upsertCandidateImage(latestDraftContextAfterSave.candidate_images, aiEditCandidate);
+              updateXhsDraftCandidates(latestDraftContextAfterSave, nextCandidates);
+              const generatedFinalImage = xhsCandidateToFinalImage(aiEditCandidate, nextCandidates.length - 1);
+              if (generatedFinalImage) {
+                setFinalPublishImages((prev) => replaceReferenceSelectionsWithGenerated(prev, generationReferenceImages, generatedFinalImage));
+              }
+              setMessage("AI 改图已生成，并保存到当前草稿；已替换本次参考图的发布选择。");
+            }
+          } else if (isPublishableFinalImagePath(publishPath)) {
+            const latestContextForStandaloneGeneration = draftContextRef.current;
+            if (!generationHadDraftContext && !latestContextForStandaloneGeneration) {
+              addFinalPublishImage({
+                url: publishPath,
+                publishPath,
+                source: "generated",
+                label: "AI 生成图",
+              });
+            }
+            setMessage("图片生成成功。");
           }
+
           if (result.asset) {
             setAssets((prev) => [result.asset!, ...prev]);
           } else {
             void loadAssets();
           }
-          setMessage("图片生成成功。");
           return;
         }
         if (["failed", "cancelled", "exhausted"].includes(task.status)) {
@@ -375,6 +467,7 @@ export function XhsImageStudioPage() {
   }
 
   async function handleUploadFile(file: File) {
+    const uploadDraftContext = draftContextRef.current;
     try {
       const uploaded = await uploadAssetFile(file);
       const newItem: UserImageFile = {
@@ -383,12 +476,36 @@ export function XhsImageStudioPage() {
         size: uploaded.size,
       };
       setUserImages((prev) => [newItem, ...prev]);
-      addFinalPublishImage({
-        url: uploaded.download_url,
-        publishPath: uploaded.download_url,
-        source: "manual",
-        label: uploaded.file_name,
-      });
+      const latestUploadDraftContext = draftContextRef.current;
+      if (!uploadDraftContext) {
+        if (!latestUploadDraftContext) {
+          addFinalPublishImage({
+            url: uploaded.download_url,
+            publishPath: uploaded.download_url,
+            source: "manual",
+            label: uploaded.file_name,
+          });
+        }
+      } else if (!isWechatOfficialDraftContext(uploadDraftContext)) {
+        if (
+          latestUploadDraftContext &&
+          !isWechatOfficialDraftContext(latestUploadDraftContext) &&
+          latestUploadDraftContext.draft_id === uploadDraftContext.draft_id
+        ) {
+          addFinalPublishImage({
+            url: uploaded.download_url,
+            publishPath: uploaded.download_url,
+            source: "manual",
+            label: uploaded.file_name,
+          });
+          const manualCandidate: XhsImageStudioCandidateImage = {
+            url: uploaded.download_url,
+            local_path: uploaded.file_name,
+            source: "manual",
+          };
+          updateXhsDraftCandidates(latestUploadDraftContext, upsertCandidateImage(latestUploadDraftContext.candidate_images, manualCandidate));
+        }
+      }
     } catch {
       setError("文件上传失败。");
     }
@@ -401,8 +518,10 @@ export function XhsImageStudioPage() {
     } else {
       clearImageStudioDraftContext();
     }
+    draftContextRef.current = null;
     setDraftContext(null);
     setFinalPublishImages([]);
+    setReferenceImages([]);
     setMessage("已清除草稿上下文，当前图片工坊内容不会再自动关联草稿。");
   }
 
@@ -430,6 +549,15 @@ export function XhsImageStudioPage() {
       setError("请先选择至少 1 张最终发布图片。可以使用原图、上传图或 AI 生成图。");
       return;
     }
+    const validation = validateFinalPublishImages(finalPublishImages);
+    if (validation.tooManyCount > 0) {
+      setError("最终发布图片最多支持 18 张，请移除多余图片后再送发布中心。");
+      return;
+    }
+    if (!validation.ok) {
+      setError(`有 ${validation.invalidCount} 张图片不是可发布素材，请重新保存、上传或移除后再送发布中心。`);
+      return;
+    }
     setIsSendingPublish(true);
     setError(null);
     setMessage(null);
@@ -439,6 +567,7 @@ export function XhsImageStudioPage() {
         asset_file_paths: finalPublishImages.map((image) => image.publishPath),
       });
       clearImageStudioDraftContext();
+      draftContextRef.current = null;
       setDraftContext(null);
       setFinalPublishImages([]);
       setMessage(`已创建发布中心待发布任务 #${job.id}，不会自动发布。`);
@@ -454,37 +583,46 @@ export function XhsImageStudioPage() {
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search);
     const shouldLoadDraftContext = searchParams.get("from") === "draft";
-    if (!shouldLoadDraftContext) return;
     const isWechatOfficialRoute = location.pathname.startsWith("/platforms/wechat-official/");
-    const context: ImageStudioDraftContext | null = isWechatOfficialRoute
-      ? loadWechatOfficialImageStudioDraftContext({ requireFresh: true })
-      : loadImageStudioDraftContext({ requireFresh: true });
-    if (isWechatOfficialRoute) {
-      navigate("/platforms/wechat-official/image-studio", { replace: true });
-    } else {
-      navigate("/platforms/xhs/image-studio", { replace: true });
+    const shouldRestoreExistingDraftContext = Boolean(draftContextRef.current) || shouldLoadDraftContext || isPageReloadNavigation();
+    const context = shouldRestoreExistingDraftContext ? loadDraftContextForCurrentRoute(isWechatOfficialRoute) : null;
+    if (shouldLoadDraftContext) {
+      if (isWechatOfficialRoute) {
+        navigate("/platforms/wechat-official/image-studio", { replace: true });
+      } else {
+        navigate("/platforms/xhs/image-studio", { replace: true });
+      }
     }
     if (!context) {
-      setMessage("草稿上下文已过期，请从草稿工坊重新进入图片工坊。");
+      if (draftContextRef.current) {
+        draftContextRef.current = null;
+        setDraftContext(null);
+        setFinalPublishImages([]);
+        setReferenceImages([]);
+      }
+      if (shouldLoadDraftContext) {
+        setMessage("草稿上下文已过期，请从草稿工坊重新进入图片工坊。");
+      }
       return;
     }
+    const isSameDraftContext =
+      draftContextRef.current &&
+      isWechatOfficialDraftContext(draftContextRef.current) === isWechatOfficialDraftContext(context) &&
+      draftContextRef.current.draft_id === context.draft_id;
+    const nextReferenceImages = context.candidate_images
+      .map((image) => image.url)
+      .filter((url, index, urls) => urls.indexOf(url) === index)
+      .slice(0, RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT);
+    draftContextRef.current = context;
     setDraftContext(context);
-    if (isWechatOfficialDraftContext(context)) {
-      setFinalPublishImages([]);
-    } else {
-      const firstCandidate = context.candidate_images
-        .map((image, index) => candidateToFinalImage(image, index))
-        .find((image): image is FinalPublishImage => Boolean(image));
-      setFinalPublishImages(firstCandidate ? [firstCandidate] : []);
-    }
-    setPrompt((current) => (current.trim() ? current : buildDraftImagePrompt(context)));
-    setReferenceImages((current) => {
-      if (current.length > 0) return current;
-      return context.candidate_images
-        .map((image) => image.url)
-        .filter((url, index, urls) => urls.indexOf(url) === index)
-        .slice(0, RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT);
+    setFinalPublishImages((current) => {
+      if (isSameDraftContext) return current;
+      return buildInitialFinalPublishImages(context);
     });
+    if (!isSameDraftContext) {
+      setPrompt(buildDraftImagePrompt(context));
+      setReferenceImages(nextReferenceImages);
+    }
   }, [location.pathname, location.search, navigate]);
 
   useEffect(() => {
@@ -576,14 +714,42 @@ export function XhsImageStudioPage() {
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   候选图 {draftContext.candidate_images.length} 张；已带入 {draftReferenceUrls.length} 张参考图（上限 {RUNNINGHUB_CURRENT_REFERENCE_IMAGE_LIMIT} 张）
                 </Text>
+                {!isWechatOfficialDraftContext(draftContext) ? (
+                  <Space size={8} wrap>
+                    <Button size="small" onClick={selectAllDraftAssetImages}>
+                      全选草稿素材
+                    </Button>
+                    <Button size="small" onClick={() => setFinalPublishImages([])} disabled={finalPublishImages.length === 0}>
+                      取消全选
+                    </Button>
+                  </Space>
+                ) : null}
                 <div style={{ maxHeight: 220, overflowY: "auto", paddingRight: 4 }}>
                   <Space size={8} wrap>
                     {draftContext.candidate_images.map((image, index) => {
                       const finalImage = candidateToFinalImage(image, index);
                       const isSelected = finalImage ? isFinalPublishImageSelected(finalImage.publishPath) : false;
                       return (
-                        <div key={`${image.url}-${index}`} style={{ width: 72 }}>
-                          <div style={{ height: 56, borderRadius: 6, overflow: "hidden", background: "#1a1a1a", border: "1px solid #3b2a12" }}>
+                        <div
+                          key={`${image.url}-${index}`}
+                          onClick={() => {
+                            if (!finalImage || isWechatOfficialDraftContext(draftContext)) return;
+                            toggleFinalPublishImage(finalImage);
+                          }}
+                          style={{ width: 72, cursor: finalImage ? "pointer" : "default" }}
+                        >
+                          <div style={{ position: "relative", height: 56, borderRadius: 6, overflow: "hidden", background: "#1a1a1a", border: isSelected ? "1px solid #faad14" : "1px solid #3b2a12" }}>
+                            {!isWechatOfficialDraftContext(draftContext) && finalImage ? (
+                              <Checkbox
+                                checked={isSelected}
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={(event) => {
+                                  event.stopPropagation();
+                                  toggleFinalPublishImage(finalImage);
+                                }}
+                                style={{ position: "absolute", top: 2, left: 2, zIndex: 1, background: "rgba(0,0,0,0.45)", borderRadius: 4 }}
+                              />
+                            ) : null}
                             {isRenderableImage(image.url) ? (
                               <img src={image.url} alt={`candidate-${index}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                             ) : (
@@ -593,17 +759,6 @@ export function XhsImageStudioPage() {
                           <Text type="secondary" ellipsis style={{ display: "block", fontSize: 10, marginTop: 2 }}>
                             {candidateImageSourceLabel(image.source)}
                           </Text>
-                          {!isWechatOfficialDraftContext(draftContext) && finalImage && (
-                            <Button
-                              size="small"
-                              type={isSelected ? "default" : "link"}
-                              disabled={isSelected}
-                              onClick={() => addFinalPublishImage(finalImage)}
-                              style={{ width: "100%", padding: 0, fontSize: 11 }}
-                            >
-                              {isSelected ? "已加入" : "加入最终"}
-                            </Button>
-                          )}
                         </div>
                       );
                     })}
@@ -775,7 +930,8 @@ export function XhsImageStudioPage() {
             >
               <Col>
                 <Checkbox
-                  checked={saveToAssets}
+                  checked={effectiveSaveToAssets}
+                  disabled={Boolean(draftContext && !isWechatOfficialDraftContext(draftContext))}
                   onChange={(e) => setSaveToAssets(e.target.checked)}
                 >
                   保存到 AI 图片资产
@@ -795,7 +951,7 @@ export function XhsImageStudioPage() {
                     onClick={handleGenerate}
                     loading={isGenerating}
                   >
-                    生成
+                    {draftContext && !isWechatOfficialDraftContext(draftContext) ? <>生成 AI 改图</> : "生成"}
                   </Button>
                 </Space>
               </Col>
@@ -862,7 +1018,7 @@ export function XhsImageStudioPage() {
                         <Tag color="red">material_upload_blocked · 不上传公众号素材</Tag>
                       </>
                     )}
-                    {!saveToAssets && (
+                    {!effectiveSaveToAssets && (
                       <Button
                         size="small"
                         type="link"
