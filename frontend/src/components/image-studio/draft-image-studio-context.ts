@@ -73,9 +73,22 @@ function isCandidateImageSource(value: unknown): value is DraftImageStudioCandid
   return typeof value === "string" && DRAFT_IMAGE_STUDIO_CANDIDATE_IMAGE_SOURCES.includes(value as DraftImageStudioCandidateImageSource);
 }
 
-function isDraftTag(value: unknown): value is DraftTag {
-  if (!isObject(value)) return false;
-  return typeof value.name === "string" && value.name.trim().length > 0 && (value.id === undefined || typeof value.id === "string");
+function normalizeDraftTag(value: unknown): DraftTag | null {
+  if (typeof value === "string") {
+    const name = value.trim();
+    return name ? { id: name, name } : null;
+  }
+  if (!isObject(value) || typeof value.name !== "string") return null;
+  const name = value.name.trim();
+  if (!name) return null;
+  const id = value.id === undefined || value.id === null ? undefined : String(value.id).trim();
+  return id ? { id, name } : { name };
+}
+
+function normalizeDraftTags(value: unknown): NonNullable<Draft["tags"]> | null {
+  if (!Array.isArray(value)) return null;
+  const tags = value.map(normalizeDraftTag).filter((tag): tag is DraftTag => Boolean(tag));
+  return tags;
 }
 
 function isCandidateImage(value: unknown): value is DraftImageStudioCandidateImage {
@@ -98,7 +111,8 @@ export function parseDraftImageStudioContext(
   if (value.source !== "draft" || !isPositiveInteger(value.draft_id)) return null;
   if (value.draft_name !== undefined && value.draft_name !== null && typeof value.draft_name !== "string") return null;
   if (typeof value.title !== "string" || typeof value.body !== "string") return null;
-  if (!Array.isArray(value.tags) || !value.tags.every(isDraftTag)) return null;
+  const tags = normalizeDraftTags(value.tags);
+  if (!tags) return null;
   if (!isNullablePositiveInteger(value.source_note_id)) return null;
   if (!isNullablePositiveInteger(value.source_article_id)) return null;
   if (!Array.isArray(value.candidate_images) || !value.candidate_images.every(isCandidateImage)) return null;
@@ -113,7 +127,7 @@ export function parseDraftImageStudioContext(
     draft_name: value.draft_name ?? null,
     title: value.title,
     body: value.body,
-    tags: value.tags,
+    tags,
     source_note_id: value.source_note_id ?? null,
     source_article_id: value.source_article_id ?? null,
     candidate_images: value.candidate_images,
@@ -125,8 +139,10 @@ export function parseDraftImageStudioContext(
 export function saveDraftImageStudioContext(storageKey: string, context: DraftImageStudioDraftContextInput): boolean {
   const storage = getSessionStorage();
   if (!storage) return false;
+  const tags = normalizeDraftTags(context.tags);
+  if (!tags) return false;
   try {
-    storage.setItem(storageKey, JSON.stringify({ ...context, created_at: context.created_at ?? Date.now() }));
+    storage.setItem(storageKey, JSON.stringify({ ...context, tags, created_at: context.created_at ?? Date.now() }));
     return true;
   } catch {
     return false;
