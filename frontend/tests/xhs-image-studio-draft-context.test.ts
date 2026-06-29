@@ -20,6 +20,13 @@ assert.ok(
   "Image studio should restore draft context only for explicit draft handoff, reload recovery, or an existing in-memory draft context",
 );
 
+const draftHandoffNavigateIndex = source.indexOf('navigate("/platforms/xhs/image-studio", { replace: true });');
+const draftContextRefUpdateIndex = source.indexOf("draftContextRef.current = context;");
+assert.ok(
+  draftContextRefUpdateIndex >= 0 && draftHandoffNavigateIndex > draftContextRefUpdateIndex,
+  "Image studio should update draftContextRef before replacing ?from=draft so the follow-up route effect does not clear the just-loaded draft context",
+);
+
 assert.match(
   source,
   /function buildInitialFinalPublishImages\(context: ImageStudioDraftContext\): FinalPublishImage\[\]/,

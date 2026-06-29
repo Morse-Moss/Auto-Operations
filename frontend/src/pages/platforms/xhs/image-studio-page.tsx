@@ -586,13 +586,6 @@ export function XhsImageStudioPage() {
     const isWechatOfficialRoute = location.pathname.startsWith("/platforms/wechat-official/");
     const shouldRestoreExistingDraftContext = Boolean(draftContextRef.current) || shouldLoadDraftContext || isPageReloadNavigation();
     const context = shouldRestoreExistingDraftContext ? loadDraftContextForCurrentRoute(isWechatOfficialRoute) : null;
-    if (shouldLoadDraftContext) {
-      if (isWechatOfficialRoute) {
-        navigate("/platforms/wechat-official/image-studio", { replace: true });
-      } else {
-        navigate("/platforms/xhs/image-studio", { replace: true });
-      }
-    }
     if (!context) {
       if (draftContextRef.current) {
         draftContextRef.current = null;
@@ -622,6 +615,13 @@ export function XhsImageStudioPage() {
     if (!isSameDraftContext) {
       setPrompt(buildDraftImagePrompt(context));
       setReferenceImages(nextReferenceImages);
+    }
+    if (shouldLoadDraftContext) {
+      if (isWechatOfficialRoute) {
+        navigate("/platforms/wechat-official/image-studio", { replace: true });
+      } else {
+        navigate("/platforms/xhs/image-studio", { replace: true });
+      }
     }
   }, [location.pathname, location.search, navigate]);
 
