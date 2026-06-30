@@ -87,17 +87,88 @@ def _get_owned_auto_task(db: Session, current_user: User, task_id: int) -> AutoT
     return auto_task
 
 
+def _account_type_label(sub_type: str) -> str:
+    if sub_type == "pc":
+        return "小红书 PC 账号"
+    if sub_type == "creator":
+        return "小红书 Creator 账号"
+    return "小红书账号"
+
+
+def _account_has_cookies(db: Session, account_id: int) -> bool:
+    return db.scalars(
+        select(AccountCookieVersion.id)
+        .where(AccountCookieVersion.platform_account_id == account_id)
+        .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
+    ).first() is not None
+
+
+def _is_usable_account(db: Session, account: PlatformAccount | None, current_user: User, expected_sub_type: str) -> bool:
+    return bool(
+        account is not None
+        and account.user_id == current_user.id
+        and account.platform == "xhs"
+        and account.sub_type == expected_sub_type
+        and account.status not in {"deleted", "expired"}
+        and _account_has_cookies(db, account.id)
+    )
+
+
+def _find_replacement_account(db: Session, current_user: User, expected_sub_type: str) -> PlatformAccount | None:
+    accounts = db.scalars(
+        select(PlatformAccount)
+        .where(
+            PlatformAccount.user_id == current_user.id,
+            PlatformAccount.platform == "xhs",
+            PlatformAccount.sub_type == expected_sub_type,
+            PlatformAccount.status.notin_(["deleted", "expired"]),
+        )
+        .order_by(PlatformAccount.updated_at.desc(), PlatformAccount.id.desc())
+    ).all()
+    for account in accounts:
+        if _account_has_cookies(db, account.id):
+            return account
+    return None
+
+
+def _resolve_auto_task_account(db: Session, current_user: User, auto_task: AutoTask, expected_sub_type: str) -> PlatformAccount:
+    field_name = "pc_account_id" if expected_sub_type == "pc" else "creator_account_id"
+    current_account_id = getattr(auto_task, field_name)
+    current_account = db.get(PlatformAccount, current_account_id)
+    if _is_usable_account(db, current_account, current_user, expected_sub_type):
+        return current_account
+
+    replacement = _find_replacement_account(db, current_user, expected_sub_type)
+    if replacement is not None:
+        setattr(auto_task, field_name, replacement.id)
+        db.flush()
+        return replacement
+
+    account_label = _account_type_label(expected_sub_type)
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"自动运营需要可用的{account_label}，请先绑定或重新登录账号。",
+    )
+
+
 def _verify_account_ownership(db: Session, current_user: User, account_id: int, expected_sub_type: str) -> PlatformAccount:
     account = db.get(PlatformAccount, account_id)
+    account_label = _account_type_label(expected_sub_type)
     if (
         account is None
         or account.user_id != current_user.id
         or account.platform != "xhs"
         or account.sub_type != expected_sub_type
+        or account.status == "deleted"
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"XHS {expected_sub_type} account not found",
+            detail=f"{account_label}不存在或已删除，请重新选择账号。",
+        )
+    if account.status == "expired":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{account_label}登录态已过期，请重新登录后再执行自动运营。",
         )
     return account
 
@@ -105,13 +176,15 @@ def _verify_account_ownership(db: Session, current_user: User, account_id: int, 
 def _get_account_cookies(db: Session, account_id: int) -> str:
     from backend.app.api.publish import _cookies_to_string
 
+    account = db.get(PlatformAccount, account_id)
+    account_label = _account_type_label(account.sub_type or "") if account is not None else "小红书账号"
     cookie_version = db.scalars(
         select(AccountCookieVersion)
         .where(AccountCookieVersion.platform_account_id == account_id)
         .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
     ).first()
     if cookie_version is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account has no cookies")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{account_label}缺少登录 Cookie，请重新登录账号。")
     return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
 
 
@@ -245,9 +318,8 @@ def run_auto_task(
 ):
     auto_task = _get_owned_auto_task(db, current_user, task_id)
 
-    # Verify account ownership
-    _verify_account_ownership(db, current_user, auto_task.pc_account_id, "pc")
-    _verify_account_ownership(db, current_user, auto_task.creator_account_id, "creator")
+    pc_account = _resolve_auto_task_account(db, current_user, auto_task, "pc")
+    creator_account = _resolve_auto_task_account(db, current_user, auto_task, "creator")
 
     # Create a tracking task
     tracking_task = Task(
@@ -275,7 +347,7 @@ def run_auto_task(
     db.flush()
 
     # 2. Search notes using PC adapter
-    pc_cookies = _get_owned_pc_account_cookies(db, current_user, auto_task.pc_account_id)
+    pc_cookies = _get_account_cookies(db, pc_account.id)
     adapter = adapter_factory(pc_cookies)
     success, message, raw_payload = adapter.search_note(keyword, page=1)
     if not success:
@@ -381,7 +453,7 @@ def run_auto_task(
     # 6. Create a PublishJob with the Creator account
     publish_job = PublishJob(
         user_id=current_user.id,
-        platform_account_id=auto_task.creator_account_id,
+        platform_account_id=creator_account.id,
         source_draft_id=draft.id,
         platform="xhs",
         title=draft.title,
