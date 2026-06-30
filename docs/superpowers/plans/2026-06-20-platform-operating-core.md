@@ -747,22 +747,86 @@ Verification evidence from first scoped pass:
 
 ---
 
-## Recommended execution order
+## Current Closure Queue — 2026-06-30
 
-不要一次性执行所有阶段。推荐顺序：
+Stage 0-10 have all received at least a first scoped pass, so the active work is no longer the original numeric stage sequence. Continue with closure passes: one auditable gap at a time, each with its own scope firewall, focused verification, review gate, and scoped commit.
 
-1. Stage 1：Hardcode inventory and adapter checklist。
-2. Stage 2：Draft Workbench 标准化。
-3. Stage 3：Content Library 前端 shared shell。
-4. Stage 4：Content mapper golden tests。
-5. Stage 5：Account Matrix schema-driven。
-6. Stage 6：Asset platform-aware storage。
-7. Stage 7：Publish dry-run skeleton。
-8. Stage 8：Workflow Automation skeleton。
-9. Stage 9：Diagnostics standardization。
-10. Stage 10：Second platform readiness gate。
+### Status model
 
-原因：从低风险 read-only/UI shell 开始，最后处理真实发布和自动化。不要反过来先改高风险链路。
+| Status | Meaning |
+|---|---|
+| `closed` | Current planned scope is complete; any remaining work is explicitly deferred. |
+| `first_pass_done` | A skeleton or low-risk first step exists, but adoption is incomplete. |
+| `closure_in_progress` | Follow-up closure passes are actively reducing known gaps. |
+| `deferred_by_safety` | Further work touches real accounts, real publish, providers, or background automation and needs a separate risk/QA decision. |
+
+### Current stage status
+
+| Area | Status | Evidence |
+|---|---|---|
+| Stage 0 design/spec baseline | `closed` | `1bcd732 feat: add platform operating core` |
+| Stage 1 hardcode inventory/checklist | `closed` | `docs/superpowers/specs/2026-06-20-platform-operating-core-hardcode-inventory.md` |
+| Stage 2 Draft Workbench standardization | `closed` | `4708275 feat: add shared draft workbench` and Stage 2 evidence above |
+| Stage 3 Content Library frontend shell | `closed` | `dce3270 feat: reuse shared content library for wechat official` and Stage 3 evidence above |
+| Frontend Platform Core shell pass | `closed` | `84379ef feat: introduce shared platform core shell` |
+| Stage 4 backend content normalizer | `closure_in_progress` | `91c582b refactor: route xhs note serialization through mapper`; `379f57f refactor: extract xhs comment mapper`; `62e151b refactor: make notes account platform explicit`; WeChat Article mapping remains |
+| Stage 5 Account Matrix auth schema | `closure_in_progress` | local frontend `account-auth-schema` exists; `0add4fd feat: expose platform account auth schemas`; frontend adoption remains |
+| Stage 6 Asset storage policy | `first_pass_done` | `asset_storage_policy` first pass evidence above; wider adoption remains |
+| Stage 7 Publish Queue policy/dry-run | `first_pass_done` | dry-run no-side-effect skeleton evidence above; real publish migration is safety-gated |
+| Stage 8 Workflow Automation | `first_pass_done` | workflow skeleton/no-bypass evidence above; deeper automation migration is safety-gated |
+| Stage 9 Diagnostics | `first_pass_done` | diagnostic service first pass evidence above; broader low-risk adoption remains |
+| Stage 10 Second Platform Readiness Gate | `closure_in_progress` | readiness service/tests evidence above; current 2026-06-30 report verdict is `FOLLOW_UP` / `docs_or_fake_adapter_only` |
+
+### Wave 1 — approved low-risk closure sequence
+
+| Order | Closure pass | Source | Goal | Risk | Verification floor |
+|---|---|---|---|---|---|
+| 0 | Closure queue checkpoint | planning hygiene | Keep this file as the recovery source of truth for continuous execution | Low | `git diff --check -- docs/superpowers/plans/2026-06-20-platform-operating-core.md` |
+| 1 | XHS comment mapper extraction preflight/implementation | Stage 4 / HC-10 | Move pure XHS comment payload normalization out of route-private helpers while preserving route/API behavior | Medium | focused comment mapper tests + existing comments/notes API tests |
+| 2 | Notes account platform expectation | Stage 4 / HC-01 | Make `_get_owned_account` expected platform explicit while preserving current XHS-only route behavior | Medium | notes account ownership tests + batch-save regression |
+| 3 | Read-only backend account auth schema | Stage 5 / HC-19 to HC-22 | Expose platform account auth schema from registry without changing real login endpoints or credential storage | Medium | platform registry tests + frontend build if types change |
+| 4 | Current readiness gate report | Stage 10 | Run/record current Platform Core readiness result as PASS/FOLLOW_UP/BLOCKER before real second-platform work | Low | readiness tests + docs diff check |
+
+### Wave 1 execution checkpoint — 2026-06-30
+
+| Order | Result | Evidence | Remaining boundary |
+|---|---|---|---|
+| 0 | Done | `cffe4ee docs: define platform core closure queue`; `git diff --check -- docs/superpowers/plans/2026-06-20-platform-operating-core.md` | Worktree branch only; not merged to root `master`. |
+| 1 | Done | `379f57f refactor: extract xhs comment mapper`; `py -3.12 -m pytest tests/backend/test_xhs_content_mappers.py tests/backend/test_notes_xhs_serializer.py -q` -> 14 passed; comment API regression subset -> 8 passed | Other XHS route-private helpers remain out of scope. |
+| 2 | Done | `62e151b refactor: make notes account platform explicit`; ownership/serializer tests -> 8 passed; batch-save ownership subset -> 3 passed | `/notes/batch-save` remains intentionally XHS-only. |
+| 3 | Done | `0add4fd feat: expose platform account auth schemas`; `py -3.12 -m pytest tests/backend/test_platforms.py -q` -> 10 passed; account/platform API subset -> 29 passed | Schema is read-only; no real login endpoint or credential storage behavior changed. |
+| 4 | `FOLLOW_UP` | `py -3.12 -m pytest tests/backend/test_platform_readiness_gate.py tests/backend/test_platforms.py -q` -> 15 passed | Allowed outcome is `docs_or_fake_adapter_only`; do not connect real second-platform accounts or real publish paths yet. |
+
+**Current readiness verdict:** `FOLLOW_UP`.
+
+**Allowed outcome:** `docs_or_fake_adapter_only`.
+
+**Why not PASS:** blocker-class safety checks have test coverage, but second-platform read-only adapter/content-library adoption is still incomplete and公众号 account binding remains blocked by design. Starting real account binding, real provider calls, real publish, or automated engagement is still outside the safe closure boundary.
+
+**User impact:** users can see clearer platform/account capability state, but should not be offered a working公众号 credential binding flow or any real second-platform write action until the Wave 2 design/adoption work is complete.
+
+### Wave 2 — after Wave 1 review
+
+| Closure pass | Source | Goal | Risk note |
+|---|---|---|---|
+| WeChat Article -> ContentItem mapping design | Stage 4 / HC-31 | Specify how公众号 raw articles enter the shared Content Library operating layer | Design-only before implementation |
+| Asset policy wider adoption | Stage 6 / HC-11 to HC-14 | Expand platform-aware asset policy across remaining low-risk file/export paths | Do not migrate/delete existing files |
+| Diagnostics low-risk adoption | Stage 9 | Attach standardized diagnostics to more read-only or dry-run paths | No raw secret-bearing payloads |
+
+### Wave 3 — explicit safety gate required
+
+| Closure pass | Source | Why gated |
+|---|---|---|
+| Publish Queue deeper migration | Stage 7 / HC-02, HC-04, HC-24, HC-26, HC-27 | Touches real publish/upload semantics; requires separate risk and QA decision |
+| Workflow Automation deeper migration | Stage 8 / HC-05 to HC-07 | Touches background automation; must not create silent real publish/comment behavior |
+
+### Continuous execution rules
+
+- Execute one closure pass per commit.
+- Use a clean worktree for continuous closure work; commits on a worktree branch do not automatically merge to root `master`.
+- Keep real provider calls, real account actions, deploys, pushes, service restarts, and real publish out of closure passes unless separately authorized.
+- For each closure pass: write or update focused tests first, implement the smallest change, run focused verification, run a spec review and quality review, update this queue if status changes, then make a scoped commit.
+- If a closure pass touches a mixed or dirty file, stage explicit hunks only; never use `git add .` or `git add -A`.
 
 ---
 
@@ -792,22 +856,4 @@ Boundaries:
 
 Next:
 - <recommended next exact stage>
-```
-
----
-
-## Current recommended next `/goal`
-
-```text
-/goal 使用 Morse's development mode 执行 docs/superpowers/plans/2026-06-20-platform-operating-core.md 的 Stage 1。
-
-只做 hardcode inventory and adapter checklist documentation，不改业务代码。
-允许修改/新增 docs/superpowers/specs/2026-06-20-platform-operating-core-design.md、docs/superpowers/plans/2026-06-20-platform-operating-core.md、docs/superpowers/specs/2026-06-20-platform-operating-core-hardcode-inventory.md。
-
-要求：
-- 先 git status 锁定 unrelated changes。
-- 用 read-only codegraph/search 梳理 xhs hardcode、文件前缀、raw_json UI 解析、route private helper 依赖、账号 drawer hardcode、PublishOptions 泛化风险、AutoTask XHS-specific 字段。
-- 输出 inventory 表：path / current behavior / target core or adapter / migration risk / suggested stage。
-- 独立 read-only review。
-- 不改 backend/frontend 业务代码，不跑真实平台动作，不 commit、不 push。
 ```

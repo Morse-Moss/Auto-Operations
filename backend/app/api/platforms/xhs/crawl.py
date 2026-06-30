@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from backend.app.adapters.xhs.mappers import normalize_xhs_comment_payload
 from backend.app.api.platforms.xhs.pc import (
     _get_owned_pc_account_cookies,
     _normalize_detail_payload,
     _normalize_search_item,
-    normalize_comment_payload,
     get_xhs_pc_api_adapter_factory,
 )
 from backend.app.api.tasks import serialize_task
@@ -864,7 +864,7 @@ def crawl_keyword_group(
                         else:
                             comment_success, comment_message, comment_payload = adapter.get_note_comments(note_url)
                             if comment_success:
-                                comments_list = normalize_comment_payload(comment_payload)
+                                comments_list = normalize_xhs_comment_payload(comment_payload)
                                 comment_status = "success"
                             else:
                                 comment_error = comment_message or "comment failed"
@@ -1037,7 +1037,7 @@ def crawl_data(
                             else:
                                 cs, cm, cp = adapter.get_note_comments(url)
                                 if cs:
-                                    comments_list = normalize_comment_payload(cp)
+                                    comments_list = normalize_xhs_comment_payload(cp)
                                     comment_status = "success"
                                 else:
                                     comment_error = cm or "comment crawl failed"
@@ -1127,7 +1127,7 @@ def crawl_data(
                     else:
                         success, message, raw_payload = adapter.get_note_comments(url)
                         if success:
-                            item = _crawl_data_item(source=url, status="success", comments=normalize_comment_payload(raw_payload), comment_status="success")
+                            item = _crawl_data_item(source=url, status="success", comments=normalize_xhs_comment_payload(raw_payload), comment_status="success")
                         else:
                             comment_error = message or "comment crawl failed"
                             comment_status = _comment_failure_status(comment_error)
@@ -1226,7 +1226,7 @@ def crawl_data(
                             else:
                                 cs, cm, cp = adapter.get_note_comments(note_url)
                                 if cs:
-                                    comments_list = normalize_comment_payload(cp)
+                                    comments_list = normalize_xhs_comment_payload(cp)
                                     comment_status = "success"
                                 else:
                                     comment_error = cm or "comment failed"

@@ -15,9 +15,8 @@ from sqlalchemy.orm import Session
 from backend.app.api.platforms.xhs.pc import (
     _cookies_to_string,
     get_xhs_pc_api_adapter_factory,
-    normalize_comment_payload,
 )
-from backend.app.adapters.xhs.mappers import XhsContentMapping, map_xhs_content
+from backend.app.adapters.xhs.mappers import XhsContentMapping, map_xhs_content, normalize_xhs_comment_payload
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
@@ -346,9 +345,9 @@ def _serialize_draft(draft: AiDraft) -> dict:
     }
 
 
-def _get_owned_account(db: Session, current_user: User, account_id: int) -> PlatformAccount:
+def _get_owned_account(db: Session, current_user: User, account_id: int, *, expected_platform: str) -> PlatformAccount:
     account = db.get(PlatformAccount, account_id)
-    if account is None or account.user_id != current_user.id or account.platform != "xhs":
+    if account is None or account.user_id != current_user.id or account.platform != expected_platform:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     return account
 
@@ -734,7 +733,7 @@ def batch_save_notes(
     db: Session = Depends(get_db),
     adapter_factory=Depends(get_xhs_pc_api_adapter_factory),
 ):
-    account = _get_owned_account(db, current_user, payload.account_id)
+    account = _get_owned_account(db, current_user, payload.account_id, expected_platform="xhs")
     comment_adapter = None
     if payload.fetch_comments:
         if account.sub_type != "pc":
@@ -784,7 +783,7 @@ def batch_save_notes(
                     detail=message or "XHS note comments failed",
                 )
             db.execute(delete(NoteComment).where(NoteComment.note_id == existing.id))
-            for comment in normalize_comment_payload(raw_payload):
+            for comment in normalize_xhs_comment_payload(raw_payload):
                 db.add(
                     NoteComment(
                         note_id=existing.id,
