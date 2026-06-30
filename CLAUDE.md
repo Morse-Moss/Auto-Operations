@@ -60,6 +60,7 @@
 - `backend/app/services/`：业务服务和调度服务。
 - `backend/app/adapters/xhs/`：XHS SDK 适配层。
 - `frontend/`：React/Vite 前端。
+- `frontend/src/platform-core/`：前端多平台共享 UI 内核，放平台 section registry、共享账号 shell、共享 action/readiness/shell 组件；平台差异留在各自 `frontend/src/pages/...` adapter/page 中。
 - `tests/`：主系统后端测试。
 - `data/`：本地数据库和运行产物，不提交敏感数据。
 - `docs/superpowers/specs/`：设计规格文档。

@@ -384,6 +384,63 @@ git diff --check
 
 ---
 
+## Frontend Platform Core shell pass: section registry, accounts, actions, readiness
+
+**Status:** Done in scoped Platform Core Stage 1/2/3 closeout commit `84379ef`.
+
+**Goal:** 把平台工作区导航、公众号 section 页面、账号卡片 shell、推荐动作和 readiness 诊断面板沉淀到前端共享 `frontend/src/platform-core/`，让 XHS 与公众号复用同一套平台工作区结构，而不是继续在各自页面里复制布局和路由分支。
+
+**Files created:**
+
+- `frontend/src/platform-core/registry/platform-sections.tsx`
+- `frontend/src/platform-core/accounts/platform-account-types.ts`
+- `frontend/src/platform-core/accounts/platform-accounts-shell.tsx`
+- `frontend/src/platform-core/actions/platform-action-types.ts`
+- `frontend/src/platform-core/actions/platform-action-hub.tsx`
+- `frontend/src/platform-core/readiness/platform-readiness-panel.tsx`
+- `frontend/src/platform-core/shell/platform-section-page.tsx`
+- `frontend/src/pages/wechat-official/wechat-official-accounts-page.tsx`
+- `frontend/src/pages/wechat-official/wechat-official-discovery-page.tsx`
+- `frontend/src/pages/wechat-official/wechat-official-drafts-page.tsx`
+- `frontend/src/pages/wechat-official/wechat-official-library-page.tsx`
+- `frontend/src/pages/wechat-official/wechat-official-readiness-actions.ts`
+- `frontend/src/pages/wechat-official/wechat-official-settings-page.tsx`
+
+**Files modified:**
+
+- `frontend/src/app/router.tsx`
+- `frontend/src/components/layout/app-shell.tsx`
+- `frontend/src/pages/platforms/xhs/accounts-page.tsx`
+- `frontend/src/pages/wechat-official/wechat-official-dashboard.tsx`
+- `tests/backend/test_api.py`
+
+**Stage result:**
+
+- `AppShell` now gets platform nav items from `platformSectionRegistry` instead of hardcoding公众号 path branches.
+- 公众号 dashboard no longer routes sub-sections internally; `/accounts`, `/discovery`, `/library`, `/drafts`, and `/settings` are dedicated pages wrapped by `PlatformSectionPage`.
+- `PlatformAccountsShell` is shared by XHS and公众号 account pages; platform login/binding behavior remains in platform pages/drawers, not in the shared shell.
+- `PlatformReadinessPanel` and `PlatformActionHub` provide shared readiness/action presentation;公众号-specific action construction lives in `wechat-official-readiness-actions.ts`.
+- Real公众号授权、素材上传、预览发送、群发发布 remain blocked; this pass added no real provider calls, no database migration, no deployment, and no service restart.
+
+**Verification evidence:**
+
+```bash
+py -3.12 -m pytest tests/backend/test_api.py -k "platform_navigation or platform_accounts_shell or xhs_accounts_page or wechat_official_accounts_page or wechat_official_routes or wechat_official_dashboard_no_longer or wechat_official_platform_split or platform_action_hub or platform_readiness_panel or wechat_official_readiness_actions" -q
+# 10 passed, 181 deselected in 2.20s
+```
+
+```bash
+npm --prefix frontend run build
+# PASS; Vite reported only the existing large chunk warning.
+```
+
+**Boundary notes:**
+
+- This pass deliberately excluded other dirty threads: Feishu/XHS auto-ops, publish page, Feishu models/API/migration, compare-shots, creator pending login/user messages.
+- The local `python` command points to the Windows Store alias and exits 49 in this workspace; use `py -3.12` for backend pytest commands.
+
+---
+
 ## Stage 6: Asset Workshop platform-aware storage policy
 
 **Goal:** 去掉文件上传、生成、导出下载中的 XHS-only 文件名前缀和 owner policy，形成 platform-aware asset storage core。
