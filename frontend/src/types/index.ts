@@ -781,12 +781,16 @@ export type NoteAnalysisResult = {
   core_points: string;
   target_audience: string;
   title_hook: string;
+  cover_type?: string | null;
+  title_type?: string | null;
   content_structure: string;
   reusable_model?: string[];
   reusable_models: string[];
   content_usage?: string | null;
   reuse_value?: string | null;
   search_attribute?: string | null;
+  score?: number | null;
+  rating?: string | null;
   analysis_note: string;
   last_pushed_at?: string | null;
   last_pulled_at?: string | null;
@@ -1173,6 +1177,50 @@ export type Draft = {
   tags?: { id?: string; name: string }[];
   source_note_id?: number | null;
   source_article_id?: number | null;
+  created_at: string;
+};
+
+export type DraftAiScoreLevel = "low" | "medium" | "high" | "excellent";
+
+export type DraftAiScoreDimension = {
+  key: string;
+  label: string;
+  score: number;
+  max_score: number;
+  reason: string;
+};
+
+export type DraftAiScoreRisk = {
+  level: "low" | "medium" | "high" | string;
+  title: string;
+  detail: string;
+};
+
+export type DraftAiScoreSuggestion = {
+  priority: "low" | "medium" | "high" | string;
+  title: string;
+  example?: string;
+};
+
+export type DraftAiScoreOpportunity = {
+  type: string;
+  label: string;
+  reason: string;
+};
+
+export type DraftAiScoreResult = {
+  id: number;
+  draft_id: number;
+  task_id?: number | null;
+  overall_score: number;
+  potential_level: DraftAiScoreLevel;
+  summary: string;
+  dimensions: DraftAiScoreDimension[];
+  risks: DraftAiScoreRisk[];
+  suggestions: DraftAiScoreSuggestion[];
+  opportunities: DraftAiScoreOpportunity[];
+  disclaimer: string;
+  fallback_used?: boolean;
   created_at: string;
 };
 

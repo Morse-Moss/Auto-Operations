@@ -14,10 +14,13 @@ from sqlalchemy.orm.attributes import flag_modified
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.models import AiDraft, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User, WechatOfficialDraftSource
+from backend.app.api.ai import _recorded_text_task, _text_model_context, get_text_ai_client
+from backend.app.models import AiDraft, DraftAiScoreResult, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User, WechatOfficialDraftSource
 from backend.app.schemas.common import paginated
+from backend.app.services.ai_service import TextAiClient
 from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.asset_storage_policy import valid_media_owner_prefixes
+from backend.app.services.draft_ai_scoring_service import DraftAiScoringService
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
@@ -53,6 +56,10 @@ class DraftSendToPublishRequest(BaseModel):
     is_private: Optional[bool] = None
     asset_file_path: Optional[str] = Field(default=None, max_length=2048)
     asset_file_paths: Optional[list[str]] = None
+
+
+class DraftAiScoreRequest(BaseModel):
+    force: bool = False
 
 
 def _clean_topics(topics: Optional[list[str]]) -> list[str]:
@@ -288,6 +295,26 @@ def _serialize_publish_job(job: PublishJob) -> dict:
         "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
         "created_at": job.created_at.isoformat(),
     }
+
+
+def _serialize_draft_ai_score(score: DraftAiScoreResult) -> dict:
+    result = dict(score.result_json or {})
+    result.update({
+        "id": score.id,
+        "draft_id": score.draft_id,
+        "task_id": score.task_id,
+        "overall_score": score.overall_score,
+        "potential_level": score.potential_level,
+        "created_at": score.created_at.isoformat(),
+    })
+    result.setdefault("summary", "")
+    result.setdefault("dimensions", [])
+    result.setdefault("risks", [])
+    result.setdefault("suggestions", [])
+    result.setdefault("opportunities", [])
+    result.setdefault("disclaimer", "系统打分仅用于发布前内容诊断和爆款潜力评估，不代表实际流量预测。")
+    result.setdefault("fallback_used", False)
+    return result
 
 
 def _get_owned_source_note(db: Session, current_user: User, note_id: int) -> Note:
@@ -540,11 +567,108 @@ def delete_draft(
     if draft is None or draft.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
     db.execute(select(DraftAsset).where(DraftAsset.draft_id == draft.id))
+    for score in db.scalars(select(DraftAiScoreResult).where(DraftAiScoreResult.draft_id == draft.id)).all():
+        db.delete(score)
     for asset in db.scalars(select(DraftAsset).where(DraftAsset.draft_id == draft.id)).all():
         db.delete(asset)
     db.delete(draft)
     db.commit()
     return {"id": draft_id, "status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Draft AI scoring
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{draft_id}/ai-score")
+def score_draft_with_ai(
+    draft_id: int,
+    payload: DraftAiScoreRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    text_client: TextAiClient = Depends(get_text_ai_client),
+):
+    draft = db.get(AiDraft, draft_id)
+    if draft is None or draft.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
+    if draft.platform != "xhs":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only XHS drafts can be scored")
+
+    assets = db.scalars(
+        select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
+    ).all()
+    model_config, api_key = _text_model_context(db, current_user)
+    scoring_service = DraftAiScoringService()
+
+    def action():
+        return scoring_service.score_draft_content(
+            db=db,
+            current_user=current_user,
+            draft=draft,
+            assets=assets,
+            model_config=model_config,
+            api_key=api_key,
+            text_client=text_client,
+        )
+
+    task, scoring_payload = _recorded_text_task(
+        db=db,
+        current_user=current_user,
+        platform="xhs",
+        task_type="draft_ai_score",
+        payload={
+            "draft_id": draft.id,
+            "model_config_id": model_config.id,
+            "model_name": model_config.model_name,
+            "force": payload.force,
+            "preview_only": True,
+        },
+        action=action,
+    )
+    result = scoring_payload["result"]
+    score = DraftAiScoreResult(
+        user_id=current_user.id,
+        draft_id=draft.id,
+        platform=draft.platform,
+        task_id=task.id,
+        overall_score=int(result.get("overall_score") or 0),
+        potential_level=str(result.get("potential_level") or "medium"),
+        result_json=result,
+        rule_snapshot=scoring_payload.get("rule_snapshot"),
+        opportunity_snapshot=scoring_payload.get("opportunity_snapshot"),
+        model_name=model_config.model_name,
+    )
+    db.add(score)
+    db.flush()
+    task.payload = {
+        **(task.payload or {}),
+        "result_id": score.id,
+        "fallback_used": bool(result.get("fallback_used")),
+        "ai_error": scoring_payload.get("ai_error") or "",
+    }
+    db.commit()
+    db.refresh(score)
+    return _serialize_draft_ai_score(score)
+
+
+@router.get("/{draft_id}/ai-score/latest")
+def get_latest_draft_ai_score(
+    draft_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = db.get(AiDraft, draft_id)
+    if draft is None or draft.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
+    score = db.scalars(
+        select(DraftAiScoreResult)
+        .where(DraftAiScoreResult.draft_id == draft.id, DraftAiScoreResult.user_id == current_user.id)
+        .order_by(DraftAiScoreResult.created_at.desc(), DraftAiScoreResult.id.desc())
+    ).first()
+    if score is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft AI score not found")
+    return _serialize_draft_ai_score(score)
 
 
 # ---------------------------------------------------------------------------

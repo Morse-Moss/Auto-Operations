@@ -1,26 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Card, Collapse, Empty, Input, Modal, Select, Space, Tag, Typography, Upload, message as antMessage } from "antd";
-import { DeleteOutlined, EditOutlined, LinkOutlined, PictureOutlined, ReloadOutlined, SaveOutlined, UploadOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Collapse, Empty, Input, Modal, Progress, Select, Space, Tag, Typography, Upload, message as antMessage } from "antd";
+import { DeleteOutlined, EditOutlined, LinkOutlined, PictureOutlined, ReloadOutlined, SaveOutlined, TrophyOutlined, UploadOutlined } from "@ant-design/icons";
 
 import { DraftWorkbenchShell, useDraftWorkbench } from "../../../components/draft-workbench";
 import {
   addDraftAsset,
   deleteDraftAsset,
   fetchDraftAssets,
+  fetchLatestDraftAiScore,
   fetchSavedNote,
   fetchTask,
   generateTagOptions,
   generateTitleOptions,
   localizeDraftAsset,
   rewriteDraftWithAi,
+  scoreDraftWithAi,
   sendDraftToPublish,
   startImageGenerationTask,
   updateDraft,
   uploadAssetFile,
 } from "../../../lib/api";
 import type { DraftAsset } from "../../../lib/api";
-import type { GeneratedImageAsset, GenerateImageResult, SavedNote, TaskRecord } from "../../../types";
+import type { DraftAiScoreResult, GeneratedImageAsset, GenerateImageResult, SavedNote, TaskRecord } from "../../../types";
 
 import { createXhsDraftWorkbenchAdapter } from "./xhs-draft-workbench-adapter";
 import type { RewriteTemplateKey } from "./rewrite-templates";
@@ -142,6 +144,78 @@ function sourceNoteImageCandidates(note: SavedNote | null, existingUrls = new Se
     .map((url) => ({ url, source: "source_note" }));
 }
 
+const SCORE_LEVEL_LABELS: Record<string, { label: string; color: string }> = {
+  low: { label: "基础待补强", color: "red" },
+  medium: { label: "有发布基础", color: "orange" },
+  high: { label: "潜力较好", color: "blue" },
+  excellent: { label: "高潜力草稿", color: "green" },
+};
+
+function scorePercent(score: number, maxScore: number): number {
+  if (!maxScore) return 0;
+  return Math.round((score / maxScore) * 100);
+}
+
+function renderDraftScore(score: DraftAiScoreResult | null) {
+  if (!score) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无系统打分，保存草稿后可开始打分。" />;
+  }
+  const level = SCORE_LEVEL_LABELS[score.potential_level] ?? SCORE_LEVEL_LABELS.medium;
+  return (
+    <Space direction="vertical" size={10} style={{ width: "100%" }}>
+      <Space align="center" wrap>
+        <Progress type="circle" percent={score.overall_score} size={72} format={(value) => `${value ?? 0}`} />
+        <Space direction="vertical" size={4}>
+          <Tag color={level.color}>{level.label}</Tag>
+          <Text type="secondary">系统打分 / 100</Text>
+        </Space>
+      </Space>
+      {score.summary ? <Paragraph style={{ marginBottom: 0 }}>{score.summary}</Paragraph> : null}
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        {score.dimensions.map((dimension) => (
+          <div key={dimension.key}>
+            <Space style={{ width: "100%", justifyContent: "space-between" }}>
+              <Text strong>{dimension.label}</Text>
+              <Text type="secondary">{dimension.score}/{dimension.max_score}</Text>
+            </Space>
+            <Progress percent={scorePercent(dimension.score, dimension.max_score)} size="small" showInfo={false} />
+            <Text type="secondary" style={{ fontSize: 12 }}>{dimension.reason}</Text>
+          </div>
+        ))}
+      </Space>
+      {score.risks.length > 0 ? (
+        <Alert
+          type={score.risks.some((risk) => risk.level === "high") ? "error" : "warning"}
+          showIcon
+          message="主要风险"
+          description={score.risks.slice(0, 3).map((risk) => `${risk.title}：${risk.detail}`).join("；")}
+        />
+      ) : null}
+      {score.suggestions.length > 0 ? (
+        <Card size="small" title="优化建议">
+          <Space direction="vertical" size={6} style={{ width: "100%" }}>
+            {score.suggestions.slice(0, 4).map((suggestion) => (
+              <div key={`${suggestion.priority}-${suggestion.title}`}>
+                <Tag color={suggestion.priority === "high" ? "red" : suggestion.priority === "medium" ? "orange" : "blue"}>{suggestion.priority || "medium"}</Tag>
+                <Text>{suggestion.title}</Text>
+                {suggestion.example ? <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>{suggestion.example}</Paragraph> : null}
+              </div>
+            ))}
+          </Space>
+        </Card>
+      ) : null}
+      {score.opportunities.length > 0 ? (
+        <Space size={[4, 6]} wrap>
+          {score.opportunities.slice(0, 6).map((opportunity) => (
+            <Tag key={`${opportunity.type}-${opportunity.label}`} color="purple">{opportunity.label}</Tag>
+          ))}
+        </Space>
+      ) : null}
+      <Alert type="info" showIcon message={score.disclaimer} />
+    </Space>
+  );
+}
+
 function renderDraftSourceAssetPreview(draftAssets: DraftAsset[]) {
   const imageAssets = draftAssets.filter((asset) => asset.asset_type === "image" && Boolean(draftAssetImageUrl(asset)));
   if (imageAssets.length === 0) {
@@ -194,6 +268,9 @@ export function XhsDraftsPage() {
   const [editImagePrompt, setEditImagePrompt] = useState("");
   const [editImageAspectRatio, setEditImageAspectRatio] = useState<ImageAspectRatio>("auto");
   const [isEditingImage, setIsEditingImage] = useState(false);
+  const [draftAiScore, setDraftAiScore] = useState<DraftAiScoreResult | null>(null);
+  const [isLoadingDraftAiScore, setIsLoadingDraftAiScore] = useState(false);
+  const [isScoringDraft, setIsScoringDraft] = useState(false);
 
   const selectedDraft = controller.selectedDraft;
   const selectedSourceNoteId = selectedDraft?.source_note_id ?? null;
@@ -244,6 +321,26 @@ export function XhsDraftsPage() {
   useEffect(() => {
     setRewriteCandidates({});
     setDraftAssetUrl("");
+  }, [selectedDraft?.id]);
+
+  useEffect(() => {
+    setDraftAiScore(null);
+    if (!selectedDraft) return;
+    let cancelled = false;
+    setIsLoadingDraftAiScore(true);
+    (async () => {
+      try {
+        const score = await fetchLatestDraftAiScore(selectedDraft.id);
+        if (!cancelled) setDraftAiScore(score);
+      } catch {
+        if (!cancelled) setDraftAiScore(null);
+      } finally {
+        if (!cancelled) setIsLoadingDraftAiScore(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedDraft?.id]);
 
   async function refreshDraftAssets(draftId = selectedDraft?.id) {
@@ -432,6 +529,26 @@ export function XhsDraftsPage() {
     }
   }
 
+  async function handleScoreDraft() {
+    if (!selectedDraft) return;
+    setIsScoringDraft(true);
+    try {
+      const saved = await updateDraft(selectedDraft.id, {
+        draft_name: controller.draftName,
+        title: controller.title,
+        body: controller.body,
+        tags: controller.tags,
+      });
+      const score = await scoreDraftWithAi(saved.id);
+      setDraftAiScore(score);
+      antMessage.success("系统打分完成：结果用于发前诊断，不代表实际流量预测。");
+    } catch (error) {
+      antMessage.error(error instanceof Error ? error.message : "系统打分失败");
+    } finally {
+      setIsScoringDraft(false);
+    }
+  }
+
   async function handleSendToPublish() {
     if (!selectedDraft) return;
     setIsSendingPublish(true);
@@ -587,6 +704,19 @@ export function XhsDraftsPage() {
       )}
         renderAssistantExtras={() => (
           <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Card
+            size="small"
+            title={<Space><TrophyOutlined />系统打分</Space>}
+            loading={isLoadingDraftAiScore}
+            extra={(
+              <Button size="small" type="primary" loading={isScoringDraft} disabled={!selectedDraft} onClick={() => void handleScoreDraft()}>
+                保存并打分
+              </Button>
+            )}
+          >
+            {renderDraftScore(draftAiScore)}
+          </Card>
+
           <Collapse
             size="small"
             items={[

@@ -29,6 +29,7 @@ import type {
   CreateDraftPayload,
   DashboardOverview,
   Draft,
+  DraftAiScoreResult,
   DescribeImagePayload,
   FeishuCreateAnalysisBasePayload,
   FeishuCreateAnalysisBaseResponse,
@@ -1051,6 +1052,16 @@ export async function updateDraft(
 
 export async function deleteDraft(draftId: number): Promise<{ id: number; status: string }> {
   const response = await http.delete<{ id: number; status: string }>(`/drafts/${draftId}`);
+  return response.data;
+}
+
+export async function scoreDraftWithAi(draftId: number): Promise<DraftAiScoreResult> {
+  const response = await http.post<DraftAiScoreResult>(`/drafts/${draftId}/ai-score`, {});
+  return response.data;
+}
+
+export async function fetchLatestDraftAiScore(draftId: number): Promise<DraftAiScoreResult> {
+  const response = await http.get<DraftAiScoreResult>(`/drafts/${draftId}/ai-score/latest`, { _silent: true } as never);
   return response.data;
 }
 

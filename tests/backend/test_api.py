@@ -335,6 +335,10 @@ def test_frontend_exposes_feishu_integration_contracts():
     assert "FeishuSyncResponse" in types_source
     assert "feishu_sync?: FeishuSyncState" in types_source
     assert "analysis_result?: NoteAnalysisResult | null" in types_source
+    assert "score?: number | null" in types_source
+    assert "rating?: string | null" in types_source
+    assert "cover_type?: string | null" in types_source
+    assert "title_type?: string | null" in types_source
     assert "fetchFeishuConfig" in api_source
     assert "saveFeishuConfig" in api_source
     assert "ensureFeishuFields" in api_source
@@ -405,8 +409,16 @@ def test_xhs_content_library_exposes_feishu_filters_and_actions():
     assert "pullXhsNotesFromFeishu" in adapter_source
     assert "同步到飞书" in adapter_source
     assert "从飞书回传" in adapter_source
+    assert "回传全部分析结果" in adapter_source
     assert "飞书分析结果" in adapter_source
     assert "analysis_result" in adapter_source
+    assert "score" in adapter_source
+    assert "rating" in adapter_source
+    assert "评分" in adapter_source
+    assert "评级" in adapter_source
+    assert "封面类型" in adapter_source
+    assert "标题类型" in adapter_source
+    assert "笔记结构分析" in adapter_source
     assert "feishu_sync" in adapter_source
 
 
@@ -6478,6 +6490,230 @@ def test_ai_rewrite_note_returns_preview_candidate_without_overwriting_owned_dra
             "body": "改写结果：爆款标题 / 更适合小红书种草",
             "tags": [{"name": "种草"}, {"name": "探店"}],
         }
+    finally:
+        app.dependency_overrides.pop(get_text_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_draft_ai_score_requires_authentication(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        response = client.post("/api/drafts/1/ai-score", json={})
+
+        assert response.status_code == 401
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+class FakeDraftScoreClient:
+    def __init__(self, response: str):
+        self.response = response
+        self.calls = []
+
+    def complete_json_prompt(self, *, model_config, api_key, system_prompt, user_prompt, temperature=0.2):
+        self.calls.append({
+            "model_name": model_config.model_name,
+            "api_key": api_key,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "temperature": temperature,
+        })
+        return self.response
+
+
+def _create_default_text_model(token: str, model_name: str = "gpt-score-test"):
+    response = client.post(
+        "/api/model-configs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Default Text",
+            "model_type": "text",
+            "provider": "openai-compatible",
+            "model_name": model_name,
+            "base_url": "https://api.example.test/v1",
+            "api_key": "sk-score-secret",
+            "is_default": True,
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_draft_ai_score_requires_owned_draft_and_default_text_model(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("draft-score-owner")
+    intruder_token = _register_and_get_access_token("draft-score-intruder")
+    try:
+        draft_response = client.post(
+            "/api/drafts",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"platform": "xhs", "title": "系统打分标题", "body": "系统打分正文"},
+        )
+        assert draft_response.status_code == 200
+        draft_id = draft_response.json()["id"]
+
+        no_model_response = client.post(
+            f"/api/drafts/{draft_id}/ai-score",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={},
+        )
+        assert no_model_response.status_code == 400
+        assert "Default text model" in no_model_response.json()["detail"]
+
+        intruder_response = client.post(
+            f"/api/drafts/{draft_id}/ai-score",
+            headers={"Authorization": f"Bearer {intruder_token}"},
+            json={},
+        )
+        assert intruder_response.status_code == 404
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_draft_ai_score_creates_task_and_latest_result(tmp_path):
+    from backend.app.api.ai import get_text_ai_client
+
+    fake_client = FakeDraftScoreClient(
+        '{"overall_score":86,"potential_level":"high","summary":"选题清晰，适合发布前优化。",'
+        '"dimensions":[{"key":"opportunity_fit","label":"机会匹配","score":25,"max_score":30,"reason":"命中关键词机会。"}],'
+        '"risks":[{"level":"medium","title":"案例不足","detail":"缺少真实案例。"}],'
+        '"suggestions":[{"priority":"high","title":"补充案例","example":"增加一个前后对比案例。"}],'
+        '"opportunities":[{"type":"keyword","label":"低卡早餐","reason":"命中关键词。"}]}'
+    )
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("draft-score-success")
+    try:
+        app.dependency_overrides[get_text_ai_client] = lambda: fake_client
+        model = _create_default_text_model(owner_token)
+        draft_response = client.post(
+            "/api/drafts",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"platform": "xhs", "title": "低卡早餐怎么搭", "body": "低卡早餐步骤和避坑建议，适合通勤党收藏。" * 6},
+        )
+        draft_id = draft_response.json()["id"]
+        asset_response = client.post(
+            f"/api/drafts/{draft_id}/assets",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"asset_type": "image", "url": "https://example.test/breakfast.jpg"},
+        )
+        assert asset_response.status_code == 200
+
+        score_response = client.post(
+            f"/api/drafts/{draft_id}/ai-score",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={},
+        )
+        assert score_response.status_code == 200
+        score = score_response.json()
+        assert score["overall_score"] == 86
+        assert score["potential_level"] == "high"
+        assert score["fallback_used"] is False
+        assert score["dimensions"][0]["key"] == "opportunity_fit"
+        assert "不代表实际流量预测" in score["disclaimer"]
+
+        latest_response = client.get(
+            f"/api/drafts/{draft_id}/ai-score/latest",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert latest_response.status_code == 200
+        assert latest_response.json()["id"] == score["id"]
+
+        tasks_response = client.get("/api/tasks?platform=xhs", headers={"Authorization": f"Bearer {owner_token}"})
+        task = tasks_response.json()["items"][0]
+        assert task["task_type"] == "draft_ai_score"
+        assert task["status"] == "completed"
+        assert task["payload"]["draft_id"] == draft_id
+        assert task["payload"]["model_config_id"] == model["id"]
+        assert task["payload"]["result_id"] == score["id"]
+        assert task["payload"]["fallback_used"] is False
+        assert fake_client.calls[0]["model_name"] == "gpt-score-test"
+    finally:
+        app.dependency_overrides.pop(get_text_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_draft_ai_score_falls_back_to_rules_when_ai_json_invalid(tmp_path):
+    from backend.app.api.ai import get_text_ai_client
+
+    fake_client = FakeDraftScoreClient("not json")
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("draft-score-fallback")
+    try:
+        app.dependency_overrides[get_text_ai_client] = lambda: fake_client
+        _create_default_text_model(owner_token)
+        draft_response = client.post(
+            "/api/drafts",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"platform": "xhs", "title": "AI 打分怎么做", "body": "步骤 清单 避坑 数据 案例 " * 20},
+        )
+        draft_id = draft_response.json()["id"]
+
+        score_response = client.post(
+            f"/api/drafts/{draft_id}/ai-score",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={},
+        )
+        assert score_response.status_code == 200
+        score = score_response.json()
+        assert score["fallback_used"] is True
+        assert score["summary"]
+        assert score["dimensions"]
+        assert score["suggestions"]
+        assert "ai_error" not in score
+    finally:
+        app.dependency_overrides.pop(get_text_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_draft_ai_score_scopes_comments_through_owned_notes(tmp_path):
+    from backend.app.api.ai import get_text_ai_client
+    from backend.app.models import NoteComment, PlatformAccount, User
+
+    fake_client = FakeDraftScoreClient('{"overall_score":72,"potential_level":"medium","summary":"可优化。"}')
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("draft-score-comment-owner")
+    intruder_token = _register_and_get_access_token("draft-score-comment-intruder")
+    try:
+        app.dependency_overrides[get_text_ai_client] = lambda: fake_client
+        _create_default_text_model(owner_token)
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            owner = db.scalar(select(User).where(User.username == "draft-score-comment-owner"))
+            intruder = db.scalar(select(User).where(User.username == "draft-score-comment-intruder"))
+            owner_account = PlatformAccount(user_id=owner.id, platform="xhs", nickname="owner")
+            intruder_account = PlatformAccount(user_id=intruder.id, platform="xhs", nickname="intruder")
+            db.add_all([owner_account, intruder_account])
+            db.flush()
+            owner_note = Note(user_id=owner.id, platform_account_id=owner_account.id, platform="xhs", note_id="owner-note", title="早餐", content="低卡早餐")
+            intruder_note = Note(user_id=intruder.id, platform_account_id=intruder_account.id, platform="xhs", note_id="intruder-note", title="竞品", content="不要泄露")
+            db.add_all([owner_note, intruder_note])
+            db.flush()
+            db.add_all([
+                NoteComment(note_id=owner_note.id, comment_id="c-owner", content="owner-only-comment", like_count=9),
+                NoteComment(note_id=intruder_note.id, comment_id="c-intruder", content="intruder-secret-comment", like_count=99),
+            ])
+            db.commit()
+            owner_note_id = owner_note.id
+        finally:
+            db.close()
+
+        draft_response = client.post(
+            "/api/drafts",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"platform": "xhs", "source_note_id": owner_note_id, "title": "低卡早餐", "body": "低卡早餐怎么搭配" * 10},
+        )
+        assert draft_response.status_code == 200
+        draft_id = draft_response.json()["id"]
+
+        score_response = client.post(
+            f"/api/drafts/{draft_id}/ai-score",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={},
+        )
+        assert score_response.status_code == 200
+        prompt = fake_client.calls[0]["user_prompt"]
+        assert "owner-only-comment" in prompt
+        assert "intruder-secret-comment" not in prompt
     finally:
         app.dependency_overrides.pop(get_text_ai_client, None)
         app.dependency_overrides.pop(db_dependency, None)

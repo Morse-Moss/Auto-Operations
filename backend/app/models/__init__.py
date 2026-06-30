@@ -1,4 +1,4 @@
-from backend.app.models.ai import DEFAULT_TEXT_MODEL_NAME, AiDraft, AiGeneratedAsset, DraftAsset, ModelConfig
+from backend.app.models.ai import DEFAULT_TEXT_MODEL_NAME, AiDraft, AiGeneratedAsset, DraftAiScoreResult, DraftAsset, ModelConfig
 from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.api_log import ApiLog
 from backend.app.models.auto_task import AutoTask
@@ -40,6 +40,7 @@ __all__ = [
     "AutoTask",
     "CrawlDiagnostic",
     "DEFAULT_TEXT_MODEL_NAME",
+    "DraftAiScoreResult",
     "DraftAsset",
     "FeishuIntegrationConfig",
     "KeywordDiscoveryItem",

@@ -63,3 +63,20 @@ class DraftAsset(Base):
     url: Mapped[str] = mapped_column(Text, default="")
     local_path: Mapped[str] = mapped_column(Text, default="")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DraftAiScoreResult(Base):
+    __tablename__ = "draft_ai_score_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("ai_drafts.id"), index=True)
+    platform: Mapped[str] = mapped_column(String(32), index=True, default="xhs")
+    task_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    overall_score: Mapped[int] = mapped_column(Integer, default=0)
+    potential_level: Mapped[str] = mapped_column(String(32), default="medium")
+    result_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    rule_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    opportunity_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    model_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)
