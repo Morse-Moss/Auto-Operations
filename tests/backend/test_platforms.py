@@ -25,6 +25,11 @@ def test_xhs_platform_registry_exposes_enriched_metadata_and_required_capabiliti
     assert payload["adapter_key"] == "xhs"
     assert payload["risk_level"] == "high"
     assert payload["auth_modes"] == ["cookie", "qr_login"]
+    assert [schema["key"] for schema in payload["account_auth_schemas"]] == [
+        "xhs-pc-cookie",
+        "xhs-creator-cookie",
+        "xhs-qr-login",
+    ]
     assert payload["accent_color"] == "#ff2442"
     assert payload["icon"] == "xhs"
 
@@ -42,6 +47,54 @@ def test_xhs_reply_execute_capability_is_blocked_high_risk_and_requires_confirma
     assert capabilities["engagement.reply_execute"]["status"] == "blocked"
     assert capabilities["engagement.reply_execute"]["risk"] == "high"
     assert capabilities["engagement.reply_execute"]["requires_confirmation"] is True
+
+
+
+def test_xhs_account_auth_schemas_are_read_only_descriptors_for_existing_account_paths():
+    payload = get_platform("xhs").to_dict()
+    schemas = {schema["key"]: schema for schema in payload["account_auth_schemas"]}
+
+    assert schemas["xhs-pc-cookie"] == {
+        "key": "xhs-pc-cookie",
+        "label": "小红书 PC Cookie 导入",
+        "auth_mode": "cookie",
+        "sub_type": "pc",
+        "endpoint": "/api/accounts/import-cookie",
+        "method": "POST",
+        "status": "available",
+        "risk": "high",
+        "requires_confirmation": True,
+        "sensitive_fields": ["cookie_string"],
+        "optional_fields": ["sync_creator"],
+        "notes": "沿用现有账号矩阵 Cookie 导入路径；Cookie 属敏感凭据，前端不得明文回显或写入日志。",
+    }
+    assert schemas["xhs-creator-cookie"]["endpoint"] == "/api/accounts/import-cookie"
+    assert schemas["xhs-creator-cookie"]["sensitive_fields"] == ["cookie_string"]
+    assert schemas["xhs-qr-login"]["status"] == "partial"
+    assert schemas["xhs-qr-login"]["endpoint"] is None
+
+
+
+def test_wechat_official_account_auth_schema_is_blocked_until_credential_design_exists():
+    payload = get_platform("wechat_official").to_dict()
+
+    assert payload["auth_modes"] == ["none"]
+    assert payload["account_auth_schemas"] == [
+        {
+            "key": "wechat-official-account-binding",
+            "label": "公众号账号绑定",
+            "auth_mode": "none",
+            "sub_type": None,
+            "endpoint": None,
+            "method": "GET",
+            "status": "blocked",
+            "risk": "medium",
+            "requires_confirmation": False,
+            "sensitive_fields": [],
+            "optional_fields": [],
+            "notes": "公众号账号凭据输入尚未开放；需要微信官方 API 策略和 QA 设计确认后再接入。",
+        }
+    ]
 
 
 
@@ -118,6 +171,11 @@ def test_platform_registry_list_endpoint_preserves_legacy_fields_and_exposes_enr
     assert xhs["adapter_key"] == "xhs"
     assert xhs["risk_level"] == "high"
     assert xhs["auth_modes"] == ["cookie", "qr_login"]
+    assert [schema["key"] for schema in xhs["account_auth_schemas"]] == [
+        "xhs-pc-cookie",
+        "xhs-creator-cookie",
+        "xhs-qr-login",
+    ]
     assert isinstance(xhs["capabilities"], list)
     assert xhs["capabilities"]
 
@@ -131,6 +189,7 @@ def test_platform_detail_endpoint_returns_platform_and_404_for_unknown():
     response = client.get("/api/platforms/xhs")
     assert response.status_code == 200
     assert response.json()["id"] == "xhs"
+    assert response.json()["account_auth_schemas"][0]["key"] == "xhs-pc-cookie"
 
     missing = client.get("/api/platforms/unknown")
     assert missing.status_code == 404

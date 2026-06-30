@@ -98,6 +98,38 @@ class PlatformCapability:
 
 
 @dataclass(frozen=True)
+class AccountAuthSchema:
+    key: str
+    label: str
+    auth_mode: AuthMode
+    sub_type: str | None
+    endpoint: str | None
+    method: str
+    status: CapabilityStatus
+    risk: RiskLevel
+    requires_confirmation: bool
+    sensitive_fields: list[str] = field(default_factory=list)
+    optional_fields: list[str] = field(default_factory=list)
+    notes: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "auth_mode": self.auth_mode.value,
+            "sub_type": self.sub_type,
+            "endpoint": self.endpoint,
+            "method": self.method,
+            "status": self.status.value,
+            "risk": self.risk.value,
+            "requires_confirmation": self.requires_confirmation,
+            "sensitive_fields": list(self.sensitive_fields),
+            "optional_fields": list(self.optional_fields),
+            "notes": self.notes,
+        }
+
+
+@dataclass(frozen=True)
 class PlatformMeta:
     id: PlatformId
     name_cn: str
@@ -113,6 +145,7 @@ class PlatformMeta:
     risk_level: RiskLevel = RiskLevel.LOW
     auth_modes: list[AuthMode] = field(default_factory=list)
     capabilities: list[PlatformCapability] = field(default_factory=list)
+    account_auth_schemas: list[AccountAuthSchema] = field(default_factory=list)
 
     @property
     def status(self) -> str:
@@ -137,6 +170,7 @@ class PlatformMeta:
             "risk_level": self.risk_level.value,
             "auth_modes": [mode.value for mode in self.auth_modes],
             "capabilities": [capability.to_dict() for capability in self.capabilities],
+            "account_auth_schemas": [schema.to_dict() for schema in self.account_auth_schemas],
         }
 
 
@@ -160,6 +194,65 @@ _XHS_CAPABILITIES = [
     PlatformCapability(CapabilityKey.ENGAGEMENT_REPLY_SUGGEST, CapabilityStatus.PLANNED, RiskLevel.LOW, False, "建议回复可做，执行另议"),
     PlatformCapability(CapabilityKey.ENGAGEMENT_REPLY_EXECUTE, CapabilityStatus.BLOCKED, RiskLevel.HIGH, True, "第一轮明确不开放自动评论"),
     PlatformCapability(CapabilityKey.WORKFLOW_AUTO_OPS, CapabilityStatus.AVAILABLE, RiskLevel.HIGH, True, "自动运营属于高风险链路"),
+]
+
+
+_XHS_ACCOUNT_AUTH_SCHEMAS = [
+    AccountAuthSchema(
+        key="xhs-pc-cookie",
+        label="小红书 PC Cookie 导入",
+        auth_mode=AuthMode.COOKIE,
+        sub_type="pc",
+        endpoint="/api/accounts/import-cookie",
+        method="POST",
+        status=CapabilityStatus.AVAILABLE,
+        risk=RiskLevel.HIGH,
+        requires_confirmation=True,
+        sensitive_fields=["cookie_string"],
+        optional_fields=["sync_creator"],
+        notes="沿用现有账号矩阵 Cookie 导入路径；Cookie 属敏感凭据，前端不得明文回显或写入日志。",
+    ),
+    AccountAuthSchema(
+        key="xhs-creator-cookie",
+        label="小红书 Creator Cookie 导入",
+        auth_mode=AuthMode.COOKIE,
+        sub_type="creator",
+        endpoint="/api/accounts/import-cookie",
+        method="POST",
+        status=CapabilityStatus.AVAILABLE,
+        risk=RiskLevel.HIGH,
+        requires_confirmation=True,
+        sensitive_fields=["cookie_string"],
+        notes="沿用现有 Creator Cookie 导入路径；不触发真实发布或上传动作。",
+    ),
+    AccountAuthSchema(
+        key="xhs-qr-login",
+        label="小红书扫码登录",
+        auth_mode=AuthMode.QR_LOGIN,
+        sub_type="pc",
+        endpoint=None,
+        method="GET",
+        status=CapabilityStatus.PARTIAL,
+        risk=RiskLevel.MEDIUM,
+        requires_confirmation=False,
+        notes="已有前端扫码登录面板线程；本 schema 只声明能力，不改变登录流程。",
+    ),
+]
+
+
+_WECHAT_OFFICIAL_ACCOUNT_AUTH_SCHEMAS = [
+    AccountAuthSchema(
+        key="wechat-official-account-binding",
+        label="公众号账号绑定",
+        auth_mode=AuthMode.NONE,
+        sub_type=None,
+        endpoint=None,
+        method="GET",
+        status=CapabilityStatus.BLOCKED,
+        risk=RiskLevel.MEDIUM,
+        requires_confirmation=False,
+        notes="公众号账号凭据输入尚未开放；需要微信官方 API 策略和 QA 设计确认后再接入。",
+    )
 ]
 
 
@@ -218,6 +311,7 @@ _PLATFORMS: List[PlatformMeta] = [
         risk_level=RiskLevel.HIGH,
         auth_modes=[AuthMode.COOKIE, AuthMode.QR_LOGIN],
         capabilities=_XHS_CAPABILITIES,
+        account_auth_schemas=_XHS_ACCOUNT_AUTH_SCHEMAS,
     ),
     PlatformMeta(
         id=PlatformId.DOUYIN,
@@ -286,6 +380,7 @@ _PLATFORMS: List[PlatformMeta] = [
         risk_level=RiskLevel.MEDIUM,
         auth_modes=[AuthMode.NONE],
         capabilities=_WECHAT_OFFICIAL_CAPABILITIES,
+        account_auth_schemas=_WECHAT_OFFICIAL_ACCOUNT_AUTH_SCHEMAS,
     ),
     PlatformMeta(
         id=PlatformId.WEIBO,
