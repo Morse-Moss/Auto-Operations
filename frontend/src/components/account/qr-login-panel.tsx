@@ -11,6 +11,7 @@ import {
   pollXhsLoginSession,
 } from "../../lib/api";
 import type { PlatformAccount, XhsQrLoginSession } from "../../types";
+import { clearPendingCreatorLoginSession, rememberPendingCreatorLoginSession } from "./pending-creator-login";
 
 const { Text, Link: AntLink } = Typography;
 
@@ -49,6 +50,9 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
           ? await createXhsPcQrLoginSession({ sync_creator: syncCreator })
           : await createXhsCreatorQrLoginSession();
       setSession(nextSession);
+      if (platform === "xhs" && accountType === "creator") {
+        rememberPendingCreatorLoginSession(nextSession);
+      }
       setStatusText(
         platform === "huitun"
           ? "请使用灰豚支持的扫码方式完成登录"
@@ -84,11 +88,20 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
         if (polled.status === "scanned") {
           setStatusText("已扫码，请在手机端确认登录");
         } else if (polled.status === "expired") {
+          if (platform === "xhs" && accountType === "creator") {
+            clearPendingCreatorLoginSession(polled.session_id);
+          }
           setStatusText("二维码已过期，请刷新");
-        } else if (polled.status === "confirmed" && polled.account && !confirmedRef.current) {
+        } else if (polled.status === "confirmed" && !confirmedRef.current) {
+          const confirmedAccount = polled.account ?? polled.creator_account;
+          if (platform === "xhs" && accountType === "creator") {
+            clearPendingCreatorLoginSession(polled.session_id);
+          }
           confirmedRef.current = true;
-          setStatusText(platform === "huitun" ? "灰豚账号绑定成功" : "账号绑定成功");
-          onConfirmed(polled.account);
+          setStatusText(platform === "huitun" ? "灰豚账号绑定成功" : "账号绑定成功，已登录");
+          if (confirmedAccount) {
+            onConfirmed(confirmedAccount);
+          }
         }
       } catch {
         setError("轮询登录状态失败，正在等待下一次尝试。");

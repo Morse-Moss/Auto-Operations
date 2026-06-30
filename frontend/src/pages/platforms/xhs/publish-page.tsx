@@ -34,6 +34,7 @@ import type { Dayjs } from "dayjs";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
+import { recoverPendingCreatorLogin } from "../../../components/account/pending-creator-login";
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
   deletePublishJob,
@@ -46,6 +47,7 @@ import {
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { PlatformAccount, PublishAsset, PublishJob } from "../../../types";
+import { accountLoginStatusLabel, publishErrorMessage } from "./xhs-user-messages";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -173,6 +175,7 @@ export function XhsPublishPage() {
 
   async function loadAccounts() {
     try {
+      await recoverPendingCreatorLogin();
       const result = await fetchAccounts("xhs");
       setAccounts(result);
     } catch {
@@ -274,7 +277,7 @@ export function XhsPublishPage() {
       setMessage(updated.status === "scheduled" ? `发布任务 #${updated.id} 已定时。` : `发布任务 #${updated.id} 已提交。`);
     } catch (err: unknown) {
       const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(d || "发布失败，请确认 Creator 账号和素材状态。");
+      setError(publishErrorMessage(d));
       try {
         const refreshed = await fetchPublishJob(selectedJob.id);
         setJobs((current) => current.map((job) => (job.id === refreshed.id ? refreshed : job)));
@@ -481,7 +484,7 @@ export function XhsPublishPage() {
                                       height={80}
                                       style={{ objectFit: "cover", borderRadius: 6 }}
                                       referrerPolicy="no-referrer"
-                                      fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0iODAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZyI+PHJlY3Qgd2lkdGg9IjgwIiBoZWlnaHQ9IjgwIiBmaWxsPSIjMjYyNjI2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGRvbWluYW50LWJhc2VsaW5lPSJtaWRkbGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM4YzhjOGMiIGZvbnQtc2l6ZT0iMTIiPuWbvueJhzwvdGV4dD48L3N2Zz4="
+                                      fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0iODAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjgwIiBoZWlnaHQ9IjgwIiBmaWxsPSIjMjYyNjI2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGRvbWluYW50LWJhc2VsaW5lPSJtaWRkbGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM4YzhjOGMiIGZvbnQtc2l6ZT0iMTIiPuWbvueJhzwvdGV4dD48L3N2Zz4="
                                     />
                                     <Text type="secondary" ellipsis style={{ display: "block", fontSize: 10, marginTop: 2 }}>
                                       #{index + 1} · {asset.upload_status}
@@ -546,7 +549,7 @@ export function XhsPublishPage() {
                               style={{ width: "100%" }}
                               options={creatorAccounts.map((a) => ({
                                 value: a.id,
-                                label: `${a.nickname || `账号 #${a.id}`} · Creator${a.status && a.status !== "unknown" ? ` · ${a.status === "active" || a.status === "healthy" ? "正常" : a.status}` : ""}`,
+                                label: `${a.nickname || `账号 #${a.id}`} · Creator · ${accountLoginStatusLabel(a.status)}`,
                               }))}
                               notFoundContent="暂无 Creator 账号"
                             />

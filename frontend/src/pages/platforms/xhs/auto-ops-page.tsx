@@ -43,6 +43,7 @@ import {
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { AutoTask, AutoTaskRunResult, PlatformAccount } from "../../../types";
+import { CREATOR_LOGIN_REQUIRED_MESSAGE } from "./xhs-user-messages";
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -56,6 +57,16 @@ const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
 function getStatusTag(s: string) {
   const cfg = STATUS_CONFIG[s] ?? { color: "default", label: s };
   return <Tag color={cfg.color}>{cfg.label}</Tag>;
+}
+
+function autoTaskErrorMessage(detail?: string | null): string {
+  const message = detail?.trim();
+  if (!message) return "请检查账号和模型配置。";
+  const normalized = message.toLowerCase();
+  if (normalized.includes("account has no cookies") || normalized.includes("no cookies") || normalized.includes("missing cookies")) {
+    return CREATOR_LOGIN_REQUIRED_MESSAGE;
+  }
+  return message;
 }
 
 const panelStyle: React.CSSProperties = {
@@ -212,7 +223,7 @@ export function AutoOpsPage() {
       );
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(`执行失败：${detail || "请检查账号和模型配置。"}`);
+      setError(`执行失败：${autoTaskErrorMessage(detail)}`);
     } finally {
       setRunningTaskId(null);
     }
