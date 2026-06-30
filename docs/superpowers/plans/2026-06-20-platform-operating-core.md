@@ -769,13 +769,13 @@ Stage 0-10 have all received at least a first scoped pass, so the active work is
 | Stage 2 Draft Workbench standardization | `closed` | `4708275 feat: add shared draft workbench` and Stage 2 evidence above |
 | Stage 3 Content Library frontend shell | `closed` | `dce3270 feat: reuse shared content library for wechat official` and Stage 3 evidence above |
 | Frontend Platform Core shell pass | `closed` | `84379ef feat: introduce shared platform core shell` |
-| Stage 4 backend content normalizer | `closure_in_progress` | `91c582b refactor: route xhs note serialization through mapper`; route-private helpers, ownership expectation, and WeChat Article mapping remain |
-| Stage 5 Account Matrix auth schema | `first_pass_done` | local frontend `account-auth-schema` exists; backend registry/auth schema adoption remains |
+| Stage 4 backend content normalizer | `closure_in_progress` | `91c582b refactor: route xhs note serialization through mapper`; `379f57f refactor: extract xhs comment mapper`; `62e151b refactor: make notes account platform explicit`; WeChat Article mapping remains |
+| Stage 5 Account Matrix auth schema | `closure_in_progress` | local frontend `account-auth-schema` exists; `0add4fd feat: expose platform account auth schemas`; frontend adoption remains |
 | Stage 6 Asset storage policy | `first_pass_done` | `asset_storage_policy` first pass evidence above; wider adoption remains |
 | Stage 7 Publish Queue policy/dry-run | `first_pass_done` | dry-run no-side-effect skeleton evidence above; real publish migration is safety-gated |
 | Stage 8 Workflow Automation | `first_pass_done` | workflow skeleton/no-bypass evidence above; deeper automation migration is safety-gated |
 | Stage 9 Diagnostics | `first_pass_done` | diagnostic service first pass evidence above; broader low-risk adoption remains |
-| Stage 10 Second Platform Readiness Gate | `first_pass_done` | readiness service/tests evidence above; current report run remains |
+| Stage 10 Second Platform Readiness Gate | `closure_in_progress` | readiness service/tests evidence above; current 2026-06-30 report verdict is `FOLLOW_UP` / `docs_or_fake_adapter_only` |
 
 ### Wave 1 — approved low-risk closure sequence
 
@@ -786,6 +786,24 @@ Stage 0-10 have all received at least a first scoped pass, so the active work is
 | 2 | Notes account platform expectation | Stage 4 / HC-01 | Make `_get_owned_account` expected platform explicit while preserving current XHS-only route behavior | Medium | notes account ownership tests + batch-save regression |
 | 3 | Read-only backend account auth schema | Stage 5 / HC-19 to HC-22 | Expose platform account auth schema from registry without changing real login endpoints or credential storage | Medium | platform registry tests + frontend build if types change |
 | 4 | Current readiness gate report | Stage 10 | Run/record current Platform Core readiness result as PASS/FOLLOW_UP/BLOCKER before real second-platform work | Low | readiness tests + docs diff check |
+
+### Wave 1 execution checkpoint — 2026-06-30
+
+| Order | Result | Evidence | Remaining boundary |
+|---|---|---|---|
+| 0 | Done | `cffe4ee docs: define platform core closure queue`; `git diff --check -- docs/superpowers/plans/2026-06-20-platform-operating-core.md` | Worktree branch only; not merged to root `master`. |
+| 1 | Done | `379f57f refactor: extract xhs comment mapper`; `py -3.12 -m pytest tests/backend/test_xhs_content_mappers.py tests/backend/test_notes_xhs_serializer.py -q` -> 14 passed; comment API regression subset -> 8 passed | Other XHS route-private helpers remain out of scope. |
+| 2 | Done | `62e151b refactor: make notes account platform explicit`; ownership/serializer tests -> 8 passed; batch-save ownership subset -> 3 passed | `/notes/batch-save` remains intentionally XHS-only. |
+| 3 | Done | `0add4fd feat: expose platform account auth schemas`; `py -3.12 -m pytest tests/backend/test_platforms.py -q` -> 10 passed; account/platform API subset -> 29 passed | Schema is read-only; no real login endpoint or credential storage behavior changed. |
+| 4 | `FOLLOW_UP` | `py -3.12 -m pytest tests/backend/test_platform_readiness_gate.py tests/backend/test_platforms.py -q` -> 15 passed | Allowed outcome is `docs_or_fake_adapter_only`; do not connect real second-platform accounts or real publish paths yet. |
+
+**Current readiness verdict:** `FOLLOW_UP`.
+
+**Allowed outcome:** `docs_or_fake_adapter_only`.
+
+**Why not PASS:** blocker-class safety checks have test coverage, but second-platform read-only adapter/content-library adoption is still incomplete and公众号 account binding remains blocked by design. Starting real account binding, real provider calls, real publish, or automated engagement is still outside the safe closure boundary.
+
+**User impact:** users can see clearer platform/account capability state, but should not be offered a working公众号 credential binding flow or any real second-platform write action until the Wave 2 design/adoption work is complete.
 
 ### Wave 2 — after Wave 1 review
 
