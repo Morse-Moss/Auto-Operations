@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app.adapters.xhs.mappers import normalize_xhs_comment_payload
 from backend.app.adapters.xhs.pc_api_adapter import XhsPcApiAdapter
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
@@ -156,71 +157,6 @@ def _note_url(note_id: str, item: dict[str, Any], card: dict[str, Any]) -> str:
     if not note_id:
         return ""
     return f"https://www.xiaohongshu.com/explore/{note_id}"
-
-
-def _comment_id(comment: dict[str, Any]) -> str:
-    return str(comment.get("comment_id") or comment.get("id") or comment.get("commentId") or "")
-
-
-def _comment_user(comment: dict[str, Any]) -> dict[str, Any]:
-    return comment.get("user_info") or comment.get("user") or comment.get("author") or {}
-
-
-def _comment_children(comment: dict[str, Any]) -> list[dict[str, Any]]:
-    for key in ("sub_comments", "sub_comment", "comments", "replies", "children"):
-        value = comment.get(key)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-    sub_comment_payload = comment.get("sub_comment_info")
-    if isinstance(sub_comment_payload, dict):
-        value = sub_comment_payload.get("comments")
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def _normalize_comment(comment: dict[str, Any], parent_comment_id: str | None = None) -> dict[str, Any]:
-    user = _comment_user(comment)
-    return {
-        "comment_id": _comment_id(comment),
-        "user_name": str(user.get("nickname") or user.get("name") or comment.get("user_name") or ""),
-        "user_id": str(user.get("user_id") or user.get("id") or comment.get("user_id") or "") or None,
-        "content": str(comment.get("content") or comment.get("text") or comment.get("desc") or ""),
-        "like_count": _metric(comment.get("like_count") or comment.get("liked_count") or comment.get("likes")),
-        "parent_comment_id": parent_comment_id,
-        "created_at_remote": comment.get("create_time") or comment.get("created_at") or comment.get("time"),
-        "raw_json": comment,
-    }
-
-
-def _flatten_comments(comments: list[dict[str, Any]], parent_comment_id: str | None = None) -> list[dict[str, Any]]:
-    flattened: list[dict[str, Any]] = []
-    for comment in comments:
-        normalized = _normalize_comment(comment, parent_comment_id=parent_comment_id)
-        if normalized["comment_id"]:
-            flattened.append(normalized)
-            child_parent_id = normalized["comment_id"]
-        else:
-            child_parent_id = parent_comment_id
-        flattened.extend(_flatten_comments(_comment_children(comment), parent_comment_id=child_parent_id))
-    return flattened
-
-
-def _extract_comment_list(raw_payload: Any) -> list[dict[str, Any]]:
-    if isinstance(raw_payload, list):
-        return [item for item in raw_payload if isinstance(item, dict)]
-    if not isinstance(raw_payload, dict):
-        return []
-    data = raw_payload.get("data") if isinstance(raw_payload.get("data"), dict) else raw_payload
-    for key in ("comments", "items", "list"):
-        value = data.get(key)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def normalize_comment_payload(raw_payload: Any) -> list[dict[str, Any]]:
-    return _flatten_comments(_extract_comment_list(raw_payload))
 
 
 def _normalize_search_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -396,7 +332,7 @@ def note_comments(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=message or "XHS note comments failed",
         )
-    items = normalize_comment_payload(raw_payload)
+    items = normalize_xhs_comment_payload(raw_payload)
     return {"total": len(items), "items": items}
 
 
