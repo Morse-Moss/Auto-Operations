@@ -1,27 +1,14 @@
 import {
-  AimOutlined,
-  BarChartOutlined,
   BellOutlined,
-  CloudDownloadOutlined,
-  DashboardOutlined,
-  DatabaseOutlined,
-  FileTextOutlined,
-  KeyOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MoonOutlined,
   RobotOutlined,
-  SafetyCertificateOutlined,
   ScheduleOutlined,
-  SearchOutlined,
-  SendOutlined,
   SettingOutlined,
-  ThunderboltOutlined,
-  StarOutlined,
   SunOutlined,
   UserOutlined,
-  VideoCameraOutlined,
 } from "@ant-design/icons";
 import {
   Avatar,
@@ -46,37 +33,11 @@ import KeepAliveRouteOutlet from "keepalive-for-react-router";
 import { useAuth } from "../../hooks/use-auth";
 import { useThemeMode } from "../../app/providers";
 import { fetchNotifications, markAllNotificationsRead, markNotificationRead } from "../../lib/api";
+import { getPlatformIdFromPath, getPlatformNavItems } from "../../platform-core/registry/platform-sections";
 import type { AppNotification } from "../../types";
 
 const { Sider, Header, Content } = Layout;
 const { Title, Text } = Typography;
-
-const xhsNavItems: MenuProps["items"] = [
-  { key: "/platform-select", icon: <DashboardOutlined />, label: "平台中心" },
-  { key: "/platforms/xhs/dashboard", icon: <DashboardOutlined />, label: "小红书总览" },
-  { key: "/platforms/xhs/accounts", icon: <SafetyCertificateOutlined />, label: "小红书账号矩阵" },
-  { key: "/platforms/xhs/discovery", icon: <SearchOutlined />, label: "小红书笔记发现" },
-  { key: "/platforms/xhs/keywords", icon: <KeyOutlined />, label: "小红书关键词组" },
-  { key: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "小红书数据抓取" },
-  { key: "/platforms/xhs/library", icon: <DatabaseOutlined />, label: "小红书内容库" },
-  { key: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "小红书分析中心" },
-  { key: "/platforms/xhs/drafts", icon: <FileTextOutlined />, label: "小红书草稿工坊" },
-  { key: "/platforms/xhs/image-studio", icon: <StarOutlined />, label: "小红书图片工坊" },
-  { key: "/platforms/xhs/video-studio", icon: <VideoCameraOutlined />, label: "小红书视频工坊" },
-  { key: "/platforms/xhs/publish", icon: <SendOutlined />, label: "小红书发布中心" },
-  { key: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "小红书自动运营" },
-  { key: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "小红书竞品监控" },
-];
-
-const wechatOfficialNavItems: MenuProps["items"] = [
-  { key: "/platform-select", icon: <DashboardOutlined />, label: "平台中心" },
-  { key: "/platforms/wechat-official/dashboard", icon: <DashboardOutlined />, label: "公众号总览" },
-  { key: "/platforms/wechat-official/accounts", icon: <SafetyCertificateOutlined />, label: "公众号账号矩阵" },
-  { key: "/platforms/wechat-official/discovery", icon: <SearchOutlined />, label: "公众号爆文发现" },
-  { key: "/platforms/wechat-official/library", icon: <DatabaseOutlined />, label: "公众号内容库" },
-  { key: "/platforms/wechat-official/drafts", icon: <FileTextOutlined />, label: "公众号草稿工坊" },
-  { key: "/platforms/wechat-official/settings", icon: <SettingOutlined />, label: "Redfox 设置" },
-];
 
 const footerNavItems: MenuProps["items"] = [
   { key: "/tasks", icon: <ScheduleOutlined />, label: "任务中心" },
@@ -117,8 +78,8 @@ export function AppShell() {
   const handleMarkAllRead = async () => { await markAllNotificationsRead(); void loadNotifications(); };
   const handleMenuClick: MenuProps["onClick"] = ({ key }) => { navigate(key); };
   const selectedKeys = [location.pathname];
-  const isWechatOfficialRoute = location.pathname.startsWith("/platforms/wechat-official");
-  const mainNavItems = isWechatOfficialRoute ? wechatOfficialNavItems : xhsNavItems;
+  const platformId = getPlatformIdFromPath(location.pathname);
+  const mainNavItems = getPlatformNavItems(platformId);
 
   const notificationDropdownContent = (
     <div style={{ width: 360, background: "#1f1f1f", borderRadius: 8, border: "1px solid #303030", overflow: "hidden" }}>

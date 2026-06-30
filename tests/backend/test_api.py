@@ -183,6 +183,7 @@ def test_image_studio_draft_asset_url_resolver_contract():
     assert "export async function localizeDraftAsset" in api_source
     assert "`/drafts/${draftId}/assets/${assetId}/localize`" in api_source
 
+
 def test_frontend_exposes_task_10_to_14_api_and_type_contracts():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
@@ -512,15 +513,196 @@ def test_library_page_preserves_delete_and_media_logic():
     assert 'referrerPolicy: "no-referrer"' in adapter_source
 
 
-def test_wechat_official_library_reuses_content_library_shell_without_publish_actions():
+def test_platform_navigation_is_registry_owned():
+    app_shell_source = open("frontend/src/components/layout/app-shell.tsx", encoding="utf-8").read()
+    registry_path = "frontend/src/platform-core/registry/platform-sections.tsx"
+
+    assert os.path.exists(registry_path)
+    registry_source = open(registry_path, encoding="utf-8").read()
+
+    assert "getPlatformNavItems" in app_shell_source
+    assert "getPlatformIdFromPath" in app_shell_source
+    assert 'startsWith("/platforms/wechat-official")' not in app_shell_source
+    assert "platformSectionRegistry" in registry_source
+    assert '"xhs"' in registry_source
+    assert '"wechat-official"' in registry_source
+    assert '"/platforms/xhs/dashboard"' in registry_source
+    assert '"/platforms/wechat-official/dashboard"' in registry_source
+    assert "公众号草稿工坊" in registry_source
+
+
+def test_platform_accounts_shell_is_shared():
+    accounts_shell_path = "frontend/src/platform-core/accounts/platform-accounts-shell.tsx"
+    account_types_path = "frontend/src/platform-core/accounts/platform-account-types.ts"
+
+    assert os.path.exists(accounts_shell_path)
+    assert os.path.exists(account_types_path)
+    accounts_shell_source = open(accounts_shell_path, encoding="utf-8").read()
+    account_types_source = open(account_types_path, encoding="utf-8").read()
+
+    assert "PlatformAccountsShell" in accounts_shell_source
+    assert "PlatformAccount" in account_types_source
+    assert "PlatformAccountsShell" in account_types_source
+    assert "xhs" not in accounts_shell_source.lower()
+    assert "wechat" not in accounts_shell_source.lower()
+    assert "Redfox" not in accounts_shell_source
+    assert "sendall" not in accounts_shell_source.lower()
+    assert "uploadWechatMaterial" not in accounts_shell_source
+
+
+def test_xhs_accounts_page_uses_platform_accounts_shell_without_losing_login_actions():
+    accounts_shell_path = "frontend/src/platform-core/accounts/platform-accounts-shell.tsx"
+    xhs_accounts_source = open("frontend/src/pages/platforms/xhs/accounts-page.tsx", encoding="utf-8").read()
+
+    assert os.path.exists(accounts_shell_path)
+    accounts_shell_source = open(accounts_shell_path, encoding="utf-8").read()
+
+    assert "PlatformAccountsShell" in xhs_accounts_source
+    assert "fetchAccounts" in xhs_accounts_source
+    assert "checkAccount" in xhs_accounts_source
+    assert "deleteAccount" in xhs_accounts_source
+    assert "AddAccountDrawer" in xhs_accounts_source
+    assert "defaultAccountType" in xhs_accounts_source
+    assert "login" not in accounts_shell_source.lower()
+    assert "QR" not in accounts_shell_source
+    assert "qr" not in accounts_shell_source.lower()
+    assert "AddAccountDrawer" not in accounts_shell_source
+
+
+def test_wechat_official_accounts_page_uses_platform_accounts_shell_and_preserves_blocks():
+    wechat_accounts_source = open("frontend/src/pages/wechat-official/wechat-official-accounts-page.tsx", encoding="utf-8").read()
+
+    assert "PlatformAccountsShell" in wechat_accounts_source
+    assert "fetchWechatOfficialRedfoxConfig" in wechat_accounts_source
+    assert "Redfox 数据源" in wechat_accounts_source
+    assert "真实公众号授权仍保持阻断" in wechat_accounts_source
+    assert "素材上传" in wechat_accounts_source
+    assert "预览发送" in wechat_accounts_source
+    assert "群发发布" in wechat_accounts_source
+    assert "uploadWechatMaterial" not in wechat_accounts_source
+    assert "uploadPublishAsset" not in wechat_accounts_source
+    assert "sendall(" not in wechat_accounts_source.lower()
+    assert "sendToPublish" not in wechat_accounts_source
+
+
+def test_wechat_official_routes_use_dedicated_pages():
+    router_source = open("frontend/src/app/router.tsx", encoding="utf-8").read()
+
+    assert "WechatOfficialDashboardPage" in router_source
+    assert "WechatOfficialAccountsPage" in router_source
+    assert "WechatOfficialDiscoveryPage" in router_source
+    assert "WechatOfficialLibraryPage" in router_source
+    assert "WechatOfficialDraftsPage" in router_source
+    assert "WechatOfficialSettingsPage" in router_source
+    assert 'path="/platforms/wechat-official/dashboard" element={<WechatOfficialDashboardPage />}' in router_source
+    assert 'path="/platforms/wechat-official/accounts" element={<WechatOfficialAccountsPage />}' in router_source
+    assert 'path="/platforms/wechat-official/discovery" element={<WechatOfficialDiscoveryPage />}' in router_source
+    assert 'path="/platforms/wechat-official/library" element={<WechatOfficialLibraryPage />}' in router_source
+    assert 'path="/platforms/wechat-official/drafts" element={<WechatOfficialDraftsPage />}' in router_source
+    assert 'path="/platforms/wechat-official/settings" element={<WechatOfficialSettingsPage />}' in router_source
+    assert "element={<WechatOfficialDashboard />}" not in router_source
+
+
+def test_wechat_official_dashboard_no_longer_routes_sections_internally():
     dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+    readiness_panel_source = open("frontend/src/platform-core/readiness/platform-readiness-panel.tsx", encoding="utf-8").read()
+    action_hub_source = open("frontend/src/platform-core/actions/platform-action-hub.tsx", encoding="utf-8").read()
+
+    assert "sectionFromPath" not in dashboard_source
+    assert "showAccounts" not in dashboard_source
+    assert "showDiscovery" not in dashboard_source
+    assert "showLibrary" not in dashboard_source
+    assert "showDrafts" not in dashboard_source
+    assert "showSettings" not in dashboard_source
+    assert "WechatOfficialDiscoveryPanel" not in dashboard_source
+    assert "WechatOfficialContentLibraryPanel" not in dashboard_source
+    assert "WechatOfficialDraftWorkbench" not in dashboard_source
+    assert "PlatformReadinessPanel" in dashboard_source
+    assert "Readiness / Diagnostics" in readiness_panel_source
+    assert "推荐下一步" in action_hub_source
+
+
+def test_wechat_official_platform_split_preserves_safety_boundary():
+    page_paths = [
+        "frontend/src/pages/wechat-official/wechat-official-dashboard.tsx",
+        "frontend/src/pages/wechat-official/wechat-official-accounts-page.tsx",
+        "frontend/src/pages/wechat-official/wechat-official-discovery-page.tsx",
+        "frontend/src/pages/wechat-official/wechat-official-library-page.tsx",
+        "frontend/src/pages/wechat-official/wechat-official-drafts-page.tsx",
+        "frontend/src/pages/wechat-official/wechat-official-settings-page.tsx",
+    ]
+
+    for path in page_paths:
+        assert os.path.exists(path)
+    sources = "\n".join(open(path, encoding="utf-8").read() for path in page_paths)
+
+    assert "PlatformSectionPage" in sources
+    assert "发布/群发 blocked" in sources or "真实公众号授权仍保持阻断" in sources
+    assert "uploadWechatMaterial" not in sources
+    assert "uploadPublishAsset" not in sources
+    assert "sendToPublish" not in sources
+    assert "PublishJob" not in sources
+    assert "sendall(" not in sources.lower()
+
+
+def test_platform_action_hub_is_shared():
+    action_hub_path = "frontend/src/platform-core/actions/platform-action-hub.tsx"
+    action_types_path = "frontend/src/platform-core/actions/platform-action-types.ts"
+    dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+
+    assert os.path.exists(action_hub_path)
+    assert os.path.exists(action_types_path)
+    action_hub_source = open(action_hub_path, encoding="utf-8").read()
+    action_types_source = open(action_types_path, encoding="utf-8").read()
+
+    assert "PlatformActionHub" in action_hub_source
+    assert "PlatformAction" in action_types_source
+    assert "推荐下一步" in action_hub_source
+    assert "type ReadinessAction" not in dashboard_source
+    assert "readinessActions.map" not in dashboard_source
+
+
+def test_platform_readiness_panel_is_shared():
+    readiness_panel_path = "frontend/src/platform-core/readiness/platform-readiness-panel.tsx"
+    dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+
+    assert os.path.exists(readiness_panel_path)
+    readiness_panel_source = open(readiness_panel_path, encoding="utf-8").read()
+
+    assert "PlatformReadinessPanel" in readiness_panel_source
+    assert "Readiness / Diagnostics" in readiness_panel_source
+    assert "PlatformActionHub" in readiness_panel_source
+    assert "blockedTags" in readiness_panel_source
+    assert "checks.map" in readiness_panel_source
+    assert "PlatformReadinessPanel" in dashboard_source
+
+
+def test_wechat_official_readiness_actions_are_adapter_owned():
+    actions_path = "frontend/src/pages/wechat-official/wechat-official-readiness-actions.ts"
+    dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+
+    assert os.path.exists(actions_path)
+    actions_source = open(actions_path, encoding="utf-8").read()
+
+    assert "buildWechatOfficialReadinessActions" in actions_source
+    assert "PlatformAction" in actions_source
+    assert '"/platforms/wechat-official/settings"' in actions_source
+    assert '"/platforms/wechat-official/discovery"' in actions_source
+    assert '"/platforms/wechat-official/library"' in actions_source
+    assert '"/platforms/wechat-official/drafts"' in actions_source
+    assert "buildWechatOfficialReadinessActions" in dashboard_source
+    assert "function buildReadinessActions" not in dashboard_source
+
+
+def test_wechat_official_library_reuses_content_library_shell_without_publish_actions():
+    library_page_source = open("frontend/src/pages/wechat-official/wechat-official-library-page.tsx", encoding="utf-8").read()
     panel_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-panel.tsx", encoding="utf-8").read()
     adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     shell_source = open("frontend/src/components/content-library/content-library-shell.tsx", encoding="utf-8").read()
     controller_source = open("frontend/src/components/content-library/use-content-library.ts", encoding="utf-8").read()
 
-    assert "WechatOfficialContentLibraryPanel" in dashboard_source
+    assert "WechatOfficialContentLibraryPanel" in library_page_source
     assert "ContentLibraryShell" in panel_source
     assert "useContentLibrary" in panel_source
     assert "createWechatOfficialContentLibraryAdapter" in panel_source
@@ -564,24 +746,15 @@ def test_wechat_official_library_reuses_content_library_shell_without_publish_ac
 
 
 def test_wechat_official_discovery_is_candidate_only_and_delegates_operations_to_library():
-    dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+    discovery_page_source = open("frontend/src/pages/wechat-official/wechat-official-discovery-page.tsx", encoding="utf-8").read()
     discovery_source = open("frontend/src/pages/wechat-official/wechat-official-discovery-panel.tsx", encoding="utf-8").read()
     library_adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
 
-    assert "WechatOfficialDiscoveryPanel" in dashboard_source
-    assert "WechatOfficialContentLibraryPanel" in dashboard_source
-    assert "collectWechatOfficialRedfoxArticles" not in dashboard_source
-    assert "collectWechatOfficialRedfoxAccount" not in dashboard_source
-    assert "importWechatOfficialRedfoxUrl" not in dashboard_source
-    assert "updateWechatOfficialRecommendation" not in dashboard_source
-    assert "deleteWechatOfficialContentLibraryItem" not in dashboard_source
-    assert "refreshWechatOfficialContentDetail" not in dashboard_source
-    assert "analyzeWechatOfficialHotspots" not in dashboard_source
-    assert "createWechatOfficialDraft" not in dashboard_source
-    assert "dryRunWechatOfficialDraft" not in dashboard_source
+    assert "WechatOfficialDiscoveryPanel" in discovery_page_source
+    assert "PlatformSectionPage" in discovery_page_source
     assert "collectWechatOfficialRedfoxArticles" in discovery_source
     assert "collectWechatOfficialRedfoxAccount" in discovery_source
-    assert "importWechatOfficialRedfoxUrl" in discovery_source
+    assert "importWechatOfficialArticleUrl" in discovery_source
     assert "updateWechatOfficialRecommendation" in discovery_source
     assert "deleteWechatOfficialContentLibraryItem" in discovery_source
     assert "去内容库" in discovery_source
@@ -647,28 +820,33 @@ def test_wechat_official_readiness_dashboard_contract():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
     dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
+    readiness_panel_source = open("frontend/src/platform-core/readiness/platform-readiness-panel.tsx", encoding="utf-8").read()
+    action_hub_source = open("frontend/src/platform-core/actions/platform-action-hub.tsx", encoding="utf-8").read()
+    actions_source = open("frontend/src/pages/wechat-official/wechat-official-readiness-actions.ts", encoding="utf-8").read()
+    combined_source = "\n".join([dashboard_source, readiness_panel_source, action_hub_source, actions_source])
 
     assert "fetchWechatOfficialReadiness" in api_source
     assert '"/wechat-official/readiness"' in api_source
     assert "WechatOfficialReadiness" in types_source
     assert "WechatOfficialReadinessCheck" in types_source
-    assert "Readiness / Diagnostics" in dashboard_source
-    assert "推荐下一步" in dashboard_source
+    assert "PlatformReadinessPanel" in dashboard_source
+    assert "Readiness / Diagnostics" in readiness_panel_source
+    assert "推荐下一步" in action_hub_source
     assert "readinessActions" in dashboard_source
-    assert "后端服务版本可能未重启" in dashboard_source
-    assert '"/platforms/wechat-official/settings"' in dashboard_source
-    assert '"/platforms/wechat-official/discovery"' in dashboard_source
-    assert '"/platforms/wechat-official/library"' in dashboard_source
-    assert '"/platforms/wechat-official/drafts"' in dashboard_source
-    assert "readiness.summary.next_actions" in dashboard_source
-    assert "material upload blocked" in dashboard_source
-    assert "preview blocked" in dashboard_source
-    assert "sendall blocked" in dashboard_source
+    assert "后端服务版本可能未重启" in combined_source
+    assert '"/platforms/wechat-official/settings"' in actions_source
+    assert '"/platforms/wechat-official/discovery"' in actions_source
+    assert '"/platforms/wechat-official/library"' in actions_source
+    assert '"/platforms/wechat-official/drafts"' in actions_source
+    assert "nextActions" in readiness_panel_source
+    assert "material upload blocked" in combined_source
+    assert "preview blocked" in combined_source
+    assert "sendall blocked" in combined_source
     assert "fetchWechatOfficialReadiness" in dashboard_source
-    assert "uploadWechatMaterial" not in dashboard_source
-    assert "uploadPublishAsset" not in dashboard_source
-    assert "sendToPublish" not in dashboard_source
-    assert "PublishJob" not in dashboard_source
+    assert "uploadWechatMaterial" not in combined_source
+    assert "uploadPublishAsset" not in combined_source
+    assert "sendToPublish" not in combined_source
+    assert "PublishJob" not in combined_source
 
 
 def test_wechat_official_redfox_collect_jobs_frontend_contract():

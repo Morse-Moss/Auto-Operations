@@ -1,25 +1,10 @@
-import {
-  Alert,
-  Avatar,
-  Button,
-  Card,
-  Col,
-  Empty,
-  Modal,
-  Row,
-  Space,
-  Spin,
-  Statistic,
-  Tag,
-  Typography,
-} from "antd";
+import { Button, Modal, Space, Typography } from "antd";
 import {
   DeleteOutlined,
   PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SyncOutlined,
-  UserOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -28,8 +13,10 @@ import { AddAccountDrawer } from "../../../components/account/add-account-drawer
 import { checkAccount, deleteAccount, fetchAccounts } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { PlatformAccount } from "../../../types";
+import { PlatformAccountsShell } from "../../../platform-core/accounts/platform-accounts-shell";
+import type { PlatformAccountCardItem } from "../../../platform-core/accounts/platform-account-types";
 
-const { Title, Text } = Typography;
+const { Text, Title } = Typography;
 
 function formatDate(value?: string): string {
   return formatShanghaiTime(value);
@@ -56,6 +43,111 @@ const statusLabelMap: Record<string, string> = {
   expired: "过期",
   unknown: "未知",
 };
+
+type XhsAccountCardItem = PlatformAccountCardItem & {
+  borderColor: string;
+  updatedAtLabel: string;
+};
+
+function accountTypeBadge(account: PlatformAccount): NonNullable<PlatformAccountCardItem["badge"]> {
+  if (account.platform === "huitun") {
+    return { key: "type", label: "灰豚", color: "gold" };
+  }
+  if (account.sub_type === "creator") {
+    return { key: "type", label: "Creator", color: "purple" };
+  }
+  return { key: "type", label: "PC", color: "blue" };
+}
+
+function accountMetrics(account: PlatformAccount): NonNullable<PlatformAccountCardItem["metrics"]> {
+  if (account.platform === "huitun") {
+    return [
+      { key: "type", title: "类型", value: "灰豚" },
+      { key: "usage", title: "用途", value: "关键词获取" },
+    ];
+  }
+
+  if (account.sub_type === "creator") {
+    const redId = profileValue(account, "red_id");
+    return [
+      { key: "type", title: "类型", value: "Creator" },
+      ...(redId ? [{ key: "red_id", title: "小红书号", value: redId }] : []),
+    ];
+  }
+
+  return [
+    { key: "type", title: "类型", value: "PC" },
+    { key: "followers", title: "粉丝", value: profileValue(account, "followers") || "-" },
+    { key: "following", title: "关注", value: profileValue(account, "following") || "-" },
+    { key: "likes", title: "获赞", value: profileValue(account, "likes") || "-" },
+  ];
+}
+
+function accountBorderColor(account: PlatformAccount): string {
+  if (account.platform === "huitun") {
+    return "#d48806";
+  }
+  if (account.sub_type === "creator") {
+    return "#722ed1";
+  }
+  return "#1668dc";
+}
+
+type AccountActionHandlers = {
+  isChecking: (accountId: number) => boolean;
+  onCheck: (accountId: number) => void;
+  onDelete: (account: PlatformAccount) => void;
+};
+
+function toXhsAccountCardItems(
+  accounts: PlatformAccount[],
+  { isChecking, onCheck, onDelete }: AccountActionHandlers,
+): XhsAccountCardItem[] {
+  return accounts.map((account) => {
+    const checking = isChecking(account.id);
+    const statusColor = statusColorMap[account.status] || "default";
+    const statusLabel = statusLabelMap[account.status] || account.status;
+    const borderColor = accountBorderColor(account);
+
+    return {
+      key: String(account.id),
+      borderColor,
+      updatedAtLabel: `更新时间：${formatDate(account.updated_at || account.created_at)}`,
+      title: account.nickname || "未命名账号",
+      subtitle: account.external_user_id || "external id pending",
+      avatar: account.avatar_url || undefined,
+      avatarText: !account.avatar_url ? (account.nickname?.slice(0, 1).toUpperCase() || "X") : undefined,
+      status: { key: "status", label: statusLabel, color: statusColor },
+      badge: accountTypeBadge(account),
+      metrics: accountMetrics(account),
+      description: account.status_message || undefined,
+      actions: [
+        {
+          key: "check",
+          label: (
+            <Space size={4}>
+              {checking ? <SyncOutlined spin /> : <ReloadOutlined />}
+              {checking ? "检查中" : "检查"}
+            </Space>
+          ),
+          onClick: () => onCheck(account.id),
+          disabled: checking,
+        },
+        {
+          key: "delete",
+          label: (
+            <Space size={4}>
+              <DeleteOutlined />
+              删除
+            </Space>
+          ),
+          onClick: () => onDelete(account),
+          danger: true,
+        },
+      ],
+    };
+  });
+}
 
 export function XhsAccountsPage() {
   const [searchParams] = useSearchParams();
@@ -118,6 +210,12 @@ export function XhsAccountsPage() {
     });
   }
 
+  const accountItems = toXhsAccountCardItems(accounts, {
+    isChecking: (accountId) => checkingAccountIds.has(accountId),
+    onCheck: (accountId) => void handleCheck(accountId),
+    onDelete: (account) => void handleDelete(account),
+  });
+
   useEffect(() => {
     void loadAccounts();
   }, []);
@@ -130,7 +228,6 @@ export function XhsAccountsPage() {
 
   return (
     <div style={{ padding: "0 0 32px" }}>
-      {/* Page header */}
       <div style={{ marginBottom: 28 }}>
         <Text
           style={{
@@ -144,235 +241,71 @@ export function XhsAccountsPage() {
         >
           XHS Accounts
         </Text>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <Title level={3} style={{ margin: 0, color: "rgba(255,255,255,0.88)" }}>
-              账号矩阵
-            </Title>
-            <Text style={{ color: "rgba(255,255,255,0.45)", marginTop: 4, display: "block" }}>
-              管理小红书与灰豚账号、登录态、健康检查和账号作用域。
-            </Text>
-          </div>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
-            绑定账号
-          </Button>
-        </div>
+        <Title level={3} style={{ margin: 0, color: "rgba(255,255,255,0.88)" }}>
+          账号矩阵
+        </Title>
+        <Text style={{ color: "rgba(255,255,255,0.45)", marginTop: 4, display: "block" }}>
+          管理小红书与灰豚账号、登录态、健康检查和账号作用域。
+        </Text>
       </div>
 
-      {/* Section card */}
-      <Card
-        title={
-          <span style={{ color: "rgba(255,255,255,0.88)", fontWeight: 600 }}>已绑定账号</span>
-        }
-        extra={
-          <Button icon={<ReloadOutlined />} onClick={loadAccounts} loading={isLoading}>
-            刷新
-          </Button>
-        }
-        style={{ background: "#1f1f1f", borderColor: "#303030" }}
-        styles={{ body: { padding: 24 } }}
-      >
-        {error ? <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} /> : null}
-
-        {isLoading ? (
-          <div style={{ textAlign: "center", padding: "48px 0" }}>
-            <Spin size="large" />
-          </div>
-        ) : accounts.length === 0 ? (
-          <Empty
-            image={<SafetyCertificateOutlined style={{ fontSize: 48, color: "rgba(255,255,255,0.25)" }} />}
-            imageStyle={{ height: 64 }}
-            description={
-              <Space direction="vertical" size={4}>
-                <Text strong style={{ color: "rgba(255,255,255,0.65)" }}>
-                  还没有绑定小红书或灰豚账号
-                </Text>
-                <Text style={{ color: "rgba(255,255,255,0.35)", fontSize: 13 }}>
-                  绑定小红书 PC 账号用于搜索和抓取；绑定灰豚账号用于自动获取关键词候选词。
-                </Text>
-              </Space>
-            }
-          >
+      <PlatformAccountsShell
+        title="已绑定账号"
+        description="管理小红书与灰豚账号、登录态、健康检查和账号作用域。"
+        items={accountItems}
+        loading={isLoading}
+        error={error}
+        emptyTitle="还没有绑定小红书或灰豚账号"
+        emptyDescription={(
+          <Space direction="vertical" size={8}>
+            <SafetyCertificateOutlined style={{ fontSize: 48, color: "rgba(255,255,255,0.25)" }} />
+            <Text strong style={{ color: "rgba(255,255,255,0.65)" }}>
+              还没有绑定小红书或灰豚账号
+            </Text>
+            <Text style={{ color: "rgba(255,255,255,0.35)", fontSize: 13 }}>
+              绑定小红书 PC 账号用于搜索和抓取；绑定灰豚账号用于自动获取关键词候选词。
+            </Text>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
               添加账号
             </Button>
-          </Empty>
-        ) : (
-          <Row gutter={[16, 16]}>
-            {accounts.map((account) => {
-              const isChecking = checkingAccountIds.has(account.id);
-              const isCreator = account.sub_type === "creator";
-              const isHuitun = account.platform === "huitun";
-              const statusColor = statusColorMap[account.status] || "default";
-              const borderColor = isHuitun ? "#d48806" : isCreator ? "#722ed1" : "#1668dc";
-
-              return (
-                <Col xs={24} sm={24} md={12} lg={8} key={account.id}>
-                  <Card
-                    size="small"
-                    style={{
-                      background: "#1a1a1a",
-                      borderColor: isHuitun ? "#4d3a12" : isCreator ? "#303050" : "#303030",
-                      borderLeft: `3px solid ${borderColor}`,
-                    }}
-                    styles={{ body: { padding: 20 } }}
-                  >
-                    {/* Head: avatar + name + status */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-                      <Avatar
-                        size={44}
-                        src={account.avatar_url || undefined}
-                        icon={!account.avatar_url ? <UserOutlined /> : undefined}
-                        style={{ background: "#262626", flexShrink: 0 }}
-                      >
-                        {!account.avatar_url ? (account.nickname?.slice(0, 1).toUpperCase() || "X") : undefined}
-                      </Avatar>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <Text
-                          strong
-                          ellipsis
-                          style={{ display: "block", color: "rgba(255,255,255,0.88)", fontSize: 15 }}
-                        >
-                          {account.nickname || "未命名账号"}
-                        </Text>
-                        <Text
-                          type="secondary"
-                          ellipsis
-                          style={{ display: "block", fontSize: 12, color: "rgba(255,255,255,0.35)" }}
-                        >
-                          {account.external_user_id || "external id pending"}
-                        </Text>
-                      </div>
-                      <Tag color={statusColor} style={{ marginRight: 0, flexShrink: 0 }}>
-                        {statusLabelMap[account.status] || account.status}
-                      </Tag>
-                    </div>
-
-                    {/* Stats row */}
-                    {isHuitun ? (
-                      <Row gutter={16} style={{ marginBottom: 12 }}>
-                        <Col span={12}>
-                          <Statistic
-                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>类型</span>}
-                            value="灰豚"
-                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                          />
-                        </Col>
-                        <Col span={12}>
-                          <Statistic
-                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>用途</span>}
-                            value="关键词获取"
-                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                          />
-                        </Col>
-                      </Row>
-                    ) : isCreator ? (
-                      <Row gutter={16} style={{ marginBottom: 12 }}>
-                        <Col span={12}>
-                          <Statistic
-                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>类型</span>}
-                            value="Creator"
-                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                          />
-                        </Col>
-                        {profileValue(account, "red_id") ? (
-                          <Col span={12}>
-                            <Statistic
-                              title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>小红书号</span>}
-                              value={profileValue(account, "red_id") as string}
-                              valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                            />
-                          </Col>
-                        ) : null}
-                      </Row>
-                    ) : (
-                      <Row gutter={12} style={{ marginBottom: 12 }}>
-                        <Col span={6}>
-                          <Statistic
-                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>类型</span>}
-                            value="PC"
-                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                          />
-                        </Col>
-                        <Col span={6}>
-                          <Statistic
-                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>粉丝</span>}
-                            value={profileValue(account, "followers") || "-"}
-                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                          />
-                        </Col>
-                        <Col span={6}>
-                          <Statistic
-                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>关注</span>}
-                            value={profileValue(account, "following") || "-"}
-                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                          />
-                        </Col>
-                        <Col span={6}>
-                          <Statistic
-                            title={<span style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>获赞</span>}
-                            value={profileValue(account, "likes") || "-"}
-                            valueStyle={{ color: "rgba(255,255,255,0.88)", fontSize: 14 }}
-                          />
-                        </Col>
-                      </Row>
-                    )}
-
-                    {/* Status message */}
-                    {account.status_message ? (
-                      <Text
-                        type="secondary"
-                        style={{ display: "block", fontSize: 12, marginBottom: 12, color: "rgba(255,255,255,0.35)" }}
-                      >
-                        {account.status_message}
-                      </Text>
-                    ) : null}
-
-                    {/* Footer: updated time + action buttons */}
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        paddingTop: 12,
-                        borderTop: "1px solid #303030",
-                      }}
-                    >
-                      <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
-                        更新时间：{formatDate(account.updated_at || account.created_at)}
-                      </Text>
-                      <Space size={4}>
-                        <Button
-                          size="small"
-                          icon={isChecking ? <SyncOutlined spin /> : <ReloadOutlined />}
-                          onClick={() => handleCheck(account.id)}
-                          disabled={isChecking}
-                        >
-                          {isChecking ? "检查中" : "检查"}
-                        </Button>
-                        <Button
-                          size="small"
-                          danger
-                          icon={<DeleteOutlined />}
-                          onClick={() => void handleDelete(account)}
-                          title="删除账号"
-                        />
-                      </Space>
-                    </div>
-                  </Card>
-                </Col>
-              );
-            })}
-          </Row>
+          </Space>
         )}
-      </Card>
+        toolbar={(
+          <Space>
+            <Button icon={<ReloadOutlined />} onClick={loadAccounts} loading={isLoading}>
+              刷新
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
+              绑定账号
+            </Button>
+          </Space>
+        )}
+        renderExtra={(item) => {
+          const xhsItem = item as XhsAccountCardItem;
+          return (
+            <Text
+              style={{
+                display: "block",
+                fontSize: 11,
+                color: "rgba(255,255,255,0.3)",
+                borderTop: `2px solid ${xhsItem.borderColor}`,
+                paddingTop: 12,
+              }}
+            >
+              {xhsItem.updatedAtLabel}
+            </Text>
+          );
+        }}
+      />
 
       <AddAccountDrawer
+        key={defaultAccountType}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         onBound={loadAccounts}
         defaultAccountType={defaultAccountType}
       />
+      {/* AddAccountDrawer owns the QR/login panels; this page only opens the binding UI and never starts real login automatically. */}
     </div>
   );
 }

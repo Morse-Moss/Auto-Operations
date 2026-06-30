@@ -8,7 +8,12 @@ import { ModelConfigPage } from "../pages/models/model-config-page";
 import { PlatformSelectPage } from "../pages/platform-select/platform-select-page";
 import { SettingsPage } from "../pages/settings/settings-page";
 import { TaskCenterPage } from "../pages/tasks/task-center-page";
-import { WechatOfficialDashboard } from "../pages/wechat-official/wechat-official-dashboard";
+import { WechatOfficialAccountsPage } from "../pages/wechat-official/wechat-official-accounts-page";
+import { WechatOfficialDashboardPage } from "../pages/wechat-official/wechat-official-dashboard";
+import { WechatOfficialDiscoveryPage } from "../pages/wechat-official/wechat-official-discovery-page";
+import { WechatOfficialDraftsPage } from "../pages/wechat-official/wechat-official-drafts-page";
+import { WechatOfficialLibraryPage } from "../pages/wechat-official/wechat-official-library-page";
+import { WechatOfficialSettingsPage } from "../pages/wechat-official/wechat-official-settings-page";
 import { AutoOpsPage } from "../pages/platforms/xhs/auto-ops-page";
 import { XhsAccountsPage } from "../pages/platforms/xhs/accounts-page";
 import { XhsAnalyticsPage } from "../pages/platforms/xhs/analytics-page";
@@ -61,13 +66,13 @@ export function AppRouter() {
             </ProtectedRoute>
           }
         >
-          <Route path="/platforms/wechat-official/dashboard" element={<WechatOfficialDashboard />} />
-          <Route path="/platforms/wechat-official/accounts" element={<WechatOfficialDashboard />} />
-          <Route path="/platforms/wechat-official/discovery" element={<WechatOfficialDashboard />} />
-          <Route path="/platforms/wechat-official/library" element={<WechatOfficialDashboard />} />
-          <Route path="/platforms/wechat-official/drafts" element={<WechatOfficialDashboard />} />
+          <Route path="/platforms/wechat-official/dashboard" element={<WechatOfficialDashboardPage />} />
+          <Route path="/platforms/wechat-official/accounts" element={<WechatOfficialAccountsPage />} />
+          <Route path="/platforms/wechat-official/discovery" element={<WechatOfficialDiscoveryPage />} />
+          <Route path="/platforms/wechat-official/library" element={<WechatOfficialLibraryPage />} />
+          <Route path="/platforms/wechat-official/drafts" element={<WechatOfficialDraftsPage />} />
           <Route path="/platforms/wechat-official/image-studio" element={<XhsImageStudioPage />} />
-          <Route path="/platforms/wechat-official/settings" element={<WechatOfficialDashboard />} />
+          <Route path="/platforms/wechat-official/settings" element={<WechatOfficialSettingsPage />} />
           <Route path="/platforms/xhs/dashboard" element={<XhsDashboard />} />
           <Route path="/platforms/xhs/accounts" element={<XhsAccountsPage />} />
           <Route path="/platforms/xhs/analytics" element={<XhsAnalyticsPage />} />
