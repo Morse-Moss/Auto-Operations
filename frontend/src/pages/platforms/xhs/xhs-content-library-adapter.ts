@@ -186,6 +186,30 @@ function renderFeishuAnalysisTags(note: SavedNote, fontSize = 11) {
   return tags.length ? h("div", { style: { marginTop: 6 } }, tags) : null;
 }
 
+function ratingColor(rating?: string | null): string {
+  if (!rating) return "default";
+  if (rating.includes("爆款")) return "gold";
+  if (rating.includes("优质")) return "green";
+  if (rating.includes("普通")) return "blue";
+  if (rating.includes("低表现")) return "red";
+  return "default";
+}
+
+function formatScore(score: number): string {
+  return Number.isInteger(score) ? String(score) : score.toFixed(1).replace(/\.0$/, "");
+}
+
+function renderFeishuScoreRating(note: SavedNote, fontSize = 11) {
+  const analysis = note.analysis_result;
+  const score = analysis?.score;
+  const hasScore = typeof score === "number" && Number.isFinite(score);
+  if (!hasScore && !analysis?.rating) return null;
+  return h("div", { style: { marginTop: 6 } },
+    hasScore ? h(Tag, { key: "score", color: "gold", style: { fontSize } }, `评分 ${formatScore(score)}/10`) : null,
+    analysis?.rating ? h(Tag, { key: "rating", color: ratingColor(analysis.rating), style: { fontSize } }, `评级 ${analysis.rating}`) : null,
+  );
+}
+
 function createTableColumns(context: ContentLibraryRenderContext<SavedNote>): ColumnsType<SavedNote> {
   return [
     { title: "标题", dataIndex: "title", ellipsis: true, render: (title: string, note) => h("a", { onClick: () => void context.openDetail(note) }, title || "未命名") },
@@ -245,6 +269,7 @@ function renderCardGrid(context: ContentLibraryRenderContext<SavedNote>) {
             : null,
         ),
       }),
+      renderFeishuScoreRating(note),
       renderAnalysisMarks(note),
       renderFeishuAnalysisTags(note),
       renderSavedTags(note),
@@ -282,12 +307,16 @@ function renderFeishuAnalysisDetail(note: SavedNote) {
       h(Descriptions.Item, { label: "飞书同步状态" }, note.feishu_sync?.push_status || "not_synced"),
       h(Descriptions.Item, { label: "回传状态" }, note.feishu_sync?.pull_status || "not_pulled"),
       h(Descriptions.Item, { label: "分析状态" }, analysis?.analysis_status || "未回传"),
+      h(Descriptions.Item, { label: "评分" }, typeof analysis?.score === "number" ? `${formatScore(analysis.score)}/10` : "-"),
+      h(Descriptions.Item, { label: "评级" }, analysis?.rating || "-"),
       h(Descriptions.Item, { label: "产品/主题对象" }, analysis?.subject_object || "-"),
       h(Descriptions.Item, { label: "内容类型" }, analysis?.content_type || "-"),
       h(Descriptions.Item, { label: "核心卖点/核心观点" }, analysis?.core_points || "-"),
       h(Descriptions.Item, { label: "目标人群" }, analysis?.target_audience || "-"),
-      h(Descriptions.Item, { label: "封面/标题钩子" }, analysis?.title_hook || "-"),
-      h(Descriptions.Item, { label: "内容结构分析" }, analysis?.content_structure || "-"),
+      h(Descriptions.Item, { label: "内容钩子" }, analysis?.title_hook || "-"),
+      h(Descriptions.Item, { label: "封面类型" }, analysis?.cover_type || "-"),
+      h(Descriptions.Item, { label: "标题类型" }, analysis?.title_type || "-"),
+      h(Descriptions.Item, { label: "笔记结构分析" }, analysis?.content_structure || "-"),
       h(Descriptions.Item, { label: "可复用模型" }, analysis?.reusable_models?.join("、") || "-"),
       h(Descriptions.Item, { label: "复用价值" }, analysis?.reuse_value || "-"),
       h(Descriptions.Item, { label: "分析备注" }, analysis?.analysis_note || "-"),
@@ -399,10 +428,18 @@ function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<
       context.controller.setBatchActionMessage("请先选择要从飞书回传的笔记。");
       return;
     }
-    context.controller.setBatchActionMessage(`正在从飞书回传 ${selectedIds.length} 条分析结果，请稍候…`);
-    const loadingMessage = message.loading(`正在从飞书回传 ${selectedIds.length} 条分析结果…`, 0);
+    await pullFromFeishu(selectedIds, `正在从飞书回传 ${selectedIds.length} 条分析结果，请稍候…`, `正在从飞书回传 ${selectedIds.length} 条分析结果…`);
+  }
+
+  async function pullAllFromFeishu() {
+    await pullFromFeishu([], "正在从飞书回传全部分析结果，请稍候…", "正在从飞书回传全部分析结果…");
+  }
+
+  async function pullFromFeishu(noteIds: number[], pendingMessage: string, loadingText: string) {
+    context.controller.setBatchActionMessage(pendingMessage);
+    const loadingMessage = message.loading(loadingText, 0);
     try {
-      const result = await pullXhsNotesFromFeishu({ note_ids: selectedIds, dry_run: false });
+      const result = await pullXhsNotesFromFeishu({ note_ids: noteIds, dry_run: false });
       const successMessage = `从飞书回传完成：更新 ${result.updated_count} 条，未匹配 ${result.unmatched_count ?? 0} 条，失败 ${result.failed_count} 条`;
       context.controller.setBatchActionMessage(successMessage);
       loadingMessage();
@@ -422,6 +459,7 @@ function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<
     h(Button, { onClick: () => void openFeishuAnalysisBase() }, "打开飞书分析表"),
     h(Button, { icon: h(CloudSyncOutlined), type: "primary", onClick: () => void syncAllToFeishu() }, "补齐全部分析并同步"),
     h(Button, { icon: h(CloudSyncOutlined), disabled: !selectedCount, onClick: () => void syncSelectedToFeishu() }, selectedCount ? `同步 ${selectedCount} 条到飞书` : "同步到飞书"),
+    h(Button, { onClick: () => void pullAllFromFeishu() }, "回传全部分析结果"),
     h(Button, { disabled: !selectedCount, onClick: () => void pullSelectedFromFeishu() }, selectedCount ? `回传 ${selectedCount} 条` : "从飞书回传"),
   );
 }

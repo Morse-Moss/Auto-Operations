@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
+import io
 import ipaddress
 import json
 import re
 import socket
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -73,6 +76,8 @@ ANALYSIS_FIELD_NAMES = [
     "复用价值",
     "搜索属性",
     "搜素属性",
+    "评分",
+    "评级",
     "分析备注",
 ]
 
@@ -92,6 +97,8 @@ FEISHU_FIELD_DEFINITIONS = [
     {"field_name": "可复用模型", "type": "multi_select", "options": REUSABLE_MODEL_OPTIONS},
     {"field_name": "内容利用方式", "type": "multi_select", "options": REUSE_VALUE_OPTIONS},
     {"field_name": "搜索属性", "type": "single_select", "options": ["强搜索", "弱搜索", "泛流量"]},
+    {"field_name": "评分", "type": "number"},
+    {"field_name": "评级", "type": "text"},
     {"field_name": "分析备注", "type": "text"},
 ]
 
@@ -102,6 +109,7 @@ FIELD_ALIASES = {
     "笔记结构分析": ["内容结构分析"],
     "内容利用方式": ["复用价值"],
     "搜索属性": ["搜素属性"],
+    "分析状态": ["分析状态确认"],
     "笔记标签": ["标签/话题"],
 }
 
@@ -227,6 +235,31 @@ class FeishuBitableClient:
     def update_record(self, record_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         payload = self._request("PUT", f"/bitable/v1/apps/{self.bitable_app_token}/tables/{self.table_id}/records/{record_id}", json={"fields": fields})
         return dict(payload.get("data", {}).get("record", payload.get("data", {})))
+
+    def export_bitable_csv(self) -> bytes:
+        body = {"file_extension": "csv", "token": self.bitable_app_token, "type": "bitable", "sub_id": self.table_id}
+        payload = self._request("POST", "/drive/v1/export_tasks", json=body)
+        ticket = str(payload.get("data", {}).get("ticket") or "")
+        if not ticket:
+            raise FeishuIntegrationError("飞书导出任务没有返回 ticket")
+        file_token = ""
+        for _ in range(30):
+            status_payload = self._request("GET", f"/drive/v1/export_tasks/{ticket}", params={"token": self.bitable_app_token})
+            data = status_payload.get("data", {})
+            result = data.get("result") if isinstance(data.get("result"), dict) else data
+            file_token = str(result.get("file_token") or "")
+            if file_token:
+                break
+            time.sleep(2)
+        if not file_token:
+            raise FeishuIntegrationError("飞书 CSV 导出任务超时，请稍后重试")
+        response = requests.get(
+            f"{FEISHU_OPEN_API_BASE_URL}/drive/v1/export_tasks/file/{file_token}/download",
+            headers={"Authorization": f"Bearer {self.get_tenant_access_token()}"},
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response.content
 
     def upload_bitable_attachment(self, *, file_name: str, content: bytes, content_type: str = "application/octet-stream") -> str:
         headers = {"Authorization": f"Bearer {self.get_tenant_access_token()}"}
@@ -958,9 +991,34 @@ def push_notes_to_feishu(db: Session, *, user_id: int, note_ids: list[int], clie
 def _as_text(value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, dict):
+        text = value.get("text")
+        if text is not None:
+            return str(text).strip()
+        return ""
     if isinstance(value, list):
-        return "、".join(str(item) for item in value if str(item).strip())
+        return "、".join(_as_text(item) for item in value if _as_text(item))
     return str(value).strip()
+
+
+def normalize_score(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        score = float(value)
+    else:
+        text = _as_text(value)
+        if not text:
+            return None
+        matched = re.search(r"\d+(?:\.\d+)?", text)
+        if not matched:
+            return None
+        score = float(matched.group(0))
+    if score < 0 or score > 10:
+        return None
+    return score
 
 
 def _as_text_list(value: Any) -> list[str]:
@@ -969,6 +1027,26 @@ def _as_text_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [item.strip() for item in re.split(r"[,，、\n]", value) if item.strip()]
     return []
+
+
+def feishu_csv_to_records(content: bytes) -> list[dict[str, Any]]:
+    if not content:
+        return []
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = content.decode("gb18030")
+    reader = csv.DictReader(io.StringIO(text))
+    records: list[dict[str, Any]] = []
+    for row in reader:
+        fields = {
+            str(key).lstrip("﻿").strip(): str(value).strip()
+            for key, value in row.items()
+            if key is not None and str(key).lstrip("﻿").strip()
+        }
+        if any(fields.values()):
+            records.append({"fields": fields})
+    return records
 
 
 def pull_feishu_analysis_records(db: Session, *, user_id: int, records: list[dict[str, Any]], note_ids: list[int] | None = None) -> dict[str, Any]:
@@ -1007,6 +1085,8 @@ def pull_feishu_analysis_records(db: Session, *, user_id: int, records: list[dic
         result.reuse_value = "、".join(normalize_multi_select(_field_value(fields, "内容利用方式"), REUSE_VALUE_OPTIONS, fallback=[])) or None
         raw_search_attribute = _as_text(_field_value(fields, "搜索属性"))
         result.search_attribute = normalize_search_attribute(raw_search_attribute, note) if raw_search_attribute else None
+        result.score = normalize_score(_field_value(fields, "评分"))
+        result.rating = _as_text(_field_value(fields, "评级")) or None
         result.analysis_note = _as_text(_field_value(fields, "分析备注"))
         result.pull_status = "success"
         result.last_pulled_at = now
@@ -1021,5 +1101,8 @@ def pull_feishu_analysis_records(db: Session, *, user_id: int, records: list[dic
 def pull_feishu_analysis_records_from_client(db: Session, *, user_id: int, client: Any, note_ids: list[int] | None = None) -> dict[str, Any]:
     if note_ids and len(_unique_note_ids(note_ids)) > MAX_SYNC_ITEMS:
         return {"updated_count": 0, "unmatched_count": 0, "failed_count": len(note_ids), "errors": [f"每次最多回传 {MAX_SYNC_ITEMS} 条"]}
-    records = client.list_records()
+    if note_ids:
+        records = client.list_records()
+    else:
+        records = feishu_csv_to_records(client.export_bitable_csv())
     return pull_feishu_analysis_records(db, user_id=user_id, records=records, note_ids=note_ids)

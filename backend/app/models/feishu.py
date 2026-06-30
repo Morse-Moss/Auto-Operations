@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -52,6 +52,8 @@ class NoteAnalysisResult(Base):
     reusable_models: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     reuse_value: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     search_attribute: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
+    rating: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     analysis_note: Mapped[str] = mapped_column(Text, default="")
     last_pushed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_pulled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

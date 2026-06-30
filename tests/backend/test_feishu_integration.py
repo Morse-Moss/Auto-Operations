@@ -143,6 +143,8 @@ def test_feishu_ensure_fields_dry_run_returns_expected_template(tmp_path):
         assert "笔记标题" in field_names
         assert "分析状态" in field_names
         assert "可复用模型" in field_names
+        assert "评分" in field_names
+        assert "评级" in field_names
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -220,6 +222,9 @@ class FakeFeishuClient:
 
     def list_records(self):
         return self.records
+
+    def export_bitable_csv(self):
+        return getattr(self, "exported_csv", b"")
 
     def create_record(self, fields):
         record = {"record_id": f"rec_{len(self.records) + 1}", "fields": fields}
@@ -777,6 +782,50 @@ def test_real_pull_service_reads_client_records_with_note_id_filter(tmp_path):
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_full_pull_service_reads_exported_csv_ai_fields(tmp_path):
+    SessionLocal = _override_database(tmp_path, "feishu-full-pull-csv.db")
+    try:
+        user_id = _create_user(SessionLocal)
+        db = SessionLocal()
+        try:
+            note = Note(user_id=user_id, platform_account_id=1, platform="xhs", note_id="xhs-csv-pull", title="标题", content="正文", author_name="作者")
+            db.add(note)
+            db.commit()
+            db.refresh(note)
+            note_id = note.id
+        finally:
+            db.close()
+
+        fake = FakeFeishuClient()
+        fake.records = []
+        fake.exported_csv = (
+            "﻿使用状态,分析状态确认,系统笔记ID,评分,评级,核心产品/服务,核心卖点/观点,目标人群,内容钩子,封面类型,标题类型,笔记结构分析,可复用模型,内容利用方式,搜素属性\n"
+            f"已同步,分析完成,{note_id},9.5,爆款潜力,衣柜收纳,强调省空间和低成本,小户型家庭,痛点开场,前后对比封面,数字清单标题,先痛点后方案,问题驱动模型、教程方法模型,标题参考、正文结构参考,强搜索\n"
+        ).encode("utf-8-sig")
+        db = SessionLocal()
+        try:
+            result = feishu_bitable_service.pull_feishu_analysis_records_from_client(db, user_id=user_id, client=fake, note_ids=None)
+            assert result["updated_count"] == 1
+            analysis = db.scalar(select(NoteAnalysisResult).where(NoteAnalysisResult.note_id == note_id))
+            assert analysis.analysis_status == "分析完成"
+            assert analysis.score == 9.5
+            assert analysis.rating == "爆款潜力"
+            assert analysis.subject_object == "衣柜收纳"
+            assert analysis.core_points == "强调省空间和低成本"
+            assert analysis.target_audience == "小户型家庭"
+            assert analysis.title_hook == "痛点开场"
+            assert analysis.content_structure == "先痛点后方案"
+            assert analysis.reusable_models == ["问题驱动模型", "教程方法模型"]
+            assert analysis.reuse_value == "标题参考、正文结构参考"
+            assert analysis.search_attribute == "强搜索"
+            assert analysis.raw_payload["封面类型"] == "前后对比封面"
+            assert analysis.raw_payload["标题类型"] == "数字清单标题"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_pull_feishu_analysis_payload_updates_analysis_result(tmp_path):
     SessionLocal = _override_database(tmp_path, "feishu-pull.db")
     try:
@@ -806,6 +855,9 @@ def test_pull_feishu_analysis_payload_updates_analysis_result(tmp_path):
                         "内容结构分析": "痛点开头-经验分享-行动引导",
                         "可复用模型": ["问题驱动模型", "场景种草模型"],
                         "复用价值": "可直接改写",
+                        "搜索属性": "强搜索",
+                        "评分": 7.5,
+                        "评级": [{"text": "优质内容", "type": "text"}],
                         "分析备注": "适合二创",
                     },
                     "record_id": "rec_xxx",
@@ -825,6 +877,9 @@ def test_pull_feishu_analysis_payload_updates_analysis_result(tmp_path):
             assert result.content_type == "种草"
             assert result.reusable_models == ["问题驱动模型", "场景种草模型"]
             assert result.reuse_value == "可直接改写"
+            assert result.search_attribute == "强搜索"
+            assert result.score == 7.5
+            assert result.rating == "优质内容"
             assert result.external_record_id == "rec_xxx"
             assert result.pull_status == "success"
         finally:
