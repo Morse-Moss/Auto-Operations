@@ -15,9 +15,8 @@ from sqlalchemy.orm import Session
 from backend.app.api.platforms.xhs.pc import (
     _cookies_to_string,
     get_xhs_pc_api_adapter_factory,
-    normalize_comment_payload,
 )
-from backend.app.adapters.xhs.mappers import XhsContentMapping, map_xhs_content
+from backend.app.adapters.xhs.mappers import XhsContentMapping, map_xhs_content, normalize_xhs_comment_payload
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
@@ -780,7 +779,7 @@ def batch_save_notes(
                     detail=message or "XHS note comments failed",
                 )
             db.execute(delete(NoteComment).where(NoteComment.note_id == existing.id))
-            for comment in normalize_comment_payload(raw_payload):
+            for comment in normalize_xhs_comment_payload(raw_payload):
                 db.add(
                     NoteComment(
                         note_id=existing.id,

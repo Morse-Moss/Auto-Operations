@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Mapping, Sequence
 
 
@@ -64,6 +65,10 @@ def map_xhs_content(
         ),
         publish_timestamp_ms=_extract_publish_timestamp_ms(payload, note_card),
     )
+
+
+def normalize_xhs_comment_payload(raw_payload: Any) -> list[dict[str, Any]]:
+    return _flatten_comments(_extract_comment_list(raw_payload))
 
 
 def _first_note_card(payload: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -226,6 +231,89 @@ def _append_note_card_image_urls(target: list[str], note_card: Mapping[str, Any]
         elif isinstance(image, Mapping):
             _append_unique(target, image.get("url"))
             _append_unique(target, _nested_get(image, "info_list", 0, "url"))
+
+
+def _comment_metric(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return 0
+    multiplier = 1
+    if text.endswith("万"):
+        multiplier = 10000
+        text = text[:-1]
+    elif text.lower().endswith("w"):
+        multiplier = 10000
+        text = text[:-1]
+    number_match = re.search(r"\d+(?:\.\d+)?", text)
+    if not number_match:
+        return 0
+    return int(float(number_match.group(0)) * multiplier)
+
+
+def _comment_id(comment: Mapping[str, Any]) -> str:
+    return str(comment.get("comment_id") or comment.get("id") or comment.get("commentId") or "")
+
+
+def _comment_user(comment: Mapping[str, Any]) -> Mapping[str, Any]:
+    user = comment.get("user_info") or comment.get("user") or comment.get("author") or {}
+    return user if isinstance(user, Mapping) else {}
+
+
+def _comment_children(comment: Mapping[str, Any]) -> list[dict[str, Any]]:
+    for key in ("sub_comments", "sub_comment", "comments", "replies", "children"):
+        value = comment.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return [item for item in value if isinstance(item, dict)]
+    sub_comment_payload = comment.get("sub_comment_info")
+    if isinstance(sub_comment_payload, Mapping):
+        value = sub_comment_payload.get("comments")
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _normalize_comment(comment: Mapping[str, Any], parent_comment_id: str | None = None) -> dict[str, Any]:
+    user = _comment_user(comment)
+    return {
+        "comment_id": _comment_id(comment),
+        "user_name": str(user.get("nickname") or user.get("name") or comment.get("user_name") or ""),
+        "user_id": str(user.get("user_id") or user.get("id") or comment.get("user_id") or "") or None,
+        "content": str(comment.get("content") or comment.get("text") or comment.get("desc") or ""),
+        "like_count": _comment_metric(comment.get("like_count") or comment.get("liked_count") or comment.get("likes")),
+        "parent_comment_id": parent_comment_id,
+        "created_at_remote": comment.get("create_time") or comment.get("created_at") or comment.get("time"),
+        "raw_json": comment,
+    }
+
+
+def _flatten_comments(comments: list[dict[str, Any]], parent_comment_id: str | None = None) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for comment in comments:
+        normalized = _normalize_comment(comment, parent_comment_id=parent_comment_id)
+        if normalized["comment_id"]:
+            flattened.append(normalized)
+            child_parent_id = normalized["comment_id"]
+        else:
+            child_parent_id = parent_comment_id
+        flattened.extend(_flatten_comments(_comment_children(comment), parent_comment_id=child_parent_id))
+    return flattened
+
+
+def _extract_comment_list(raw_payload: Any) -> list[dict[str, Any]]:
+    if isinstance(raw_payload, Sequence) and not isinstance(raw_payload, (str, bytes)):
+        return [item for item in raw_payload if isinstance(item, dict)]
+    if not isinstance(raw_payload, Mapping):
+        return []
+    data = raw_payload.get("data") if isinstance(raw_payload.get("data"), Mapping) else raw_payload
+    for key in ("comments", "items", "list"):
+        value = data.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return [item for item in value if isinstance(item, dict)]
+    return []
 
 
 def _extract_publish_timestamp_ms(payload: Mapping[str, Any], note_card: Mapping[str, Any]) -> int | None:

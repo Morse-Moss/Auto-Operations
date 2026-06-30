@@ -1,4 +1,4 @@
-from backend.app.adapters.xhs.mappers import map_xhs_content
+from backend.app.adapters.xhs.mappers import map_xhs_content, normalize_xhs_comment_payload
 
 
 def test_maps_direct_raw_metrics_and_numeric_string_variants():
@@ -162,3 +162,82 @@ def test_extracts_raw_note_type_and_publish_timestamp():
 
     assert mapping.note_type == "video"
     assert mapping.publish_timestamp_ms == 1710000000000
+
+
+def test_normalizes_comment_payload_and_nested_replies_without_route_dependency():
+    raw_payload = {
+        "data": {
+            "comments": [
+                {
+                    "id": "comment-001",
+                    "content": "Top level comment",
+                    "liked_count": "1.2w",
+                    "create_time": "2026-04-29 12:00:00",
+                    "user_info": {"nickname": "Comment author", "user_id": "user-001"},
+                    "sub_comment_info": {
+                        "comments": [
+                            {
+                                "commentId": "comment-001-1",
+                                "text": "Reply content",
+                                "likes": "3",
+                                "created_at": "2026-04-29 12:01:00",
+                                "author": {"name": "Reply author", "id": "user-002"},
+                            }
+                        ]
+                    },
+                },
+                {"id": "", "content": "missing id", "children": [{"id": "child-with-root-parent", "desc": "Child"}]},
+            ]
+        }
+    }
+
+    assert normalize_xhs_comment_payload(raw_payload) == [
+        {
+            "comment_id": "comment-001",
+            "user_name": "Comment author",
+            "user_id": "user-001",
+            "content": "Top level comment",
+            "like_count": 12000,
+            "parent_comment_id": None,
+            "created_at_remote": "2026-04-29 12:00:00",
+            "raw_json": raw_payload["data"]["comments"][0],
+        },
+        {
+            "comment_id": "comment-001-1",
+            "user_name": "Reply author",
+            "user_id": "user-002",
+            "content": "Reply content",
+            "like_count": 3,
+            "parent_comment_id": "comment-001",
+            "created_at_remote": "2026-04-29 12:01:00",
+            "raw_json": raw_payload["data"]["comments"][0]["sub_comment_info"]["comments"][0],
+        },
+        {
+            "comment_id": "child-with-root-parent",
+            "user_name": "",
+            "user_id": None,
+            "content": "Child",
+            "like_count": 0,
+            "parent_comment_id": None,
+            "created_at_remote": None,
+            "raw_json": raw_payload["data"]["comments"][1]["children"][0],
+        },
+    ]
+
+
+def test_normalizes_comment_payload_from_top_level_list_items_and_ignores_non_dicts():
+    assert normalize_xhs_comment_payload([
+        {"comment_id": "direct-comment", "user_name": "Direct user", "like_count": "2万"},
+        "not-a-comment",
+    ]) == [
+        {
+            "comment_id": "direct-comment",
+            "user_name": "Direct user",
+            "user_id": None,
+            "content": "",
+            "like_count": 20000,
+            "parent_comment_id": None,
+            "created_at_remote": None,
+            "raw_json": {"comment_id": "direct-comment", "user_name": "Direct user", "like_count": "2万"},
+        }
+    ]
