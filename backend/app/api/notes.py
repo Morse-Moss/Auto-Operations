@@ -17,6 +17,7 @@ from backend.app.api.platforms.xhs.pc import (
     get_xhs_pc_api_adapter_factory,
     normalize_comment_payload,
 )
+from backend.app.adapters.xhs.mappers import XhsContentMapping, map_xhs_content
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
@@ -109,7 +110,19 @@ def _as_int(value: Any) -> int:
     return 0
 
 
-def _note_engagement_metrics(note: Note) -> dict[str, int]:
+def _xhs_content_mapping(note: Note, mapping_cache: dict[int, XhsContentMapping | None] | None = None) -> XhsContentMapping | None:
+    if mapping_cache is not None and note.id in mapping_cache:
+        return mapping_cache[note.id]
+    mapping: XhsContentMapping | None = None
+    if note.platform == "xhs":
+        raw = note.raw_json if isinstance(note.raw_json, dict) else {}
+        mapping = map_xhs_content(note.note_id, raw)
+    if mapping_cache is not None:
+        mapping_cache[note.id] = mapping
+    return mapping
+
+
+def _legacy_note_engagement_metrics(note: Note) -> dict[str, int]:
     raw = note.raw_json if isinstance(note.raw_json, dict) else {}
     likes = _as_int(raw.get("liked_count") or raw.get("likes") or raw.get("like_count"))
     collects = _as_int(raw.get("collected_count") or raw.get("collects") or raw.get("collect_count"))
@@ -131,8 +144,20 @@ def _note_engagement_metrics(note: Note) -> dict[str, int]:
     }
 
 
-def _note_metric(note: Note, sort_by: str) -> int:
-    metrics = _note_engagement_metrics(note)
+def _note_engagement_metrics(note: Note, mapping_cache: dict[int, XhsContentMapping | None] | None = None) -> dict[str, int]:
+    mapping = _xhs_content_mapping(note, mapping_cache)
+    if mapping is not None:
+        return {
+            "likes": mapping.engagement_metrics["likes"],
+            "collects": mapping.engagement_metrics["collects"],
+            "comments": mapping.engagement_metrics["comments"],
+            "shares": mapping.engagement_metrics["shares"],
+        }
+    return _legacy_note_engagement_metrics(note)
+
+
+def _note_metric(note: Note, sort_by: str, mapping_cache: dict[int, XhsContentMapping | None] | None = None) -> int:
+    metrics = _note_engagement_metrics(note, mapping_cache)
     if sort_by == "likes":
         return metrics["likes"]
     if sort_by == "comments":
@@ -144,16 +169,21 @@ def _note_metric(note: Note, sort_by: str) -> int:
     return 0
 
 
-def _top_note_ids(notes: list[Note], sort_by: str, limit: int = 20) -> set[int]:
-    ranked = sorted(notes, key=lambda note: (_note_metric(note, sort_by), note.created_at, note.id), reverse=True)
-    return {note.id for note in ranked[:limit] if _note_metric(note, sort_by) > 0}
+def _top_note_ids(
+    notes: list[Note],
+    sort_by: str,
+    limit: int = 20,
+    mapping_cache: dict[int, XhsContentMapping | None] | None = None,
+) -> set[int]:
+    ranked = sorted(notes, key=lambda note: (_note_metric(note, sort_by, mapping_cache), note.created_at, note.id), reverse=True)
+    return {note.id for note in ranked[:limit] if _note_metric(note, sort_by, mapping_cache) > 0}
 
 
-def _top20_marks(notes: list[Note]) -> dict[int, list[str]]:
+def _top20_marks(notes: list[Note], mapping_cache: dict[int, XhsContentMapping | None] | None = None) -> dict[int, list[str]]:
     labels = {"likes": "点赞TOP20", "comments": "评论TOP20", "collects": "收藏TOP20"}
     marks: dict[int, list[str]] = {note.id: [] for note in notes}
     for metric, label in labels.items():
-        for note_id in _top_note_ids(notes, metric):
+        for note_id in _top_note_ids(notes, metric, mapping_cache=mapping_cache):
             marks.setdefault(note_id, []).append(label)
     return marks
 
@@ -199,13 +229,25 @@ def _serialize_feishu_sync(result: NoteAnalysisResult | None) -> dict:
     }
 
 
-def _serialize_note(db: Session, note: Note, top20_marks: dict[int, list[str]] | None = None) -> dict:
+def _serialize_note(
+    db: Session,
+    note: Note,
+    top20_marks: dict[int, list[str]] | None = None,
+    mapping_cache: dict[int, XhsContentMapping | None] | None = None,
+) -> dict:
     assets = _get_note_assets(db, note)
     image_assets = [asset for asset in assets if asset.asset_type == "image"]
     video_assets = [asset for asset in assets if asset.asset_type == "video"]
     asset_urls = [_asset_display_url(asset) for asset in assets if asset.url or asset.local_path]
     raw = note.raw_json if isinstance(note.raw_json, dict) else {}
     raw_cover = raw.get("cover_url") if isinstance(raw.get("cover_url"), str) else ""
+    mapping = _xhs_content_mapping(note, mapping_cache)
+    mapped_cover_url = mapping.cover_url if mapping else ""
+    mapped_video_url = mapping.video_url if mapping else ""
+    mapped_asset_urls = mapping.asset_urls if mapping else []
+    response_asset_urls = asset_urls or mapped_asset_urls
+    response_cover_url = _asset_display_url(image_assets[0]) if image_assets else (mapped_cover_url or raw_cover)
+    response_video_url = _asset_display_url(video_assets[0]) if video_assets else mapped_video_url
     marks = (top20_marks or {}).get(note.id, [])
     analysis = _get_feishu_analysis_result(db, note.id)
     return {
@@ -217,12 +259,12 @@ def _serialize_note(db: Session, note: Note, top20_marks: dict[int, list[str]] |
         "content": note.content,
         "author_name": note.author_name,
         "raw_json": note.raw_json,
-        "asset_urls": asset_urls,
-        "cover_url": _asset_display_url(image_assets[0]) if image_assets else raw_cover,
-        "video_url": _asset_display_url(video_assets[0]) if video_assets else "",
-        "video_addr": _asset_display_url(video_assets[0]) if video_assets else "",
+        "asset_urls": response_asset_urls,
+        "cover_url": response_cover_url,
+        "video_url": response_video_url,
+        "video_addr": response_video_url,
         "created_at": note.created_at.isoformat(),
-        "engagement_metrics": _note_engagement_metrics(note),
+        "engagement_metrics": _note_engagement_metrics(note, mapping_cache),
         "analysis_marks": marks,
         "is_analysis_focus": len(marks) >= 2,
         "feishu_sync": _serialize_feishu_sync(analysis),
@@ -230,8 +272,13 @@ def _serialize_note(db: Session, note: Note, top20_marks: dict[int, list[str]] |
     }
 
 
-def _serialize_note_with_tags(db: Session, note: Note, top20_marks: dict[int, list[str]] | None = None) -> dict:
-    serialized = _serialize_note(db, note, top20_marks)
+def _serialize_note_with_tags(
+    db: Session,
+    note: Note,
+    top20_marks: dict[int, list[str]] | None = None,
+    mapping_cache: dict[int, XhsContentMapping | None] | None = None,
+) -> dict:
+    serialized = _serialize_note(db, note, top20_marks, mapping_cache)
     serialized["tags"] = _get_note_tags(db, note.id)
     return serialized
 
@@ -515,10 +562,11 @@ def get_notes(
     if feishu_push_status or has_analysis_field_filters:
         notes = [note for note in notes if _matches_analysis_filters(note)]
 
-    top20_marks = _top20_marks(notes)
+    mapping_cache: dict[int, XhsContentMapping | None] = {}
+    top20_marks = _top20_marks(notes, mapping_cache)
     if sort_by != "latest":
-        notes = sorted(notes, key=lambda note: (_note_metric(note, sort_by), note.created_at, note.id), reverse=True)
-    return paginated([_serialize_note_with_tags(db, note, top20_marks) for note in notes], page, page_size)
+        notes = sorted(notes, key=lambda note: (_note_metric(note, sort_by, mapping_cache), note.created_at, note.id), reverse=True)
+    return paginated([_serialize_note_with_tags(db, note, top20_marks, mapping_cache) for note in notes], page, page_size)
 
 
 @router.post("/batch-create-drafts")
