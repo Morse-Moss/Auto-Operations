@@ -5,10 +5,7 @@ import React from "react";
 
 import type {
   ContentLibraryAdapter,
-  ContentLibraryAsset,
-  ContentLibraryComment,
   ContentLibraryDraftIntent,
-  ContentLibraryItem,
   ContentLibraryRenderContext,
 } from "../../components/content-library";
 import {
@@ -28,9 +25,18 @@ import {
 import type {
   WechatOfficialArticleComment,
   WechatOfficialContentDetail,
-  WechatOfficialContentImage,
   WechatOfficialContentLibraryItem,
 } from "../../types";
+import {
+  mapWechatOfficialArticleToContentItem,
+  mapWechatOfficialCommentToContentComment,
+  mapWechatOfficialImageToContentAsset,
+  wechatOfficialCurationTags,
+  wechatOfficialDisplayTime,
+  wechatOfficialPoolStatus,
+  wechatOfficialReadStatusLabel,
+  type WechatOfficialContentLibraryViewItem,
+} from "./wechat-official-content-library-mapper";
 import type { WechatOfficialDraftTemplate } from "./wechat-official-draft-templates";
 
 const { Text, Paragraph } = Typography;
@@ -53,23 +59,10 @@ const CURATION_FILTERS: CurationFilter[] = [
   { id: 3004, name: "待补正文素材", color: "gold", param: "detail_complete", value: false },
 ];
 
-export type WechatOfficialContentLibraryViewItem = ContentLibraryItem & {
-  article: WechatOfficialContentLibraryItem;
-  detail?: WechatOfficialContentDetail;
-  read_count: number;
-  pool_status: string;
-  recommendation_status: string;
-  cover_url: string;
-};
-
 function formatMetric(value: number | undefined | null): string {
   const numeric = Number(value ?? 0);
   if (numeric >= 10000) return `${(numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1)}w`;
   return numeric.toLocaleString();
-}
-
-function poolStatus(article: WechatOfficialContentLibraryItem): string {
-  return String(article.analysis?.pool_status || article.analysis?.recommendation_status || "candidate");
 }
 
 function poolStatusLabel(status?: string): string {
@@ -114,82 +107,6 @@ function completenessLabel(article: WechatOfficialContentLibraryItem): string {
   if (completeness === "complete") return "正文/图片完整";
   if (completeness === "partial") return "部分补全";
   return "待补正文素材";
-}
-
-function readStatusLabel(value?: string): string {
-  if (value === "read") return "已读";
-  if (value === "reading") return "在读";
-  return "未读";
-}
-
-function curationTags(article: WechatOfficialContentLibraryItem) {
-  const analysis = article.analysis || {};
-  const tags: Array<{ id: number; name: string; color: string }> = [];
-  if (analysis.category) tags.push({ id: 101, name: String(analysis.category), color: "cyan" });
-  (analysis.tags || []).forEach((tag, index) => tags.push({ id: 200 + index, name: String(tag), color: "geekblue" }));
-  if (analysis.is_favorite) tags.push({ id: 301, name: "收藏", color: "gold" });
-  tags.push({ id: 302, name: readStatusLabel(analysis.read_status), color: analysis.read_status === "read" ? "green" : "default" });
-  return tags;
-}
-
-function displayTime(article: WechatOfficialContentLibraryItem): string {
-  return article.publish_time_remote || article.updated_at || article.created_at || "";
-}
-
-function derivedTags(article: WechatOfficialContentLibraryItem) {
-  const tags: Array<{ id: number; name: string; color: string }> = [
-    { id: 1, name: poolStatusLabel(poolStatus(article)), color: statusColor(poolStatus(article)) },
-    { id: 2, name: lowFollowerLabel(article), color: "blue" },
-    { id: 3, name: materialLabel(article), color: "purple" },
-    { id: 4, name: completenessLabel(article), color: article.detail_status?.is_complete ? "green" : "gold" },
-    ...curationTags(article),
-  ];
-  return tags.filter((tag, index, list) => list.findIndex((candidate) => candidate.name === tag.name) === index);
-}
-
-function mapArticle(article: WechatOfficialContentLibraryItem, detail?: WechatOfficialContentDetail): WechatOfficialContentLibraryViewItem {
-  return {
-    id: article.id,
-    platform: "wechat_official",
-    title: article.title || `公众号文章 #${article.id}`,
-    content: detail?.latest_snapshot?.text || article.digest || article.article_url || "",
-    author_name: article.author_name || "未知公众号",
-    created_at: displayTime(article),
-    tags: derivedTags(article),
-    article,
-    detail,
-    read_count: Number(article.latest_metric?.read_count ?? detail?.latest_metric?.read_count ?? 0),
-    pool_status: poolStatus(article),
-    recommendation_status: String(article.analysis?.recommendation_status || ""),
-    cover_url: article.cover_url || detail?.images?.find((image) => image.type === "cover")?.url || detail?.images?.[0]?.url || "",
-  };
-}
-
-function mapImage(itemId: number, image: WechatOfficialContentImage, index: number): ContentLibraryAsset {
-  return {
-    id: index + 1,
-    note_id: itemId,
-    asset_type: image.type === "cover" ? "image" : "image",
-    url: image.url,
-    local_path: "",
-    download_url: image.url,
-    sort_order: index,
-  };
-}
-
-function mapComment(itemId: number, comment: WechatOfficialArticleComment, index: number): ContentLibraryComment {
-  return {
-    id: comment.db_id ?? index + 1,
-    note_id: itemId,
-    comment_id: comment.comment_id || String(index + 1),
-    user_name: comment.user_name || "匿名读者",
-    user_id: comment.user_id || null,
-    content: comment.content || "",
-    like_count: Number(comment.like_count ?? 0),
-    parent_comment_id: null,
-    created_at_remote: comment.created_at_remote || null,
-    raw_json: undefined,
-  };
 }
 
 function syncCount(result: { created_count?: number; updated_count: number; failed_count: number; unmatched_count?: number }): string {
@@ -365,14 +282,14 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
   const detail = item.detail;
   const article = detail?.article || item.article;
   const analysis = detail?.analysis || article.analysis || {};
-  const status = poolStatus(article);
+  const status = wechatOfficialPoolStatus(article);
 
   const refreshDetail = async () => {
     controller.setDetailError(null);
     controller.setDetailActionMessage(null);
     try {
       const refreshed = await refreshWechatOfficialContentDetail(article.id);
-      controller.replaceSelectedItem(mapArticle(refreshed.article, refreshed));
+      controller.replaceSelectedItem(mapWechatOfficialArticleToContentItem(refreshed.article, refreshed));
       await controller.refreshItems();
       controller.setDetailActionMessage("正文、图片和评论已补全；未上传素材、未同步公众号后台、未发布或群发。");
     } catch (error) {
@@ -385,7 +302,7 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
     controller.setDetailActionMessage(null);
     try {
       const updated = await updateWechatOfficialRecommendation(article.id, patch);
-      controller.replaceSelectedItem(mapArticle(updated, item.detail));
+      controller.replaceSelectedItem(mapWechatOfficialArticleToContentItem(updated, item.detail));
       await controller.refreshSelectedItem();
       await controller.refreshItems();
       controller.setDetailActionMessage("运营标记已更新。分类、标签、收藏和已读状态会进入内容库筛选。");
@@ -420,7 +337,7 @@ function renderDetail({ controller, item }: Parameters<ContentLibraryAdapter<Wec
         article.analysis?.category ? h(Tag, { color: "cyan" }, String(article.analysis.category)) : h(Text, { type: "secondary" }, "未分类"),
         ...(article.analysis?.tags || []).map((tag) => h(Tag, { color: "geekblue", key: tag }, tag)),
         h(Tag, { color: article.analysis?.is_favorite ? "gold" : "default" }, article.analysis?.is_favorite ? "已收藏" : "未收藏"),
-        h(Tag, { color: article.analysis?.read_status === "read" ? "green" : "default" }, readStatusLabel(article.analysis?.read_status)),
+        h(Tag, { color: article.analysis?.read_status === "read" ? "green" : "default" }, wechatOfficialReadStatusLabel(article.analysis?.read_status)),
       )),
     ),
     h(Card, { size: "small", title: "运营标记" },
@@ -590,21 +507,21 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
         total: response.total,
         page: response.page ?? filters.page ?? 1,
         page_size: response.page_size ?? filters.page_size ?? 20,
-        items: response.items.map((article) => mapArticle(article)),
+        items: response.items.map((article) => mapWechatOfficialArticleToContentItem(article)),
       };
     },
     async loadItem(itemId) {
       const detail = await fetchWechatOfficialContentDetail(itemId);
-      return mapArticle(detail.article, detail);
+      return mapWechatOfficialArticleToContentItem(detail.article, detail);
     },
     async loadAssets(itemId) {
       const detail = await fetchWechatOfficialContentDetail(itemId);
-      const items = (detail.images || []).map((image, index) => mapImage(itemId, image, index));
+      const items = (detail.images || []).map((image, index) => mapWechatOfficialImageToContentAsset(itemId, image, index));
       return { total: items.length, page: 1, page_size: items.length, items };
     },
     async loadComments(itemId, page) {
       const detail = await fetchWechatOfficialContentDetail(itemId);
-      const all = (detail.comments?.items || []).map((comment, index) => mapComment(itemId, comment, index));
+      const all = (detail.comments?.items || []).map((comment, index) => mapWechatOfficialCommentToContentComment(itemId, comment, index));
       const pageSize = 20;
       const start = (page - 1) * pageSize;
       return { total: detail.comments?.total ?? all.length, page, page_size: pageSize, items: all.slice(start, start + pageSize) };
