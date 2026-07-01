@@ -24,6 +24,23 @@ export type PlatformCapability = {
   notes: string;
 };
 
+export type PlatformAccountAuthSchema = {
+  key: string;
+  label: string;
+  auth_mode: "cookie" | "qr_login" | "phone" | "none" | string;
+  sub_type?: "pc" | "creator" | "main" | string | null;
+  account_kind?: "pc" | "creator" | "main" | string;
+  endpoint?: string | null;
+  method?: string;
+  status: PlatformCapabilityStatus;
+  risk?: PlatformRiskLevel;
+  requires_confirmation?: boolean;
+  requires_secret?: boolean;
+  requires_user_action?: boolean;
+  sensitive_fields?: string[];
+  optional_fields?: string[];
+  notes: string;
+};
 export type PlatformMeta = {
   id: PlatformId;
   name_cn: string;
@@ -38,6 +55,7 @@ export type PlatformMeta = {
   risk_level: PlatformRiskLevel;
   auth_modes: string[];
   capabilities: PlatformCapability[];
+  account_auth_schemas?: PlatformAccountAuthSchema[];
   accent_color: string;
   icon: string;
 };
