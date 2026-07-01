@@ -257,7 +257,7 @@ Optional if backend untouched: no backend tests required. If backend touched acc
 
 ## Stage 4: Backend content normalizer and API hardcode removal plan
 
-**Status:** First scoped mapper pass implemented; route integration intentionally deferred.
+**Status:** Current low-risk mapper closure complete; deeper cross-platform ingestion/database unification intentionally deferred.
 
 **Goal:** 后端先做 mapper/normalizer 和 tests，逐步解除 content library API 中 XHS-only assumptions。不要 rename tables。
 
@@ -285,9 +285,17 @@ Optional if backend untouched: no backend tests required. If backend touched acc
   - tags.
   - engagement metrics.
   - cover/video/assets.
-- [ ] Step 3: Update frontend or backend only if mapper is used without response shape change. Deferred in first scoped pass; no route response shape changed.
-- [ ] Step 4: Plan separate migration for `_get_owned_account` hardcoded `account.platform != "xhs"`; do not change until tests cover multi-platform ownership.
-- [ ] Step 5: Produce follow-up plan for WeChat Article -> ContentItem mapping.
+- [x] Step 3: Update frontend or backend only if mapper is used without response shape change. Closed in later scoped passes: XHS notes serialization uses `map_xhs_content`, XHS comment payload normalization uses `normalize_xhs_comment_payload`, and WeChat Official content library mapping uses dedicated shared ContentLibraryItem mapper tests.
+- [x] Step 4: Plan separate migration for `_get_owned_account` hardcoded `account.platform != "xhs"`; current low-risk closure is covered by explicit notes account platform expectation tests, while multi-platform ingestion/database unification remains deferred.
+- [x] Step 5: Produce follow-up plan for WeChat Article -> ContentItem mapping. Closed by `frontend/src/pages/wechat-official/wechat-official-content-library-mapper.ts` and `frontend/tests/wechat-official-content-library-mapper.test.ts`.
+
+**Current low-risk mapper closure evidence:**
+
+- XHS note serializer route integration is closed: `backend/app/api/notes.py` uses `map_xhs_content`, with `tests/backend/test_notes_xhs_serializer.py` covering mapper fallback, DB asset priority, non-XHS raw-shape tolerance, and mapping-cache reuse.
+- XHS comment payload normalization is closed: route code imports `normalize_xhs_comment_payload` from `backend/app/adapters/xhs/mappers.py`, with focused mapper tests in `tests/backend/test_xhs_content_mappers.py`.
+- Notes account platform expectation is explicit: multi-platform ingestion/database unification remains deferred, but current XHS-only route behavior is test-covered.
+- WeChat Official article-to-shared-ContentLibraryItem mapping is closed for current frontend scope: `frontend/src/pages/wechat-official/wechat-official-content-library-mapper.ts` has focused tests in `frontend/tests/wechat-official-content-library-mapper.test.ts`.
+- Remaining cross-platform ingestion, database unification, or route response redesign is deferred outside this closure program.
 
 **First scoped mapper pass evidence:**
 
@@ -769,7 +777,7 @@ Stage 0-10 have all received at least a first scoped pass, so the active work is
 | Stage 2 Draft Workbench standardization | `closed` | `4708275 feat: add shared draft workbench` and Stage 2 evidence above |
 | Stage 3 Content Library frontend shell | `closed` | `dce3270 feat: reuse shared content library for wechat official` and Stage 3 evidence above |
 | Frontend Platform Core shell pass | `closed` | `84379ef feat: introduce shared platform core shell` |
-| Stage 4 backend content normalizer | `closure_in_progress` | `91c582b refactor: route xhs note serialization through mapper`; `379f57f refactor: extract xhs comment mapper`; `62e151b refactor: make notes account platform explicit`; WeChat Article mapping remains |
+| Stage 4 backend content normalizer | `closed` | `91c582b refactor: route xhs note serialization through mapper`; `379f57f refactor: extract xhs comment mapper`; `62e151b refactor: make notes account platform explicit`; WeChat Official ContentLibraryItem mapper tested; remaining cross-platform ingestion/database unification deferred |
 | Stage 5 Account Matrix auth schema | `closure_in_progress` | local frontend `account-auth-schema` exists; `0add4fd feat: expose platform account auth schemas`; frontend adoption remains |
 | Stage 6 Asset storage policy | `first_pass_done` | `asset_storage_policy` first pass evidence above; wider adoption remains |
 | Stage 7 Publish Queue policy/dry-run | `first_pass_done` | dry-run no-side-effect skeleton evidence above; real publish migration is safety-gated |

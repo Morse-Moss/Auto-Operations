@@ -706,7 +706,7 @@ Add route files to `git add --` only if they were touched.
 - Modify docs: `docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md`
 - Modify docs: `docs/superpowers/plans/2026-06-20-platform-operating-core.md`
 
-- [ ] **Step 1: Inventory pure mapping helpers still trapped in routes/pages**
+- [x] **Step 1: Inventory pure mapping helpers still trapped in routes/pages**
 
 Run:
 
@@ -714,17 +714,14 @@ Run:
 git -C "E:\小红书" grep -n "function map\|def _.*map\|normalize_.*payload\|raw_json\|note_card\|interact_info" -- backend/app/api backend/app/adapters frontend/src/pages/wechat-official frontend/src/pages/platforms/xhs
 ```
 
-Record findings under Task 4 evidence:
+**Task 4 mapper inventory:**
+- Closed: XHS note serializer uses `map_xhs_content` from `backend/app/adapters/xhs/mappers.py`; evidence `tests/backend/test_notes_xhs_serializer.py` covers mapper fallback, DB asset priority, non-XHS raw-shape tolerance, and mapping-cache reuse.
+- Closed: XHS comment payload normalization uses `normalize_xhs_comment_payload` from `backend/app/adapters/xhs/mappers.py`; evidence `tests/backend/test_xhs_content_mappers.py` and route imports.
+- Closed: WeChat Official ContentLibraryItem mapper exists at `frontend/src/pages/wechat-official/wechat-official-content-library-mapper.ts`; evidence `frontend/tests/wechat-official-content-library-mapper.test.ts`.
+- Remaining/deferred: XHS frontend content-library adapter and draft workbench still contain UI-local raw display/extraction helpers. They are frontend view adapters, not low-risk backend ingestion mapper gaps for this closure task; extracting them would require a separate frontend adapter design and is deferred.
+- Remaining/deferred: WeChat Official research adapter normalizers are experimental/source-specific ingestion helpers, outside this current shared ContentLibraryItem mapper closure.
 
-```md
-Mapper inventory:
-- Closed: XHS note serializer uses mapper — evidence `actual/path.py`.
-- Closed: XHS comment payload normalization uses mapper — evidence `actual/path.py`.
-- Closed: WeChat Official ContentLibraryItem mapper exists — evidence `actual/path.py`.
-- Remaining: `actual/path.py` — reason and whether deferred or in scope.
-```
-
-- [ ] **Step 2: Only write tests if an in-scope pure mapper remains**
+- [x] **Step 2: Only write tests if an in-scope pure mapper remains**
 
 If the inventory finds a pure mapping helper that is still route/page-private and low-risk, write a focused test before moving it.
 
@@ -745,7 +742,9 @@ assert.equal(mapWechatOfficialArticleToContentItem(article()).platform, "wechat_
 
 If no in-scope mapper remains, this task is docs/evidence-only.
 
-- [ ] **Step 3: Run mapper tests**
+No in-scope pure mapper remains for this low-risk closure. This task is docs/evidence-only.
+
+- [x] **Step 3: Run mapper tests**
 
 Run all relevant mapper tests:
 
@@ -756,9 +755,13 @@ node frontend/tests/wechat-official-content-library-mapper.test.ts
 
 If no code changes are needed, these passing tests are sufficient closure evidence.
 
-- [ ] **Step 4: Implement minimal extraction only if tests require it**
+Observed: `py -3.12 -m pytest tests/backend/test_xhs_content_mappers.py tests/backend/test_notes_xhs_serializer.py -q` -> `14 passed`; `node frontend/tests/wechat-official-content-library-mapper.test.ts` -> passed.
+
+- [x] **Step 4: Implement minimal extraction only if tests require it**
 
 Move only pure mapping code to adapter mapper files. Do not change route response fields, database models, or ingestion semantics.
+
+No production code extraction was needed after inventory; no route response fields, database models, or ingestion semantics changed.
 
 Allowed pattern:
 
@@ -772,7 +775,7 @@ Forbidden pattern:
 # Do not add database/session/FastAPI dependencies to mapper modules.
 ```
 
-- [ ] **Step 5: Update both closure queue docs**
+- [x] **Step 5: Update both closure queue docs**
 
 In `docs/superpowers/plans/2026-06-20-platform-operating-core.md`, update Stage 4 evidence from “WeChat Article mapping remains” to the current state. Use wording like:
 
@@ -782,7 +785,14 @@ Stage 4 backend/content mapper closure is closed for current low-risk scope: XHS
 
 In this completion plan, add Task 4 evidence.
 
-- [ ] **Step 6: Run verification**
+**Task 4 evidence:**
+- Commit: pending scoped Task 4 commit; final SHA is reported in Task 4 closeout.
+- Scope: docs/evidence-only after inventory found no remaining low-risk pure mapper extraction target.
+- Closed: XHS note serializer uses `map_xhs_content`; XHS comment payload normalization uses `normalize_xhs_comment_payload`; WeChat Official shared ContentLibraryItem mapper exists and is tested.
+- Deferred: XHS frontend view-adapter raw display/extraction helpers and WeChat Official experimental research adapter normalizers require separate design if migrated.
+- Boundary: no production code changes, route response shape changes, database/Alembic changes, ingestion semantics changes, SDK/signature changes, provider calls, or root service restart.
+
+- [x] **Step 6: Run verification**
 
 Run:
 
@@ -792,7 +802,11 @@ node frontend/tests/wechat-official-content-library-mapper.test.ts
 npm --prefix frontend run build
 ```
 
-Expected: all pass.
+Observed:
+- `py -3.12 -m pytest tests/backend/test_xhs_content_mappers.py tests/backend/test_notes_xhs_serializer.py -q` -> `14 passed`.
+- `node frontend/tests/wechat-official-content-library-mapper.test.ts` -> passed.
+- `npm --prefix frontend run build` initially failed because this isolated worktree had no `frontend/node_modules`; a temporary Windows junction to `E:\小红书\frontend\node_modules` was created, build passed, and the junction was removed.
+- Final build result: `tsc && vite build` passed; Vite emitted only the existing large chunk warning.
 
 - [ ] **Step 7: Commit scoped files**
 
