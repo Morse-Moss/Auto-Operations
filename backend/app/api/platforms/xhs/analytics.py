@@ -17,6 +17,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.time import shanghai_now
 from backend.app.models import AiDraft, KeywordGroup, MonitoringTarget, Note, NoteComment, PlatformAccount, PublishJob, Tag, User, note_tags
+from backend.app.services.asset_storage_policy import export_owner_prefix
 
 router = APIRouter(prefix="/xhs/analytics", tags=["xhs-analytics"])
 
@@ -337,7 +338,7 @@ def _build_report_payload(db: Session, current_user: User, notes: list[Note], ge
 def _write_report_file(current_user: User, payload: dict[str, Any]) -> tuple[str, Path]:
     export_dir = Path(get_settings().storage_dir) / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
-    file_name = f"xhs-report-u{current_user.id}-{uuid4().hex}.json"
+    file_name = f"{export_owner_prefix('xhs', 'report', current_user.id)}{uuid4().hex}.json"
     file_path = export_dir / file_name
     file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return file_name, file_path

@@ -393,7 +393,7 @@ In this file, under this task, add an evidence entry after implementation:
 ```
 
 **Task 1 evidence:**
-- Commit: current scoped Task 1 commit (`feat: adopt platform account auth schema in frontend`); final SHA is reported in Task 1 closeout.
+- Commit: `14fed63780ba54c5979ae57ab3d2fcb9875200be` `feat: adopt platform account auth schema in frontend`.
 - Tests: `node frontend/tests/account-auth-schema.test.ts` -> passed (`account-auth-schema tests passed`).
 - Build: `npm --prefix frontend run build` -> passed after temporarily linking the worktree `frontend/node_modules` junction to the root dependency directory; the junction was removed after build.
 - User impact: account binding choices are now registry-driven when the backend registry is reachable, while the local XHS/Huitun fallback keeps the drawer usable offline.
@@ -431,7 +431,7 @@ Do not stage `compare-shots/`.
 - Modify tests if route touched: `tests/backend/test_api.py`
 - Modify docs: `docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md`
 
-- [ ] **Step 1: Inventory remaining XHS filename assumptions**
+- [x] **Step 1: Inventory remaining XHS filename assumptions**
 
 Run:
 
@@ -449,7 +449,7 @@ Asset policy inventory:
 
 Do not edit code before this classification.
 
-- [ ] **Step 2: Write failing tests only for generic owner policy candidates**
+- [x] **Step 2: Write failing tests only for generic owner policy candidates**
 
 Extend `tests/backend/test_asset_storage_policy.py` with tests like:
 
@@ -479,7 +479,7 @@ def test_existing_xhs_export_prefix_stays_valid():
 
 If these tests already pass with current policy, do not force code changes. The closure may be documentation/evidence-only.
 
-- [ ] **Step 3: Run focused asset tests**
+- [x] **Step 3: Run focused asset tests**
 
 Run:
 
@@ -489,7 +489,7 @@ py -3.12 -m pytest tests/backend/test_asset_storage_policy.py -q
 
 Expected before implementation: fail only if a real generic owner kind/platform gap exists. If it passes, proceed to Step 5 and record that no low-risk code change is needed.
 
-- [ ] **Step 4: Implement minimal helper extension only if tests fail**
+- [x] **Step 4: Implement minimal helper extension only if tests fail**
 
 If an owner kind is missing, update `backend/app/services/asset_storage_policy.py` by adding the minimum kind to the correct allowlist. For example, if `articles` export is missing:
 
@@ -499,7 +499,7 @@ EXPORT_OWNER_KINDS = frozenset({"notes", "analysis", "articles"})
 
 Do not widen validation to arbitrary strings. Do not accept subdirectories. Do not migrate files.
 
-- [ ] **Step 5: Run focused route regressions**
+- [x] **Step 5: Run focused route regressions**
 
 Run:
 
@@ -510,7 +510,7 @@ py -3.12 -m pytest tests/backend/test_api.py -q -k "file or image or export"
 
 Expected: all selected tests pass. If `test_api.py` exposes an unrelated failure in a dirty or out-of-scope file, report it and keep this task scoped.
 
-- [ ] **Step 6: Update completion plan status**
+- [x] **Step 6: Update completion plan status**
 
 Add evidence:
 
@@ -523,7 +523,14 @@ Add evidence:
 - Boundary: no file migration, deletion, rename, storage layout rewrite, provider call, or SDK/signature change.
 ```
 
-- [ ] **Step 7: Commit scoped files**
+**Task 2 evidence:**
+- Commit: current scoped Task 2 commit (`refactor: widen platform asset owner policy`); final SHA is reported in Task 2 closeout.
+- Inventory: `backend/app/api/notes.py:869` and `backend/app/api/platforms/xhs/analytics.py:340` were generic user-owned export filenames still hand-building `xhs-notes` / `xhs-report`; routed both through `export_owner_prefix('xhs', ...)`. Existing XHS-specific routes, Feishu attachment names, XHS analysis report HTML names, platform route prefixes, test fixture note IDs, and existing media/export compatibility assertions stay intentionally XHS-specific.
+- Tests: `py -3.12 -m pytest tests/backend/test_asset_storage_policy.py -q` -> passed (`16 passed`).
+- Regression: `py -3.12 -m pytest tests/backend/test_api.py -q -k "file or image or export"` -> passed (`27 passed, 169 deselected`).
+- Boundary: no file migration, deletion, rename, storage layout rewrite, provider call, SDK/signature change, Alembic/migration, root service restart, or `compare-shots/` change occurred.
+
+- [x] **Step 7: Commit scoped files**
 
 Stage only files touched in this task, for example:
 

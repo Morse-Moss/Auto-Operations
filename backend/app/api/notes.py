@@ -24,6 +24,7 @@ from backend.app.core.time import shanghai_now
 from backend.app.core.security import decrypt_text
 from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAnalysisResult, NoteAsset, NoteComment, PlatformAccount, Tag, User, note_tags
 from backend.app.schemas.common import paginated
+from backend.app.services.asset_storage_policy import export_owner_prefix
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 
@@ -866,7 +867,7 @@ def export_notes(
     export_dir = Path(get_settings().storage_dir) / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
     exported_at = shanghai_now()
-    file_name = f"xhs-notes-u{current_user.id}-{exported_at.strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}.{payload.format}"
+    file_name = f"{export_owner_prefix('xhs', 'notes', current_user.id)}{exported_at.strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}.{payload.format}"
     file_path = export_dir / file_name
     if payload.format == "csv":
         file_path.write_text("\ufeff" + _build_notes_csv(db, notes), encoding="utf-8")
