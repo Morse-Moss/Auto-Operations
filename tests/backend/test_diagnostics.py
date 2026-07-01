@@ -10,10 +10,13 @@ from backend.app.platforms.contracts import (
 from backend.app.services.diagnostic_service import (
     diagnostic_from_adapter_error,
     diagnostic_from_capability_decision,
+    readiness_diagnostic,
     sanitize_raw_reference,
+    skipped_save_diagnostic,
     standard_diagnostic,
     validation_diagnostic,
 )
+from backend.app.services.platform_readiness_service import CoreReadinessSnapshot, evaluate_second_platform_readiness
 from backend.app.services.publish_orchestration_service import PublishOrchestrationService
 
 
@@ -213,3 +216,107 @@ def test_publish_dry_run_exposes_diagnostics_without_breaking_existing_checks() 
     assert result["diagnostics"][0]["stage"] == "policy"
     assert result["diagnostics"][0]["next_action"]
     assert any(item["category"] == "validation" for item in result["diagnostics"])
+
+
+def test_readiness_follow_up_can_be_expressed_as_standard_diagnostic() -> None:
+    report = evaluate_second_platform_readiness(
+        "wechat_official",
+        CoreReadinessSnapshot(
+            platform_registered=True,
+            read_only_adapter_path=False,
+            shared_content_library_or_deferral=True,
+            capability_policy_gate=True,
+            publish_dry_run_no_side_effect=True,
+            scheduler_no_bypass=True,
+            diagnostics_no_secret_leak=True,
+            credential_logging_safe=True,
+            real_publish_confirmation_gate=True,
+            disable_or_rollback_path=True,
+        ),
+    )
+
+    failed = [check for check in report.checks if not check.passed]
+    assert failed
+    diagnostic = readiness_diagnostic(
+        platform_id=report.platform_id,
+        check_key=failed[0].key,
+        user_message=failed[0].user_impact,
+        check_severity=failed[0].severity,
+    ).to_payload()
+
+    payload = report.to_payload()
+
+    assert diagnostic["platform_id"] == "wechat_official"
+    assert diagnostic["category"] == "validation"
+    assert diagnostic["capability_key"] == "readiness.second_platform"
+    assert diagnostic["stage"] == "readiness"
+    assert diagnostic["next_action"]
+    assert diagnostic["raw_reference"] == f"diagnostic:{failed[0].key}"
+    assert payload["checks"]
+    assert payload["blockers"] == []
+    assert payload["follow_ups"] == [failed[0].key]
+    assert payload["diagnostics"] == [diagnostic]
+
+
+def test_readiness_blocker_diagnostic_preserves_blocker_severity() -> None:
+    report = evaluate_second_platform_readiness(
+        "wechat_official",
+        CoreReadinessSnapshot(
+            platform_registered=True,
+            read_only_adapter_path=True,
+            shared_content_library_or_deferral=True,
+            capability_policy_gate=False,
+            publish_dry_run_no_side_effect=True,
+            scheduler_no_bypass=True,
+            diagnostics_no_secret_leak=True,
+            credential_logging_safe=True,
+            real_publish_confirmation_gate=True,
+            disable_or_rollback_path=True,
+        ),
+    )
+
+    diagnostic = report.to_payload()["diagnostics"][0]
+
+    assert report.verdict == "BLOCKER"
+    assert diagnostic["raw_reference"] == "diagnostic:capability_policy_gate"
+    assert diagnostic["severity"] == "blocked"
+    assert diagnostic["recoverable"] is False
+
+
+def test_standard_diagnostic_drops_secret_bearing_references() -> None:
+    assert sanitize_raw_reference("https://example.com/path?token=secret") == "https://example.com/path"
+    assert sanitize_raw_reference({"raw_json": {"cookie": "secret"}}) is None
+
+
+def test_save_skipped_reason_maps_to_standard_diagnostic_without_breaking_existing_fields() -> None:
+    skipped_item = {
+        "note_id": "crawl-search-001",
+        "note_url": "https://www.xiaohongshu.com/explore/crawl-search-001",
+        "quality_status": "search_card_only",
+        "diagnostic_kind": "empty_detail_payload",
+        "save_diagnostic_kind": "save_skipped_low_quality",
+        "recoverable": False,
+        "user_message": "只采集到搜索卡片，未入库。",
+        "raw": {"cookie": "secret-cookie", "title": "card only"},
+        "diagnostics": [{"category": "legacy"}],
+    }
+
+    diagnostic = skipped_save_diagnostic(
+        platform_id="xhs",
+        skipped_item=skipped_item,
+        correlation_id="task:42",
+    ).to_payload()
+
+    skipped_item["diagnostics"] = [*skipped_item["diagnostics"], diagnostic]
+
+    assert skipped_item["save_diagnostic_kind"] == "save_skipped_low_quality"
+    assert skipped_item["quality_status"] == "search_card_only"
+    assert skipped_item["diagnostics"][0]["category"] == "legacy"
+    assert skipped_item["diagnostics"][1]["category"] == "validation"
+    assert diagnostic["category"] == "validation"
+    assert diagnostic["recoverable"] is False
+    assert diagnostic["stage"] == "save"
+    assert diagnostic["correlation_id"] == "task:42"
+    assert diagnostic["raw_reference"] == "diagnostic:save_skipped_low_quality"
+    serialized = json.dumps(diagnostic, ensure_ascii=False)
+    assert "secret-cookie" not in serialized

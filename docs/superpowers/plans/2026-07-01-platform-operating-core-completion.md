@@ -564,16 +564,16 @@ docs: record asset policy closure evidence
 - Modify tests if route touched: `tests/backend/test_api.py`
 - Modify docs: `docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md`
 
-- [ ] **Step 1: Select low-risk diagnostic adoption points**
+- [x] **Step 1: Select low-risk diagnostic adoption points**
 
 Use this exact selection unless code investigation shows a better low-risk fit:
 
-1. Platform readiness report serialization: include standard diagnostic payloads for failed checks.
-2. XHS crawl/save skipped diagnostic serialization: map skipped save reasons to standard `validation` or `rate_limited` diagnostics.
+1. Platform readiness report serialization: express failed readiness checks as standard `validation` diagnostics through `readiness_diagnostic()`.
+2. XHS crawl/save skipped diagnostic serialization: map skipped save reasons to standard `validation` or `rate_limited` diagnostics through `skipped_save_diagnostic()` and attach them additively to `skipped_items`.
 
 Do not attach diagnostics to real publish, account login, credential import, or provider execution paths in this task.
 
-- [ ] **Step 2: Write failing diagnostic tests**
+- [x] **Step 2: Write failing diagnostic tests**
 
 Extend `tests/backend/test_diagnostics.py` with tests like:
 
@@ -622,7 +622,7 @@ def test_standard_diagnostic_drops_secret_bearing_references():
 
 If route-level diagnostics are added, add route tests that assert diagnostics are additive and existing fields remain present.
 
-- [ ] **Step 3: Run failing tests**
+- [x] **Step 3: Run failing tests**
 
 Run:
 
@@ -630,9 +630,9 @@ Run:
 py -3.12 -m pytest tests/backend/test_diagnostics.py -q
 ```
 
-Expected: fail for any missing helper/serialization only. If the tests pass without production changes, record evidence and do not add code.
+Observed before implementation: failed during collection because `readiness_diagnostic` was not yet exported by `backend.app.services.diagnostic_service`.
 
-- [ ] **Step 4: Implement minimal diagnostic adapter helpers**
+- [x] **Step 4: Implement minimal diagnostic adapter helpers**
 
 If needed, add a helper to `backend/app/services/diagnostic_service.py`:
 
@@ -653,7 +653,7 @@ def readiness_diagnostic(*, check_key: str, user_message: str, next_stage: str =
 
 Only add this helper if tests or route integration use it. Do not add broad diagnostic frameworks.
 
-- [ ] **Step 5: Run diagnostic and focused route regressions**
+- [x] **Step 5: Run diagnostic and focused route regressions**
 
 Run:
 
@@ -662,21 +662,18 @@ py -3.12 -m pytest tests/backend/test_diagnostics.py -q
 py -3.12 -m pytest tests/backend/test_api.py -q -k "diagnostic or crawl or platform"
 ```
 
-Expected: selected tests pass.
+Observed: selected tests pass.
 
-- [ ] **Step 6: Update completion plan status**
+- [x] **Step 6: Update completion plan status**
 
-Add evidence:
-
-```md
 **Task 3 evidence:**
-- Commit: `actual commit SHA` `feat: adopt standard diagnostics in low-risk paths`
-- Tests: `py -3.12 -m pytest tests/backend/test_diagnostics.py -q` -> passed
-- Regression: `py -3.12 -m pytest tests/backend/test_api.py -q -k "diagnostic or crawl or platform"` -> passed
-- Boundary: no credentials, raw_json, provider payloads, real account actions, or real publish paths exposed.
-```
+- Commit: current scoped Task 3 commit; final SHA is reported in Task 3 closeout.
+- Tests: `py -3.12 -m pytest tests/backend/test_diagnostics.py tests/backend/test_platform_readiness_gate.py -q` -> `14 passed`.
+- Regression: `py -3.12 -m pytest tests/backend/test_api.py -q -k "diagnostic or crawl or platform"` -> `34 passed, 162 deselected`.
+- Review fix: readiness payloads now include additive `diagnostics`, readiness blocker diagnostics preserve blocker severity/recoverability, skipped-item diagnostics append without overwriting existing diagnostics, and skipped save diagnostics preserve `recoverable` semantics.
+- Boundary: no credentials, raw_json, provider payloads, real account actions, real publish paths, DB/Alembic changes, SDK/signature changes, or root service restart.
 
-- [ ] **Step 7: Commit scoped files**
+- [x] **Step 7: Commit scoped files**
 
 Stage only touched diagnostics files and tests:
 
