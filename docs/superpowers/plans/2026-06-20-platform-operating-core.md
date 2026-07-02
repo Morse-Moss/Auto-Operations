@@ -783,7 +783,7 @@ Stage 0-10 have all received at least a first scoped pass, so the active work is
 | Stage 7 Publish Queue policy/dry-run | `first_pass_done` | dry-run no-side-effect skeleton evidence above; real publish migration is safety-gated |
 | Stage 8 Workflow Automation | `first_pass_done` | workflow skeleton/no-bypass evidence above; deeper automation migration is safety-gated |
 | Stage 9 Diagnostics | `first_pass_done` | diagnostic service first pass evidence above; broader low-risk adoption remains |
-| Stage 10 Second Platform Readiness Gate | `closure_in_progress` | readiness service/tests evidence above; current 2026-06-30 report verdict is `FOLLOW_UP` / `docs_or_fake_adapter_only` |
+| Stage 10 Second Platform Readiness Gate | `closed` | readiness service/tests evidence above; 2026-07-02 rerun after fake/read-only pilot verdict is `PASS` / `start_read_only_adapter_pilot`; real accounts/providers/write actions/background real automation remain blocked |
 
 ### Wave 1 — approved low-risk closure sequence
 
@@ -803,15 +803,15 @@ Stage 0-10 have all received at least a first scoped pass, so the active work is
 | 1 | Done | `379f57f refactor: extract xhs comment mapper`; `py -3.12 -m pytest tests/backend/test_xhs_content_mappers.py tests/backend/test_notes_xhs_serializer.py -q` -> 14 passed; comment API regression subset -> 8 passed | Other XHS route-private helpers remain out of scope. |
 | 2 | Done | `62e151b refactor: make notes account platform explicit`; ownership/serializer tests -> 8 passed; batch-save ownership subset -> 3 passed | `/notes/batch-save` remains intentionally XHS-only. |
 | 3 | Done | `0add4fd feat: expose platform account auth schemas`; `py -3.12 -m pytest tests/backend/test_platforms.py -q` -> 10 passed; account/platform API subset -> 29 passed | Schema is read-only; no real login endpoint or credential storage behavior changed. |
-| 4 | `FOLLOW_UP` | `py -3.12 -m pytest tests/backend/test_platform_readiness_gate.py tests/backend/test_platforms.py -q` -> 15 passed | Allowed outcome is `docs_or_fake_adapter_only`; do not connect real second-platform accounts or real publish paths yet. |
+| 4 | `PASS` | `py -3.12 -m pytest tests/backend/test_platform_readiness_gate.py -q` -> 5 passed on 2026-07-02 after fake/read-only pilot | Allowed outcome is `start_read_only_adapter_pilot`; real accounts/providers/write actions/background real automation remain blocked. |
 
-**Current readiness verdict:** `FOLLOW_UP`.
+**Current readiness verdict:** `PASS` for read-only adapter pilot.
 
-**Allowed outcome:** `docs_or_fake_adapter_only`.
+**Allowed outcome:** `start_read_only_adapter_pilot`.
 
-**Why not PASS:** blocker-class safety checks have test coverage, but second-platform read-only adapter/content-library adoption is still incomplete and公众号 account binding remains blocked by design. Starting real account binding, real provider calls, real publish, or automated engagement is still outside the safe closure boundary.
+**Still blocked:** real account binding, real provider calls, real publish/upload/group-send, comments/replies/engagement actions, and background real automation remain `deferred_by_safety`.
 
-**User impact:** users can see clearer platform/account capability state, but should not be offered a working公众号 credential binding flow or any real second-platform write action until the Wave 2 design/adoption work is complete.
+**User impact:** users may be offered fake/read-only second-platform pilot flows that prove platform core reuse, but must not be offered real second-platform credential binding, provider-backed content operations, publish/upload/group-send, comment/reply/engagement, or background real automation until separate safety-gated work approves those paths.
 
 ### Wave 2 — after Wave 1 review
 

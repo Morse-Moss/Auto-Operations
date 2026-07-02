@@ -901,7 +901,7 @@ and build exits 0. Observed: adapter test passed; frontend build passed with the
 - [x] **Step 6: Update completion plan evidence**
 
 **Task 5 evidence:**
-- Commit: pending scoped Task 5 commit (`feat: add demo read-only platform pilot`); no SHA because this task was explicitly requested without commit.
+- Commit: `9c547b7 feat: add demo read-only platform pilot`.
 - Test: `node frontend/tests/demo-platform-content-library-adapter.test.ts` -> passed (`demo-platform-content-library-adapter tests passed`; Node emitted an experimental `stripTypeScriptTypes` warning from the test-only loader).
 - Build: `npm --prefix frontend run build` -> passed (`tsc && vite build`; Vite emitted only the existing large chunk warning).
 - Boundary: fixture-only read path; no account binding, credentials, provider calls, publish/upload, comments/interaction actions, real automation, DB/Alembic changes, SDK/signature changes, root service restart, or `compare-shots/` change.
@@ -923,36 +923,24 @@ Skipped by explicit user instruction: do not commit, do not git add, do not push
 - Modify: `docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md`
 - Modify: `docs/superpowers/plans/2026-06-20-platform-operating-core.md`
 
-- [ ] **Step 1: Write or update readiness test for post-pilot PASS criteria**
+- [x] **Step 1: Write or update readiness test for post-pilot PASS criteria**
 
-In `tests/backend/test_platform_readiness_gate.py`, add or update a test:
+`tests/backend/test_platform_readiness_gate.py` already had the post-pilot PASS coverage; no duplicate test was added. The existing PASS test uses the current `CoreReadinessSnapshot` contract:
 
-```python
-from backend.app.services.platform_readiness_service import CoreReadinessSnapshot, evaluate_second_platform_readiness
+- `platform_registered`
+- `read_only_adapter_path`
+- `shared_content_library_or_deferral`
+- `capability_policy_gate`
+- `publish_dry_run_no_side_effect`
+- `scheduler_no_bypass`
+- `diagnostics_no_secret_leak`
+- `credential_logging_safe`
+- `real_publish_confirmation_gate`
+- `disable_or_rollback_path`
 
+Observed PASS assertion remains `report.verdict == "PASS"` and `report.allowed_outcome == "start_read_only_adapter_pilot"`.
 
-def test_readiness_passes_when_read_only_pilot_and_safety_gates_are_ready():
-    report = evaluate_second_platform_readiness(
-        CoreReadinessSnapshot(
-            platform_registry=True,
-            read_only_adapter_path=True,
-            shared_content_shell=True,
-            capability_policy=True,
-            publish_dry_run_no_side_effect=True,
-            scheduler_no_bypass=True,
-            diagnostics_no_secret_leak=True,
-            credential_logging_safe=True,
-            real_publish_confirmation_gate=True,
-            disable_rollback_path=True,
-        )
-    )
-    assert report.verdict == "PASS"
-    assert report.allowed_outcome == "start_read_only_adapter_pilot"
-```
-
-If this test already exists, do not duplicate it; update evidence only.
-
-- [ ] **Step 2: Run readiness tests**
+- [x] **Step 2: Run readiness tests**
 
 Run:
 
@@ -960,52 +948,41 @@ Run:
 py -3.12 -m pytest tests/backend/test_platform_readiness_gate.py -q
 ```
 
-Expected: pass.
+Observed:
 
-- [ ] **Step 3: Update closure queue status**
+```text
+5 passed in 0.04s
+```
 
-Update `docs/superpowers/plans/2026-06-20-platform-operating-core.md` and this completion plan with the current verdict.
+- [x] **Step 3: Update closure queue status**
 
-If tests and pilot prove readiness, write:
+Updated `docs/superpowers/plans/2026-06-20-platform-operating-core.md` and this completion plan with the current verdict.
 
-```md
 **Current readiness verdict:** `PASS` for read-only adapter pilot.
 
 **Allowed outcome:** `start_read_only_adapter_pilot`.
 
 **Still blocked:** real account binding, real provider calls, real publish/upload/group-send, comments/replies/engagement actions, and background real automation remain `deferred_by_safety`.
-```
 
-If any check remains incomplete, write the exact remaining `FOLLOW_UP` cause instead.
+- [x] **Step 4: Run docs diff check**
 
-- [ ] **Step 4: Run docs diff check**
-
-Run:
+Run from this isolated worktree, not from root `E:\小红书`:
 
 ```powershell
-git -C "E:\小红书" diff --check -- docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md docs/superpowers/plans/2026-06-20-platform-operating-core.md tests/backend/test_platform_readiness_gate.py
+git diff --check -- docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md docs/superpowers/plans/2026-06-20-platform-operating-core.md tests/backend/test_platform_readiness_gate.py
 ```
 
-Expected: no output.
+Observed: no output.
 
 - [ ] **Step 5: Commit scoped files**
 
-Run:
+Skipped by explicit user instruction: do not commit, do not git add, do not push.
 
-```powershell
-git -C "E:\小红书" add -- tests/backend/test_platform_readiness_gate.py docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md docs/superpowers/plans/2026-06-20-platform-operating-core.md
-git -C "E:\小红书" commit -m @'
-docs: record platform core readiness completion
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-'@
-```
-
-If production readiness service changed, include it explicitly in `git add --` and use:
-
-```text
-feat: update platform core readiness gate
-```
+**Task 6 evidence:**
+- Commit: pending scoped Task 6 commit; not committed in this pass by explicit instruction, so no SHA is recorded.
+- Test: `py -3.12 -m pytest tests/backend/test_platform_readiness_gate.py -q` -> `5 passed in 0.04s`.
+- Closure queue: Stage 10 updated from previous `FOLLOW_UP` / `docs_or_fake_adapter_only` to current `PASS` / `start_read_only_adapter_pilot` after fake/read-only pilot completion.
+- Boundary: still blocks real account binding, real provider calls, real publish/upload/group-send, comments/replies/engagement actions, background real automation, DB/Alembic changes, SDK/signature changes, and `compare-shots/` changes.
 
 ---
 
@@ -1020,70 +997,44 @@ feat: update platform core readiness gate
 - Create: `docs/superpowers/specs/2026-07-01-platform-publish-queue-safety-design.md`
 - Modify: `docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md`
 
-- [ ] **Step 1: Write publish safety design doc**
+- [x] **Step 1: Write publish safety design doc**
 
-Create `docs/superpowers/specs/2026-07-01-platform-publish-queue-safety-design.md` with these sections:
+Created `docs/superpowers/specs/2026-07-01-platform-publish-queue-safety-design.md` with:
 
-```md
-# Platform Publish Queue Safety Design
+- `# Platform Publish Queue Safety Design`
+- Goal that dry-run, retry, scheduler, and adapter paths must not perform real upload/post without explicit user authorization.
+- Stop conditions: no real upload/post implementation, no provider calls, no database migration, no scheduler behavior change.
+- Required architecture: platform publish adapter interface, dry-run result contract, real-run confirmation token or authorization reference, trap adapter tests, disable/rollback switch per platform/capability.
+- Minimum future tests: dry-run avoids real adapter construction, unconfirmed real publish blocks, confirmed real publish audits before adapter call, planned/blocked platforms fail closed.
+- User impact, capability keys, audit/diagnostics, migration sequence, and explicit non-goals.
 
-**Goal:** Define how publish queue migration can proceed without allowing dry-run, retry, scheduler, or adapter code to perform real upload/post actions without explicit user authorization.
+- [x] **Step 2: Update completion plan**
 
-## Stop Conditions
-
-- No real upload/post implementation in this design task.
-- No provider calls.
-- No database migration.
-- No scheduler behavior change.
-
-## Required Architecture Before Implementation
-
-- Platform publish adapter interface.
-- Dry-run result contract.
-- Real-run confirmation token or authorization reference.
-- Trap adapter tests that fail if dry-run calls upload/post.
-- Disable/rollback switch per platform/capability.
-
-## Minimum Future Tests
-
-- Dry-run does not instantiate real adapter.
-- Unconfirmed real publish returns blocked result.
-- Confirmed real publish records audit event before adapter call.
-- Planned/blocked platforms fail closed.
-
-## User Impact
-
-Operators can preview publish readiness safely; every real external write remains under explicit user control.
-```
-
-- [ ] **Step 2: Update completion plan**
-
-Mark Publish Queue deeper migration as:
+Publish Queue deeper migration is marked as:
 
 ```md
 `deferred_by_safety` — design exists; implementation requires explicit user approval.
 ```
 
-- [ ] **Step 3: Run docs diff check**
+- [x] **Step 3: Run docs diff check**
 
-Run:
+Run from this isolated worktree, not from root `E:\小红书`:
 
 ```powershell
-git -C "E:\小红书" diff --check -- docs/superpowers/specs/2026-07-01-platform-publish-queue-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md
+git diff --check -- docs/superpowers/specs/2026-07-01-platform-publish-queue-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md
 ```
+
+Observed: no output.
 
 - [ ] **Step 4: Commit docs only**
 
-Run:
+Skipped by explicit user instruction: do not commit, do not git add, do not push.
 
-```powershell
-git -C "E:\小红书" add -- docs/superpowers/specs/2026-07-01-platform-publish-queue-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md
-git -C "E:\小红书" commit -m @'
-docs: define publish queue safety gate
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-'@
-```
+**Task 7 evidence:**
+- Status: `deferred_by_safety` — design exists; implementation requires explicit user approval.
+- Commit: pending scoped Task 7 commit; not committed in this pass by explicit instruction, so no SHA is recorded.
+- Diff check: `git diff --check -- docs/superpowers/specs/2026-07-01-platform-publish-queue-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md` -> passed with no output.
+- Boundary: design-only; no real upload/post implementation, provider calls, scheduler behavior change, DB/Alembic changes, backend/frontend runtime code changes, SDK/signature changes, `compare-shots/` changes, git add, commit, or push.
 
 ---
 
@@ -1096,71 +1047,44 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 - Create: `docs/superpowers/specs/2026-07-01-platform-workflow-automation-safety-design.md`
 - Modify: `docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md`
 
-- [ ] **Step 1: Write workflow safety design doc**
+- [x] **Step 1: Write workflow safety design doc**
 
-Create `docs/superpowers/specs/2026-07-01-platform-workflow-automation-safety-design.md` with these sections:
+Created `docs/superpowers/specs/2026-07-01-platform-workflow-automation-safety-design.md` with:
 
-```md
-# Platform Workflow Automation Safety Design
+- `# Platform Workflow Automation Safety Design`
+- Goal that workflow automation can evolve from XHS AutoTask without allowing background jobs to silently publish, upload, comment, reply, or mutate external platforms.
+- Stop conditions: no background real action implementation, no provider calls, no database migration, no scheduler execution expansion.
+- Required architecture: workflow definition and step capability keys, `real_publish_authorized=false` default risk policy, `authorization_ref` for real actions, pending-job-only scheduler behavior until user approval, audit before real external action, and kill switch per platform/capability.
+- Minimum future tests: historical AutoTasks do not gain publish privileges, background runner creates pending jobs only, real action without authorization fails closed, and comment/reply/engagement capabilities stay blocked unless explicitly enabled.
+- Current scope, non-goals, state model, migration sequence, operator UX, diagnostics/audit, and user impact.
 
-**Goal:** Define how workflow automation can evolve from XHS AutoTask without allowing background jobs to silently publish, upload, comment, reply, or mutate external platforms.
+- [x] **Step 2: Update completion plan**
 
-## Stop Conditions
-
-- No background real action implementation in this design task.
-- No provider calls.
-- No database migration.
-- No scheduler execution expansion.
-
-## Required Architecture Before Implementation
-
-- Workflow definition and step capability keys.
-- Risk policy with `real_publish_authorized=false` by default.
-- `authorization_ref` required for real actions.
-- Pending-job-only scheduler behavior until user approval.
-- Audit event before any real external action.
-- Kill switch per platform/capability.
-
-## Minimum Future Tests
-
-- Historical AutoTasks do not gain publish privileges.
-- Background runner creates pending jobs only.
-- Any real action step without authorization fails closed.
-- Comment/reply/engagement capabilities are blocked unless explicitly enabled.
-
-## User Impact
-
-Operators can automate preparation and review queues without losing final control over real external account actions.
-```
-
-- [ ] **Step 2: Update completion plan**
-
-Mark Workflow Automation deeper migration as:
+Workflow Automation deeper migration is marked as:
 
 ```md
 `deferred_by_safety` — design exists; implementation requires explicit user approval.
 ```
 
-- [ ] **Step 3: Run docs diff check**
+- [x] **Step 3: Run docs diff check**
 
-Run:
+Run from this isolated worktree, not from root `E:\小红书`:
 
 ```powershell
-git -C "E:\小红书" diff --check -- docs/superpowers/specs/2026-07-01-platform-workflow-automation-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md
+git diff --check -- docs/superpowers/specs/2026-07-01-platform-workflow-automation-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md
 ```
+
+Observed: no output.
 
 - [ ] **Step 4: Commit docs only**
 
-Run:
+Skipped by explicit user instruction: do not commit, do not git add, do not push.
 
-```powershell
-git -C "E:\小红书" add -- docs/superpowers/specs/2026-07-01-platform-workflow-automation-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md
-git -C "E:\小红书" commit -m @'
-docs: define workflow automation safety gate
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-'@
-```
+**Task 8 evidence:**
+- Status: `deferred_by_safety` — design exists; implementation requires explicit user approval.
+- Commit: pending scoped Task 8 commit; not committed in this pass by explicit instruction, so no SHA is recorded.
+- Diff check: `git diff --check -- docs/superpowers/specs/2026-07-01-platform-workflow-automation-safety-design.md docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md` -> passed with no output.
+- Boundary: design-only; no background real action implementation, provider calls, scheduler execution expansion, DB/Alembic changes, backend/frontend runtime code changes, SDK/signature changes, `compare-shots/` changes, git add, commit, or push.
 
 ---
 
