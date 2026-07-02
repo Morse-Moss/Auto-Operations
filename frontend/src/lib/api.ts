@@ -666,6 +666,7 @@ export type SavedNoteFilters = {
   tag_id?: number;
   has_assets?: boolean;
   has_comments?: boolean;
+  visibility?: "active" | "all" | "excluded";
   feishu_push_status?: string;
   analysis_status?: string | string[];
   core_product_service?: string[];
@@ -768,6 +769,7 @@ export async function fetchSavedNotes(platformOrFilters: string | SavedNoteFilte
           tag_id: platformOrFilters.tag_id,
           has_assets: platformOrFilters.has_assets,
           has_comments: platformOrFilters.has_comments,
+          visibility: platformOrFilters.visibility,
           feishu_push_status: platformOrFilters.feishu_push_status,
           analysis_status: csvParam(platformOrFilters.analysis_status),
           core_product_service: csvParam(platformOrFilters.core_product_service),
@@ -783,8 +785,8 @@ export async function fetchSavedNotes(platformOrFilters: string | SavedNoteFilte
   return response.data;
 }
 
-export async function fetchSavedNoteFilterOptions(platform = "xhs"): Promise<SavedNoteFilterOptions> {
-  const response = await http.get<SavedNoteFilterOptions>("/notes/filter-options", { params: { platform } });
+export async function fetchSavedNoteFilterOptions(platform = "xhs", filters: Pick<SavedNoteFilters, "visibility"> = {}): Promise<SavedNoteFilterOptions> {
+  const response = await http.get<SavedNoteFilterOptions>("/notes/filter-options", { params: { platform, visibility: filters.visibility } });
   return response.data;
 }
 

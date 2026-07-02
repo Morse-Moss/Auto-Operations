@@ -10,6 +10,7 @@ import type {
   ContentLibraryExportFormat,
   ContentLibraryFilters,
   ContentLibraryItem,
+  ContentLibraryVisibility,
   ContentLibraryTag,
   ContentLibraryTagMode,
 } from "./content-library-types";
@@ -39,6 +40,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
   const [selectedTagFilter, setSelectedTagFilter] = useState("");
   const [hasAssetsFilter, setHasAssetsFilter] = useState(false);
   const [hasCommentsFilter, setHasCommentsFilter] = useState(false);
+  const [visibilityFilter, setVisibilityFilter] = useState<ContentLibraryVisibility>("active");
   const [feishuPushStatusFilter, setFeishuPushStatusFilter] = useState("");
   const [analysisStatusFilter, setAnalysisStatusFilter] = useState("");
   const [filterOptions, setFilterOptions] = useState(adapter.filterOptions ?? {});
@@ -77,6 +79,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
       tag_id: selectedTagFilter ? Number(selectedTagFilter) : undefined,
       has_assets: hasAssetsFilter || undefined,
       has_comments: hasCommentsFilter || undefined,
+      visibility: visibilityFilter,
       feishu_push_status: feishuPushStatusFilter || undefined,
       analysis_status: analysisStatusFilter || undefined,
       core_product_service: coreProductServiceFilter.length ? coreProductServiceFilter : undefined,
@@ -102,7 +105,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     } finally {
       setIsLoading(false);
     }
-  }, [adapter, analysisStatusFilter, contentTypeFilter, contentUsageFilter, coreProductServiceFilter, feishuPushStatusFilter, hasAssetsFilter, hasCommentsFilter, keywordFilter, page, pageSize, reusableModelFilter, searchAttributeFilter, selectedTagFilter, sortBy]);
+  }, [adapter, analysisStatusFilter, contentTypeFilter, contentUsageFilter, coreProductServiceFilter, feishuPushStatusFilter, hasAssetsFilter, hasCommentsFilter, keywordFilter, page, pageSize, reusableModelFilter, searchAttributeFilter, selectedTagFilter, sortBy, visibilityFilter]);
 
   const refreshTags = useCallback(async () => {
     try {
@@ -113,20 +116,20 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     }
   }, [adapter]);
 
-  const refreshFilterOptions = useCallback(async () => {
+  const refreshFilterOptions = useCallback(async (overrideFilters?: Pick<ContentLibraryFilters, "visibility">) => {
     setFilterOptionsError(null);
     if (!adapter.loadFilterOptions) {
       setFilterOptions(adapter.filterOptions ?? {});
       return;
     }
     try {
-      const result = await adapter.loadFilterOptions();
+      const result = await adapter.loadFilterOptions({ visibility: overrideFilters?.visibility ?? visibilityFilter });
       setFilterOptions(result);
     } catch {
       setFilterOptions(adapter.filterOptions ?? {});
       setFilterOptionsError("飞书分析筛选项加载失败，请刷新后重试。");
     }
-  }, [adapter]);
+  }, [adapter, visibilityFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,6 +138,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setSelectedTagFilter("");
     setHasAssetsFilter(false);
     setHasCommentsFilter(false);
+    setVisibilityFilter("active");
     setFeishuPushStatusFilter("");
     setAnalysisStatusFilter("");
     setCoreProductServiceFilter([]);
@@ -183,7 +187,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
         return;
       }
       try {
-        const result = await adapter.loadFilterOptions();
+        const result = await adapter.loadFilterOptions({ visibility: "active" });
         if (!cancelled) setFilterOptions(result);
       } catch {
         if (!cancelled) {
@@ -207,6 +211,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setSelectedTagFilter("");
     setHasAssetsFilter(false);
     setHasCommentsFilter(false);
+    setVisibilityFilter("active");
     setFeishuPushStatusFilter("");
     setAnalysisStatusFilter("");
     setCoreProductServiceFilter([]);
@@ -215,7 +220,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setContentUsageFilter([]);
     setSearchAttributeFilter([]);
     setPage(1);
-    void refreshItems({ q: undefined, tag_id: undefined, has_assets: undefined, has_comments: undefined, feishu_push_status: undefined, analysis_status: undefined, core_product_service: undefined, content_type: undefined, reusable_model: undefined, content_usage: undefined, search_attribute: undefined, page: 1 });
+    void refreshItems({ q: undefined, tag_id: undefined, has_assets: undefined, has_comments: undefined, visibility: "active", feishu_push_status: undefined, analysis_status: undefined, core_product_service: undefined, content_type: undefined, reusable_model: undefined, content_usage: undefined, search_attribute: undefined, page: 1 });
   }, [refreshItems]);
 
   const handleSortChange = useCallback((nextSortBy: ContentLibraryFilters["sort_by"]) => {
@@ -549,6 +554,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     selectedTagFilter,
     hasAssetsFilter,
     hasCommentsFilter,
+    visibilityFilter,
     feishuPushStatusFilter,
     filterOptions,
     filterOptionsError,
@@ -572,6 +578,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
     setSelectedTagFilter,
     setHasAssetsFilter,
     setHasCommentsFilter,
+    setVisibilityFilter,
     setFeishuPushStatusFilter,
     setAnalysisStatusFilter,
     setCoreProductServiceFilter,

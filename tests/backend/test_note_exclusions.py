@@ -414,6 +414,89 @@ def test_geo_cleanup_matches_chinese_adjacent_geo_phrases(tmp_path):
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_content_library_visibility_can_include_or_only_show_excluded_notes(tmp_path):
+    SessionLocal = _override_database(tmp_path, "content-library-excluded-visibility.db")
+    try:
+        user_id = _create_user(SessionLocal, "visibility-owner")
+        active_id = _create_note_with_analysis(SessionLocal, user_id, note_id="active-note", title="可用素材", score=9.0)
+        excluded_id = _create_note_with_analysis(SessionLocal, user_id, note_id="excluded-note", title="废弃素材", score=2.0)
+        db = SessionLocal()
+        try:
+            mark_notes_excluded(
+                db,
+                user_id=user_id,
+                note_ids=[excluded_id],
+                reason_code="manual_excluded",
+                reason_text="运营废弃",
+            )
+        finally:
+            db.close()
+
+        default_response = client.get("/api/notes", headers=_auth_headers(user_id), params={"platform": "xhs"})
+        assert default_response.status_code == 200
+        assert [item["id"] for item in default_response.json()["items"]] == [active_id]
+
+        all_response = client.get("/api/notes", headers=_auth_headers(user_id), params={"platform": "xhs", "visibility": "all"})
+        assert all_response.status_code == 200
+        assert {item["id"] for item in all_response.json()["items"]} == {active_id, excluded_id}
+
+        excluded_response = client.get("/api/notes", headers=_auth_headers(user_id), params={"platform": "xhs", "visibility": "excluded"})
+        assert excluded_response.status_code == 200
+        assert [item["id"] for item in excluded_response.json()["items"]] == [excluded_id]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_can_filter_unanalyzed_notes(tmp_path):
+    SessionLocal = _override_database(tmp_path, "content-library-unanalyzed-filter.db")
+    try:
+        user_id = _create_user(SessionLocal, "unanalyzed-owner")
+        analyzed_id = _create_note_with_analysis(SessionLocal, user_id, note_id="analyzed-note", title="已分析素材", score=9.0, status="分析完成")
+        unanalyzed_id = _create_note_without_analysis(SessionLocal, user_id, note_id="unanalyzed-note", title="未分析素材")
+
+        response = client.get("/api/notes", headers=_auth_headers(user_id), params={"platform": "xhs", "analysis_status": "未分析"})
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["items"]] == [unanalyzed_id]
+        assert analyzed_id not in [item["id"] for item in response.json()["items"]]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_content_library_filter_options_include_unanalyzed_and_excluded_when_requested(tmp_path):
+    SessionLocal = _override_database(tmp_path, "content-library-filter-options-visibility.db")
+    try:
+        user_id = _create_user(SessionLocal, "filter-option-owner")
+        _create_note_with_analysis(SessionLocal, user_id, note_id="active-option", title="可用分析", score=8.0, status="分析完成")
+        excluded_id = _create_note_with_analysis(SessionLocal, user_id, note_id="excluded-option", title="废弃分析", score=2.0, status="已废弃")
+        _create_note_without_analysis(SessionLocal, user_id, note_id="unanalyzed-option", title="未分析素材")
+        db = SessionLocal()
+        try:
+            mark_notes_excluded(
+                db,
+                user_id=user_id,
+                note_ids=[excluded_id],
+                reason_code="manual_excluded",
+                reason_text="运营废弃",
+            )
+        finally:
+            db.close()
+
+        default_response = client.get("/api/notes/filter-options", headers=_auth_headers(user_id), params={"platform": "xhs"})
+        assert default_response.status_code == 200
+        default_statuses = {item["value"] for item in default_response.json()["analysisStatus"]}
+        assert "未分析" in default_statuses
+        assert "分析完成" in default_statuses
+        assert "已废弃" not in default_statuses
+
+        excluded_response = client.get("/api/notes/filter-options", headers=_auth_headers(user_id), params={"platform": "xhs", "visibility": "all"})
+        assert excluded_response.status_code == 200
+        included_statuses = {item["value"] for item in excluded_response.json()["analysisStatus"]}
+        assert {"未分析", "分析完成", "已废弃"}.issubset(included_statuses)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_current_cleanup_candidates_endpoint_returns_shape_and_user_scope(tmp_path):
     SessionLocal = _override_database(tmp_path, "cleanup-candidates-endpoint-scope.db")
     try:

@@ -3,12 +3,12 @@ import { Alert, Button, Card, Checkbox, Col, Drawer, Empty, Input, Pagination, P
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { ContentLibraryAdapter, ContentLibraryController, ContentLibraryItem, ContentLibrarySelectOption } from "./content-library-types";
+import type { ContentLibraryAdapter, ContentLibraryController, ContentLibraryItem, ContentLibrarySelectOption, ContentLibraryVisibility } from "./content-library-types";
 
 const { Title, Text } = Typography;
 
 const DEFAULT_FILTER_OPTIONS = {
-  analysisStatus: ["待分析", "分析中", "已完成", "废弃"].map((value) => ({ value, label: value })),
+  analysisStatus: ["未分析", "待分析", "分析中", "已完成", "分析完成", "废弃", "已废弃"].map((value) => ({ value, label: value })),
   coreProductService: [],
   contentType: [],
   reusableModel: [],
@@ -107,6 +107,22 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
           {adapter.capabilities.canFilterComments !== false ? (
             <Col><Checkbox checked={controller.hasCommentsFilter} onChange={(event) => controller.setHasCommentsFilter(event.target.checked)}>有评论</Checkbox></Col>
           ) : null}
+          <Col span={4}>
+            <Select
+              value={controller.visibilityFilter}
+              onChange={(value) => {
+                const nextVisibility = value as ContentLibraryVisibility;
+                controller.setVisibilityFilter(nextVisibility);
+                void controller.refreshFilterOptions({ visibility: nextVisibility });
+              }}
+              style={{ width: "100%" }}
+              options={[
+                { value: "active", label: "只看可用" },
+                { value: "all", label: "包含废弃" },
+                { value: "excluded", label: "只看废弃" },
+              ]}
+            />
+          </Col>
           <Col><Segmented value={controller.viewMode} onChange={(value) => controller.setViewMode(value as "card" | "table")} options={[{ label: "卡片", value: "card" }, { label: "表格", value: "table" }]} /></Col>
           <Col><Button onClick={controller.clearFilters}>重置</Button></Col>
           <Col><Button type="primary" onClick={() => void controller.refreshItems({ page: 1 })} loading={controller.isLoading}>筛选</Button></Col>

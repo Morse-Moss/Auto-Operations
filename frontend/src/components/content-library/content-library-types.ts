@@ -18,11 +18,14 @@ export type ContentLibraryDraftIntent = "rewrite" | "publish";
 export type ContentLibraryTagMode = "add" | "remove";
 export type ContentLibraryExportFormat = "json" | "csv";
 
+export type ContentLibraryVisibility = "active" | "all" | "excluded";
+
 export type ContentLibraryFilters = {
   q?: string;
   tag_id?: number;
   has_assets?: boolean;
   has_comments?: boolean;
+  visibility?: ContentLibraryVisibility;
   feishu_push_status?: string;
   analysis_status?: string;
   core_product_service?: string[];
@@ -175,7 +178,7 @@ export type ContentLibraryAdapter<TItem extends ContentLibraryItem = ContentLibr
   sortOptions: ContentLibrarySortOption[];
   filterOptions?: ContentLibraryFilterOptions;
   emptyState: ContentLibraryEmptyState;
-  loadFilterOptions?(): Promise<ContentLibraryFilterOptions>;
+  loadFilterOptions?(filters?: Pick<ContentLibraryFilters, "visibility">): Promise<ContentLibraryFilterOptions>;
   loadItems(filters: ContentLibraryFilters): Promise<ContentLibraryPage<TItem>>;
   loadItem(itemId: number): Promise<TItem>;
   loadAssets(itemId: number): Promise<ContentLibraryPage<ContentLibraryAsset>>;
@@ -221,6 +224,7 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   selectedTagFilter: string;
   hasAssetsFilter: boolean;
   hasCommentsFilter: boolean;
+  visibilityFilter: ContentLibraryVisibility;
   feishuPushStatusFilter: string;
   filterOptions: ContentLibraryFilterOptions;
   filterOptionsError: string | null;
@@ -244,6 +248,7 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   setSelectedTagFilter(value: string): void;
   setHasAssetsFilter(value: boolean): void;
   setHasCommentsFilter(value: boolean): void;
+  setVisibilityFilter(value: ContentLibraryVisibility): void;
   setFeishuPushStatusFilter(value: string): void;
   setAnalysisStatusFilter(value: string): void;
   setCoreProductServiceFilter(value: string[]): void;
@@ -259,7 +264,7 @@ export type ContentLibraryController<TItem extends ContentLibraryItem = ContentL
   setDetailError(value: string | null): void;
   refreshItems(overrideFilters?: ContentLibraryFilters): Promise<void>;
   refreshTags(): Promise<void>;
-  refreshFilterOptions(): Promise<void>;
+  refreshFilterOptions(filters?: Pick<ContentLibraryFilters, "visibility">): Promise<void>;
   clearFilters(): void;
   handleSortChange(sortBy: ContentLibrarySortBy): void;
   handlePageChange(page: number, pageSize: number): void;

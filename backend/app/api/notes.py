@@ -384,12 +384,47 @@ def _get_unique_owned_notes(db: Session, current_user: User, note_ids: list[int]
     return [_get_owned_note(db, current_user, note_id) for note_id in dict.fromkeys(note_ids)]
 
 
-def _not_excluded_note_condition(user_id: int):
-    return ~select(NoteExclusion.id).where(
+UNANALYZED_STATUS = "未分析"
+
+
+def _excluded_note_condition(user_id: int):
+    return select(NoteExclusion.id).where(
         NoteExclusion.user_id == user_id,
         NoteExclusion.platform == Note.platform,
         NoteExclusion.platform_note_id == Note.note_id,
     ).exists()
+
+
+def _not_excluded_note_condition(user_id: int):
+    return ~_excluded_note_condition(user_id)
+
+
+def _apply_note_visibility(statement, user_id: int, visibility: str):
+    if visibility == "all":
+        return statement
+    if visibility == "excluded":
+        return statement.where(_excluded_note_condition(user_id))
+    return statement.where(_not_excluded_note_condition(user_id))
+
+
+def _is_unanalyzed_analysis(result: NoteAnalysisResult | None) -> bool:
+    if result is None:
+        return True
+    return not any([
+        result.analysis_status,
+        result.subject_object,
+        result.content_type,
+        result.core_points,
+        result.target_audience,
+        result.title_hook,
+        result.content_structure,
+        result.reusable_models,
+        result.reuse_value,
+        result.search_attribute,
+        result.score is not None,
+        result.rating,
+        result.analysis_note,
+    ])
 
 
 def _split_filter_values(value: Optional[str]) -> list[str]:
@@ -439,23 +474,28 @@ def _add_option(counter: dict[str, int], value: Any) -> None:
 @router.get("/filter-options")
 def get_note_filter_options(
     platform: Optional[str] = None,
+    visibility: Literal["active", "all", "excluded"] = "active",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    note_statement = select(Note.id).where(Note.user_id == current_user.id)
+    note_statement = _apply_note_visibility(note_statement, current_user.id, visibility)
+    if platform:
+        note_statement = note_statement.where(Note.platform == platform)
+    visible_note_ids = list(db.scalars(note_statement))
+
     statement = (
         select(NoteAnalysisResult)
-        .join(Note, NoteAnalysisResult.note_id == Note.id)
         .where(
-            Note.user_id == current_user.id,
             NoteAnalysisResult.user_id == current_user.id,
             NoteAnalysisResult.source == "feishu",
-            _not_excluded_note_condition(current_user.id),
+            NoteAnalysisResult.note_id.in_(visible_note_ids),
         )
     )
-    if platform:
-        statement = statement.where(Note.platform == platform)
-    results = db.scalars(statement).all()
-    analysis_status: dict[str, int] = {}
+    results = db.scalars(statement).all() if visible_note_ids else []
+    analyzed_note_ids = {result.note_id for result in results}
+    has_unanalyzed_notes = any(note_id not in analyzed_note_ids for note_id in visible_note_ids)
+    analysis_status: dict[str, int] = {UNANALYZED_STATUS: 1} if has_unanalyzed_notes else {}
     core_product_service: dict[str, int] = {}
     content_type: dict[str, int] = {}
     reusable_model: dict[str, int] = {}
@@ -504,6 +544,7 @@ def get_notes(
     tag_id: Optional[int] = None,
     has_assets: Optional[bool] = None,
     has_comments: Optional[bool] = None,
+    visibility: Literal["active", "all", "excluded"] = "active",
     sort_by: Literal["latest", "engagement", "likes", "comments", "collects"] = "latest",
     feishu_push_status: Optional[str] = None,
     analysis_status: Optional[str] = None,
@@ -518,13 +559,8 @@ def get_notes(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    statement = (
-        select(Note)
-        .where(
-            Note.user_id == current_user.id,
-            _not_excluded_note_condition(current_user.id),
-        )
-    )
+    statement = select(Note).where(Note.user_id == current_user.id)
+    statement = _apply_note_visibility(statement, current_user.id, visibility)
     if platform:
         statement = statement.where(Note.platform == platform)
     if q:
@@ -553,6 +589,8 @@ def get_notes(
     notes = db.scalars(statement.order_by(Note.created_at.desc())).all()
 
     analysis_status_values = _split_filter_values(analysis_status)
+    wants_unanalyzed = UNANALYZED_STATUS in analysis_status_values
+    concrete_analysis_status_values = [value for value in analysis_status_values if value != UNANALYZED_STATUS]
     core_product_service_values = _split_filter_values(core_product_service)
     content_type_values = _split_filter_values(content_type)
     reusable_model_values = _split_filter_values(reusable_model)
@@ -571,9 +609,13 @@ def get_notes(
         result = _get_feishu_analysis_result(db, note.id)
         if feishu_push_status and (result.push_status if result else "not_synced") != feishu_push_status:
             return False
+        if wants_unanalyzed and _is_unanalyzed_analysis(result):
+            return True
+        if wants_unanalyzed and not concrete_analysis_status_values:
+            return False
         if has_analysis_field_filters and result is None:
             return False
-        if not _has_any_text(result.analysis_status if result else None, analysis_status_values):
+        if not _has_any_text(result.analysis_status if result else None, concrete_analysis_status_values):
             return False
         if not _has_any_text(result.subject_object if result else None, core_product_service_values):
             return False
