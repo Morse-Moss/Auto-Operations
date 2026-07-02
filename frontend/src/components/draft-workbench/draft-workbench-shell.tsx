@@ -23,7 +23,9 @@ export type DraftWorkbenchShellProps<TDraft extends DraftWorkbenchDraft> = {
   adapter: DraftWorkbenchAdapter<TDraft>;
   controller: DraftWorkbenchController<TDraft>;
   renderSourcePanel?: (draft: TDraft) => ReactNode;
+  renderContextPanel?: (draft: TDraft) => ReactNode;
   renderEditorExtras?: (draft: TDraft) => ReactNode;
+  renderPrimaryActions?: (draft: TDraft) => ReactNode;
   renderAssistantExtras?: (draft: TDraft) => ReactNode;
 };
 
@@ -35,7 +37,9 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
   adapter,
   controller,
   renderSourcePanel,
+  renderContextPanel,
   renderEditorExtras,
+  renderPrimaryActions,
   renderAssistantExtras,
 }: DraftWorkbenchShellProps<TDraft>) {
   const [isDraftListOpen, setIsDraftListOpen] = useState(false);
@@ -133,6 +137,8 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
           </Space>
         </Card>
 
+        {selectedDraft && renderContextPanel ? <div>{renderContextPanel(selectedDraft)}</div> : null}
+
         <Row gutter={[16, 16]} align="stretch">
           {hasSourcePanel ? (
             <Col xs={24} lg={6}>
@@ -228,12 +234,14 @@ export function DraftWorkbenchShell<TDraft extends DraftWorkbenchDraft>({
                       </Button>
                     ) : null}
                   </Space>
+
+                  {renderPrimaryActions ? <div>{renderPrimaryActions(selectedDraft)}</div> : null}
                 </Space>
               )}
             </Card>
           </Col>
 
-          <Col xs={24} lg={6}>
+          <Col xs={24} lg={hasSourcePanel ? 6 : 8}>
             <Card title={editorLabels.assistantTitle}>
               {selectedDraft ? (
                 <Space direction="vertical" size={16} style={{ width: "100%" }}>

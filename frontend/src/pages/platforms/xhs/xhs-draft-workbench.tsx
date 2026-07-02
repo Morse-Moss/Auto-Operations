@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Card, Collapse, Empty, Input, Modal, Progress, Select, Space, Tag, Typography, Upload, message as antMessage } from "antd";
+import { Alert, Button, Card, Collapse, Empty, Input, Modal, Progress, Select, Space, Tag, Tabs, Typography, Upload, message as antMessage } from "antd";
 import { DeleteOutlined, EditOutlined, LinkOutlined, PictureOutlined, ReloadOutlined, SaveOutlined, TrophyOutlined, UploadOutlined } from "@ant-design/icons";
 
 import { DraftWorkbenchShell, useDraftWorkbench } from "../../../components/draft-workbench";
@@ -247,6 +247,59 @@ function renderDraftSourceAssetPreview(draftAssets: DraftAsset[]) {
   );
 }
 
+function renderSourceContextStrip(note: SavedNote | null, draftAssets: DraftAsset[]) {
+  if (!note) return null;
+  const hasVideo = draftAssets.some((asset) => asset.asset_type === "video");
+
+  return (
+    <Collapse
+      size="small"
+      ghost
+      items={[
+        {
+          key: "source-context",
+          label: (
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+              <Space size={8} wrap>
+                <Text type="secondary">来源</Text>
+                <Text strong ellipsis style={{ maxWidth: 520 }}>{note.title || "未命名来源"}</Text>
+                <Tag color={hasVideo ? "purple" : "green"}>{hasVideo ? "视频" : "图文"}</Tag>
+                <Text type="secondary">素材 {draftAssets.length} 项</Text>
+              </Space>
+              <Button
+                type="link"
+                size="small"
+                icon={<LinkOutlined />}
+                href={getNoteUrl(note)}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+              >
+                查看原文
+              </Button>
+            </div>
+          ),
+          children: (
+            <Card size="small" styles={{ body: { padding: 12 } }}>
+              <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: "展开" }} type="secondary" style={{ marginBottom: 0 }}>
+                  {note.content}
+                </Paragraph>
+                <Space size={4} wrap>
+                  <Tag color="blue">来源草稿已独立化</Tag>
+                  <Tag color={hasVideo ? "purple" : "green"}>{hasVideo ? "视频" : "图文"}</Tag>
+                  <Text type="secondary">素材 {draftAssets.length} 项</Text>
+                </Space>
+                {renderDraftSourceAssetPreview(draftAssets)}
+              </Space>
+            </Card>
+          ),
+        },
+      ]}
+    />
+  );
+}
+
 export function XhsDraftsPage() {
   const navigate = useNavigate();
   const adapter = useMemo(() => createXhsDraftWorkbenchAdapter(), []);
@@ -275,7 +328,6 @@ export function XhsDraftsPage() {
   const selectedDraft = controller.selectedDraft;
   const selectedSourceNoteId = selectedDraft?.source_note_id ?? null;
   const currentSourceNote = sourceNote && selectedSourceNoteId !== null && sourceNote.id === selectedSourceNoteId ? sourceNote : null;
-  const hasSourceNote = Boolean(selectedSourceNoteId);
   const activeRewriteTemplate = REWRITE_TEMPLATES[rewriteTemplate];
   const activeRewriteCandidate = getRewriteCandidate(rewriteCandidates, rewriteTemplate);
   const draftImageAssets = draftAssets.filter((asset) => asset.asset_type === "image" && Boolean(draftAssetImageUrl(asset)));
@@ -619,29 +671,10 @@ export function XhsDraftsPage() {
   return (
     <>
       <DraftWorkbenchShell
-      adapter={adapter}
-      controller={controller}
-      renderSourcePanel={() => (
-        hasSourceNote && currentSourceNote ? (
-          <Card size="small" title="草稿内容" extra={<a href={getNoteUrl(currentSourceNote)} target="_blank" rel="noreferrer"><Button type="link" size="small" icon={<LinkOutlined />}>查看原文</Button></a>}>
-            <Text strong style={{ display: "block", marginBottom: 4 }}>{currentSourceNote.title}</Text>
-            <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: "展开" }} type="secondary" style={{ marginBottom: 8 }}>
-              {currentSourceNote.content}
-            </Paragraph>
-            <Space size={4} wrap>
-              <Tag color="blue">来源草稿已独立化</Tag>
-              <Tag color={draftAssets.some((asset) => asset.asset_type === "video") ? "purple" : "green"}>
-                {draftAssets.some((asset) => asset.asset_type === "video") ? "视频" : "图文"}
-              </Tag>
-              <Text type="secondary">素材 {draftAssets.length} 项</Text>
-            </Space>
-            <div style={{ marginTop: 10 }}>
-              {renderDraftSourceAssetPreview(draftAssets)}
-            </div>
-          </Card>
-        ) : null
-      )}
-      renderEditorExtras={() => (
+        adapter={adapter}
+        controller={controller}
+        renderContextPanel={() => renderSourceContextStrip(currentSourceNote, draftAssets)}
+        renderEditorExtras={() => (
         <Card size="small" title="草稿图片素材">
           <Space direction="vertical" size={12} style={{ width: "100%" }}>
             <Space.Compact style={{ width: "100%" }}>
@@ -702,137 +735,160 @@ export function XhsDraftsPage() {
           </Space>
         </Card>
       )}
-        renderAssistantExtras={() => (
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-          <Card
-            size="small"
-            title={<Space><TrophyOutlined />系统打分</Space>}
-            loading={isLoadingDraftAiScore}
-            extra={(
-              <Button size="small" type="primary" loading={isScoringDraft} disabled={!selectedDraft} onClick={() => void handleScoreDraft()}>
-                保存并打分
+        renderPrimaryActions={() => (
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>下一步</Text>
+            <Space wrap>
+              <Button onClick={() => void handleSendToImageStudio()} loading={isSendingImageStudio} icon={<PictureOutlined />}>
+                送入图片工坊
               </Button>
-            )}
-          >
-            {renderDraftScore(draftAiScore)}
-          </Card>
-
-          <Collapse
-            size="small"
+              <Button type="primary" onClick={() => void handleSendToPublish()} loading={isSendingPublish} icon={<SaveOutlined />}>
+                送发布中心
+              </Button>
+            </Space>
+          </Space>
+        )}
+        renderAssistantExtras={() => (
+          <Tabs
+            defaultActiveKey="score"
             items={[
               {
-                key: "system-prompt",
-                label: "高级设置：角色提示词",
+                key: "score",
+                label: "系统评分",
                 children: (
-                  <TextArea rows={4} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} />
+                  <Card
+                    size="small"
+                    title={<Space><TrophyOutlined />系统打分</Space>}
+                    loading={isLoadingDraftAiScore}
+                    extra={(
+                      <Button size="small" type="primary" loading={isScoringDraft} disabled={!selectedDraft} onClick={() => void handleScoreDraft()}>
+                        保存并打分
+                      </Button>
+                    )}
+                  >
+                    {renderDraftScore(draftAiScore)}
+                  </Card>
+                ),
+              },
+              {
+                key: "rewrite",
+                label: "AI 改写",
+                children: (
+                  <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <Collapse
+                      size="small"
+                      items={[
+                        {
+                          key: "system-prompt",
+                          label: "高级设置：角色提示词",
+                          children: (
+                            <TextArea rows={4} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} />
+                          ),
+                        },
+                      ]}
+                    />
+
+                    <div>
+                      <Text type="secondary" style={{ display: "block", marginBottom: 6 }}>改写模式</Text>
+                      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        <Input value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="填写 AI 改写指令" />
+                        <Space wrap>
+                          {Object.entries(REWRITE_TEMPLATES).map(([key, template]) => (
+                            <Button key={key} size="small" type={rewriteTemplate === key ? "primary" : "default"} icon={<EditOutlined />} onClick={() => {
+                              setRewriteTemplate(key as RewriteTemplateKey);
+                              setInstruction(template.instruction);
+                            }}>
+                              {template.label}
+                            </Button>
+                          ))}
+                        </Space>
+                      </Space>
+                    </div>
+
+                    <Space wrap>
+                      <Button onClick={() => void handleRewrite()} loading={isRewriting} icon={<ReloadOutlined />}>
+                        {activeRewriteTemplate.buttonLabel}
+                      </Button>
+                      <Button onClick={() => void handleGenerateTitles()}>生成标题</Button>
+                      <Button onClick={() => void handleGenerateTags()}>生成标签</Button>
+                    </Space>
+
+                    {titleOptions.length > 0 ? (
+                      <Card size="small" title="标题候选">
+                        <Space wrap>
+                          {titleOptions.map((option) => (
+                            <Button key={option} size="small" onClick={() => controller.setTitle(option)}>{option}</Button>
+                          ))}
+                        </Space>
+                      </Card>
+                    ) : null}
+
+                    {tagOptions.length > 0 ? (
+                      <Card size="small" title="标签候选">
+                        <Space wrap>
+                          {tagOptions.map((option) => (
+                            <Tag key={option} color="blue" onClick={() => handleAdoptTagOption(option)} style={{ cursor: "pointer" }}>{option}</Tag>
+                          ))}
+                        </Space>
+                      </Card>
+                    ) : null}
+
+                    {activeRewriteCandidate ? (
+                      <Card
+                        size="small"
+                        title={`改写结果 · ${activeRewriteTemplate.label}`}
+                        styles={{ body: { maxHeight: 420, overflow: "auto" } }}
+                      >
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="候选结果尚未覆盖中间草稿"
+                            description="你可以和中间编辑区原文对比，确认后再点击采纳。"
+                          />
+                          <div>
+                            <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
+                              标题
+                            </Text>
+                            <Text strong>{activeRewriteCandidate.title || "未命名候选"}</Text>
+                          </div>
+                          <div>
+                            <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
+                              正文
+                            </Text>
+                            <Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+                              {activeRewriteCandidate.body || "暂无正文"}
+                            </Paragraph>
+                          </div>
+                          {activeRewriteCandidate.tags.length > 0 ? (
+                            <Space size={[4, 8]} wrap>
+                              {activeRewriteCandidate.tags.map((tag) => (
+                                <Tag key={tag.id || tag.name} color="blue">
+                                  #{tag.name}
+                                </Tag>
+                              ))}
+                            </Space>
+                          ) : null}
+                          <Space wrap>
+                            <Button type="primary" aria-label="adopt rewrite candidate" onClick={handleAdoptRewriteCandidate}>
+                              采纳
+                            </Button>
+                            <Button aria-label="discard rewrite candidate" onClick={handleDiscardRewriteCandidate}>放弃</Button>
+                          </Space>
+                        </Space>
+                      </Card>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={`当前模式还没有候选，生成${activeRewriteTemplate.label}后可和中间草稿对比。`}
+                      />
+                    )}
+                  </Space>
                 ),
               },
             ]}
           />
-
-          <div>
-            <Text type="secondary" style={{ display: "block", marginBottom: 6 }}>改写模式</Text>
-            <Space direction="vertical" size={8} style={{ width: "100%" }}>
-              <Input value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="填写 AI 改写指令" />
-              <Space wrap>
-                {Object.entries(REWRITE_TEMPLATES).map(([key, template]) => (
-                  <Button key={key} size="small" type={rewriteTemplate === key ? "primary" : "default"} icon={<EditOutlined />} onClick={() => {
-                    setRewriteTemplate(key as RewriteTemplateKey);
-                    setInstruction(template.instruction);
-                  }}>
-                    {template.label}
-                  </Button>
-                ))}
-              </Space>
-            </Space>
-          </div>
-
-          <Space wrap>
-            <Button onClick={() => void handleRewrite()} loading={isRewriting} icon={<ReloadOutlined />}>
-              {activeRewriteTemplate.buttonLabel}
-            </Button>
-            <Button onClick={() => void handleGenerateTitles()}>生成标题</Button>
-            <Button onClick={() => void handleGenerateTags()}>生成标签</Button>
-            <Button onClick={() => void handleSendToImageStudio()} loading={isSendingImageStudio} icon={<PictureOutlined />}>
-              送入图片工坊
-            </Button>
-            <Button type="primary" onClick={() => void handleSendToPublish()} loading={isSendingPublish} icon={<SaveOutlined />}>
-              送发布中心
-            </Button>
-          </Space>
-
-          {titleOptions.length > 0 ? (
-            <Card size="small" title="标题候选">
-              <Space wrap>
-                {titleOptions.map((option) => (
-                  <Button key={option} size="small" onClick={() => controller.setTitle(option)}>{option}</Button>
-                ))}
-              </Space>
-            </Card>
-          ) : null}
-
-          {tagOptions.length > 0 ? (
-            <Card size="small" title="标签候选">
-              <Space wrap>
-                {tagOptions.map((option) => (
-                  <Tag key={option} color="blue" onClick={() => handleAdoptTagOption(option)} style={{ cursor: "pointer" }}>{option}</Tag>
-                ))}
-              </Space>
-            </Card>
-          ) : null}
-
-          {activeRewriteCandidate ? (
-            <Card
-              size="small"
-              title={`改写结果 · ${activeRewriteTemplate.label}`}
-              styles={{ body: { maxHeight: 420, overflow: "auto" } }}
-            >
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                <Alert
-                  type="info"
-                  showIcon
-                  message="候选结果尚未覆盖中间草稿"
-                  description="你可以和中间编辑区原文对比，确认后再点击采纳。"
-                />
-                <div>
-                  <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
-                    标题
-                  </Text>
-                  <Text strong>{activeRewriteCandidate.title || "未命名候选"}</Text>
-                </div>
-                <div>
-                  <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
-                    正文
-                  </Text>
-                  <Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
-                    {activeRewriteCandidate.body || "暂无正文"}
-                  </Paragraph>
-                </div>
-                {activeRewriteCandidate.tags.length > 0 ? (
-                  <Space size={[4, 8]} wrap>
-                    {activeRewriteCandidate.tags.map((tag) => (
-                      <Tag key={tag.id || tag.name} color="blue">
-                        #{tag.name}
-                      </Tag>
-                    ))}
-                  </Space>
-                ) : null}
-                <Space wrap>
-                  <Button type="primary" aria-label="adopt rewrite candidate" onClick={handleAdoptRewriteCandidate}>
-                    采纳
-                  </Button>
-                  <Button aria-label="discard rewrite candidate" onClick={handleDiscardRewriteCandidate}>放弃</Button>
-                </Space>
-              </Space>
-            </Card>
-          ) : (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={`当前模式还没有候选，生成${activeRewriteTemplate.label}后可和中间草稿对比。`}
-            />
-          )}
-        </Space>
-      )}
+        )}
     />
       <Modal
         title="AI 编辑图片"
