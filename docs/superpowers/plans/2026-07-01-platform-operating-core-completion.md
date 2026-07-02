@@ -848,183 +848,40 @@ refactor: close platform content mapper adoption
 - Modify tests if backend touched: `tests/backend/test_platforms.py`.
 - Modify docs: `docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md`.
 
-- [ ] **Step 1: Write fake adapter contract test**
+- [x] **Step 1: Write fake adapter contract test**
 
-Create `frontend/tests/demo-platform-content-library-adapter.test.ts`:
+Created `frontend/tests/demo-platform-content-library-adapter.test.ts` covering:
 
-```ts
-import assert from "node:assert/strict";
+- `platform === "demo_platform"`.
+- `loadItems({ page: 1, page_size: 20 })` returns two local fixture items.
+- `loadItem`, `loadAssets`, and `loadComments` work without external requests.
+- Write capabilities are disabled (`canCreateDraft`, `canBatchCreateDrafts`, `canDelete`, `canBatchDelete`, `canTag`, `canExport`).
+- `renderDetail` exists.
 
-import { createDemoPlatformContentLibraryAdapter } from "../src/pages/demo-platform/demo-content-library-adapter.tsx";
+Observed RED: `node frontend/tests/demo-platform-content-library-adapter.test.ts` failed with `ERR_MODULE_NOT_FOUND` because `frontend/src/pages/demo-platform/demo-content-library-adapter.tsx` did not exist.
 
-const adapter = createDemoPlatformContentLibraryAdapter();
-assert.equal(adapter.platform, "demo_platform");
-assert.equal(adapter.pageTitle.includes("Demo"), true);
+- [x] **Step 2: Implement fake read-only adapter**
 
-const page = await adapter.loadItems({ page: 1, page_size: 20 });
-assert.equal(page.total, 2);
-assert.equal(page.items[0].platform, "demo_platform");
-assert.equal(page.items[0].title.length > 0, true);
+Created `frontend/src/pages/demo-platform/demo-content-library-adapter.tsx` as fixture-only `ContentLibraryAdapter`:
 
-const detail = await adapter.loadItem(page.items[0].id);
-assert.equal(detail.id, page.items[0].id);
+- Uses two local fixture items under `demo_platform`.
+- Makes no provider/API/backend requests.
+- Returns local fixture assets and empty local comments.
+- Closes write/export/tag/draft/delete capabilities and fail-closes write method calls.
+- Renders card, table, and detail content through the shared content-library contract.
 
-const assets = await adapter.loadAssets(page.items[0].id, 1);
-assert.equal(assets.page, 1);
-assert.equal(Array.isArray(assets.items), true);
+- [x] **Step 3: Add demo page using shared shell**
 
-const comments = await adapter.loadComments(page.items[0].id, 1);
-assert.equal(comments.total, 0);
+Created `frontend/src/pages/demo-platform/demo-library-page.tsx` using `ContentLibraryShell` + `useContentLibrary` inside `PlatformSectionPage` with an explicit read-only safety message.
 
-assert.equal(adapter.batchActions.length, 0, "demo platform must not expose write actions");
-assert.equal(adapter.renderDetail !== undefined, true);
+- [x] **Step 4: Add demo route and section only as fail-closed pilot**
 
-console.log("demo-platform-content-library-adapter tests passed");
-```
+- Added `demo_platform` to `PlatformId` in `frontend/src/types/index.ts`.
+- Added only one `demo_platform` registry section: `/platforms/demo-platform/library`.
+- Added only one protected router route: `/platforms/demo-platform/library`.
+- Did not add account, publish, settings, automation, or provider routes.
 
-Expected to fail because the demo adapter file does not exist.
-
-- [ ] **Step 2: Implement fake read-only adapter**
-
-Create `frontend/src/pages/demo-platform/demo-content-library-adapter.tsx`:
-
-```tsx
-import React from "react";
-import { Alert, Card, Descriptions, Tag, Typography } from "antd";
-
-import type { ContentLibraryAdapter, ContentLibraryItem } from "../../components/content-library";
-
-const h = React.createElement;
-const { Paragraph, Text } = Typography;
-
-type DemoContentItem = ContentLibraryItem & {
-  summary: string;
-};
-
-const demoItems: DemoContentItem[] = [
-  {
-    id: 1,
-    platform: "demo_platform" as any,
-    title: "Demo read-only article",
-    content: "This fixture proves the shared ContentLibrary shell can render a non-XHS platform without provider calls.",
-    author_name: "Demo Source",
-    created_at: "2026-07-01 10:00",
-    tags: [{ id: 1, name: "Read-only", color: "blue" }],
-    summary: "No account binding, no publish, no provider call.",
-  },
-  {
-    id: 2,
-    platform: "demo_platform" as any,
-    title: "Demo blocked write action",
-    content: "Write actions are intentionally absent for this pilot.",
-    author_name: "Demo Source",
-    created_at: "2026-07-01 10:05",
-    tags: [{ id: 2, name: "Fail closed", color: "red" }],
-    summary: "The adapter exposes only read methods.",
-  },
-];
-
-export function createDemoPlatformContentLibraryAdapter(): ContentLibraryAdapter<DemoContentItem> {
-  return {
-    platform: "demo_platform" as any,
-    pageTitle: "Demo Platform 内容库",
-    pageDescription: "只读 fixture，用来验证 Platform Core 可以承载非 XHS 平台；不会连接真实账号或 Provider。",
-    emptyState: {
-      title: "暂无 Demo 内容",
-      description: "Demo 平台只使用本地 fixture，不请求外部平台。",
-    },
-    filterOptions: [],
-    batchActions: [],
-    async loadItems(filters) {
-      return {
-        total: demoItems.length,
-        page: filters.page ?? 1,
-        page_size: filters.page_size ?? 20,
-        items: demoItems,
-      };
-    },
-    async loadItem(itemId) {
-      const item = demoItems.find((candidate) => candidate.id === Number(itemId));
-      if (!item) throw new Error("Demo item not found");
-      return item;
-    },
-    async loadAssets(itemId, page) {
-      return { total: 0, page, page_size: 20, items: [] };
-    },
-    async loadComments(itemId, page) {
-      return { total: 0, page, page_size: 20, items: [] };
-    },
-    renderDetail({ item }) {
-      return h(Card, { size: "small" },
-        h(Alert, {
-          type: "info",
-          showIcon: true,
-          message: "只读 Demo 平台",
-          description: "这个详情页只证明共享内容库 shell 可复用；没有真实账号、Provider、发布或自动化动作。",
-          style: { marginBottom: 16 },
-        }),
-        h(Descriptions, { column: 1, bordered: true, size: "small" },
-          h(Descriptions.Item, { label: "标题" }, item.title),
-          h(Descriptions.Item, { label: "作者" }, item.author_name),
-          h(Descriptions.Item, { label: "摘要" }, item.summary),
-          h(Descriptions.Item, { label: "边界" }, h(Tag, { color: "red" }, "No write actions")),
-        ),
-        h(Paragraph, { style: { marginTop: 16 } }, item.content),
-        h(Text, { type: "secondary" }, "Fixture-only. No external request is made."),
-      );
-    },
-  };
-}
-```
-
-- [ ] **Step 3: Add demo page using shared shell**
-
-Create `frontend/src/pages/demo-platform/demo-library-page.tsx`:
-
-```tsx
-import { useMemo } from "react";
-
-import { ContentLibraryShell, useContentLibrary } from "../../components/content-library";
-import { createDemoPlatformContentLibraryAdapter } from "./demo-content-library-adapter";
-
-export function DemoPlatformLibraryPage() {
-  const adapter = useMemo(() => createDemoPlatformContentLibraryAdapter(), []);
-  const controller = useContentLibrary(adapter);
-  return <ContentLibraryShell adapter={adapter} controller={controller} />;
-}
-```
-
-- [ ] **Step 4: Add demo route and section only as fail-closed pilot**
-
-Modify `frontend/src/types/index.ts`:
-
-```ts
-  | "demo_platform"
-```
-
-Modify `frontend/src/platform-core/registry/platform-sections.tsx`:
-
-```tsx
-  "demo_platform": [
-    { key: "library", path: "/platforms/demo-platform/library", icon: <DatabaseOutlined />, label: "Demo 内容库", title: "Demo 内容库", description: "只读 fixture，验证 Platform Core 共享内容库路径。", status: "partial" },
-  ],
-```
-
-Modify `frontend/src/app/router.tsx`:
-
-```tsx
-import { DemoPlatformLibraryPage } from "../pages/demo-platform/demo-library-page";
-```
-
-Add a route under protected app routes:
-
-```tsx
-<Route path="/platforms/demo-platform/library" element={<DemoPlatformLibraryPage />} />
-```
-
-Do not add account, publish, settings, automation, or provider routes.
-
-- [ ] **Step 5: Run fake adapter test and frontend build**
+- [x] **Step 5: Run fake adapter test and frontend build**
 
 Run:
 
@@ -1039,35 +896,22 @@ Expected:
 demo-platform-content-library-adapter tests passed
 ```
 
-and build exits 0.
+and build exits 0. Observed: adapter test passed; frontend build passed with the existing Vite large chunk warning. A temporary `frontend/node_modules` junction to `E:\小红书\frontend\node_modules` was created for this isolated worktree and removed after validation.
 
-- [ ] **Step 6: Update completion plan evidence**
+- [x] **Step 6: Update completion plan evidence**
 
-Add:
-
-```md
 **Task 5 evidence:**
-- Commit: `actual commit SHA` `feat: add demo read-only platform pilot`
-- Test: `node frontend/tests/demo-platform-content-library-adapter.test.ts` -> passed
-- Build: `npm --prefix frontend run build` -> passed
-- Boundary: fixture-only read path; no account binding, credentials, provider calls, publish/upload, or automation.
-```
+- Commit: pending scoped Task 5 commit (`feat: add demo read-only platform pilot`); no SHA because this task was explicitly requested without commit.
+- Test: `node frontend/tests/demo-platform-content-library-adapter.test.ts` -> passed (`demo-platform-content-library-adapter tests passed`; Node emitted an experimental `stripTypeScriptTypes` warning from the test-only loader).
+- Build: `npm --prefix frontend run build` -> passed (`tsc && vite build`; Vite emitted only the existing large chunk warning).
+- Boundary: fixture-only read path; no account binding, credentials, provider calls, publish/upload, comments/interaction actions, real automation, DB/Alembic changes, SDK/signature changes, root service restart, or `compare-shots/` change.
+- Temporary dependency junction: created `frontend/node_modules` -> `E:\小红书\frontend\node_modules` for isolated worktree validation and removed after build.
 
 - [ ] **Step 7: Commit scoped files**
 
-Run:
-
-```powershell
-git -C "E:\小红书" add -- frontend/src/types/index.ts frontend/src/platform-core/registry/platform-sections.tsx frontend/src/app/router.tsx frontend/src/pages/demo-platform/demo-content-library-adapter.tsx frontend/src/pages/demo-platform/demo-library-page.tsx frontend/tests/demo-platform-content-library-adapter.test.ts docs/superpowers/plans/2026-07-01-platform-operating-core-completion.md
-git -C "E:\小红书" commit -m @'
-feat: add demo read-only platform pilot
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-'@
-```
+Skipped by explicit user instruction: do not commit, do not git add, do not push.
 
 ---
-
 ### Task 6: Readiness rerun and closure queue update
 
 **Goal:** Re-evaluate the second-platform readiness verdict after low-risk closure and fake/read-only pilot, then record the current allowed outcome.

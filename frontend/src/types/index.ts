@@ -6,6 +6,7 @@ export type PlatformId =
   | "bilibili"
   | "wechat_channels"
   | "wechat_official"
+  | "demo_platform"
   | "weibo"
   | "xianyu"
   | "taobao";
