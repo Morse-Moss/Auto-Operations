@@ -8,6 +8,7 @@ import { ModelConfigPage } from "../pages/models/model-config-page";
 import { PlatformSelectPage } from "../pages/platform-select/platform-select-page";
 import { SettingsPage } from "../pages/settings/settings-page";
 import { TaskCenterPage } from "../pages/tasks/task-center-page";
+import { DemoPlatformLibraryPage } from "../pages/demo-platform/demo-library-page";
 import { WechatOfficialAccountsPage } from "../pages/wechat-official/wechat-official-accounts-page";
 import { WechatOfficialDashboardPage } from "../pages/wechat-official/wechat-official-dashboard";
 import { WechatOfficialDiscoveryPage } from "../pages/wechat-official/wechat-official-discovery-page";
@@ -66,6 +67,7 @@ export function AppRouter() {
             </ProtectedRoute>
           }
         >
+          <Route path="/platforms/demo-platform/library" element={<DemoPlatformLibraryPage />} />
           <Route path="/platforms/wechat-official/dashboard" element={<WechatOfficialDashboardPage />} />
           <Route path="/platforms/wechat-official/accounts" element={<WechatOfficialAccountsPage />} />
           <Route path="/platforms/wechat-official/discovery" element={<WechatOfficialDiscoveryPage />} />

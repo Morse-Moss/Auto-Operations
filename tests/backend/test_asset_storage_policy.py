@@ -27,6 +27,12 @@ def test_accepts_platform_aware_media_owner_prefixes_for_user():
     assert validate_owned_media_file_name(f"wechat_official-image-u{user_id}-cover.png", user_id) == f"wechat_official-image-u{user_id}-cover.png"
 
 
+def test_accepts_wechat_official_user_owned_media_policy_examples():
+    name = f"{asset_owner_prefix('wechat_official', 'asset', 7)}abc123.jpg"
+
+    assert validate_owned_media_file_name(name, 7) == name
+
+
 @pytest.mark.parametrize(
     "file_name",
     [
@@ -56,10 +62,18 @@ def test_accepts_legacy_and_platform_aware_export_owner_prefixes_for_user():
     assert export_owner_prefix("xhs", "report", user_id) == f"xhs-report-u{user_id}-"
     assert export_owner_prefix("wechat_official", "notes", user_id) == f"wechat_official-notes-u{user_id}-"
     assert export_owner_prefix("wechat_official", "report", user_id) == f"wechat_official-report-u{user_id}-"
+    assert export_owner_prefix("wechat_official", "articles", user_id) == f"wechat_official-articles-u{user_id}-"
     assert validate_owned_export_file_name(f"xhs-notes-u{user_id}-export.csv", user_id) == f"xhs-notes-u{user_id}-export.csv"
     assert validate_owned_export_file_name(f"xhs-report-u{user_id}-report.json", user_id) == f"xhs-report-u{user_id}-report.json"
     assert validate_owned_export_file_name(f"wechat_official-notes-u{user_id}-export.csv", user_id) == f"wechat_official-notes-u{user_id}-export.csv"
     assert validate_owned_export_file_name(f"wechat_official-report-u{user_id}-report.json", user_id) == f"wechat_official-report-u{user_id}-report.json"
+    assert validate_owned_export_file_name(f"wechat_official-articles-u{user_id}-export.csv", user_id) == f"wechat_official-articles-u{user_id}-export.csv"
+
+
+def test_accepts_wechat_official_user_owned_export_policy_examples():
+    name = f"{export_owner_prefix('wechat_official', 'articles', 7)}20260701120000.csv"
+
+    assert validate_owned_export_file_name(name, 7) == name
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.app.services.diagnostic_service import readiness_diagnostic
+
 
 CORE_READINESS_CHECKS = (
     "platform_registered",
@@ -116,6 +118,16 @@ class ReadinessReport:
             ],
             "blockers": self.blockers,
             "follow_ups": self.follow_ups,
+            "diagnostics": [
+                readiness_diagnostic(
+                    platform_id=self.platform_id,
+                    check_key=check.key,
+                    user_message=check.user_impact,
+                    check_severity=check.severity,
+                ).to_payload()
+                for check in self.checks
+                if not check.passed
+            ],
         }
 
 

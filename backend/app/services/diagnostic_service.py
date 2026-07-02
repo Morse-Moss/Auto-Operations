@@ -159,6 +159,8 @@ def standard_diagnostic(
     correlation_id: str,
     user_message: str | None = None,
     raw_reference: Any = None,
+    severity: str | None = None,
+    recoverable: bool | None = None,
 ) -> StandardDiagnostic:
     normalized_category = str(category) if str(category) in _CATEGORY_DEFAULTS else "unknown"
     defaults = _CATEGORY_DEFAULTS[normalized_category]
@@ -166,8 +168,8 @@ def standard_diagnostic(
         platform_id=platform_id,
         capability_key=capability_key,
         stage=stage,
-        severity=str(defaults["severity"]),
-        recoverable=bool(defaults["recoverable"]),
+        severity=severity or str(defaults["severity"]),
+        recoverable=bool(defaults["recoverable"] if recoverable is None else recoverable),
         category=normalized_category,
         user_message=user_message or str(defaults["user_message"]),
         next_action=str(defaults["next_action"]),
@@ -248,4 +250,46 @@ def validation_diagnostic(
         correlation_id=correlation_id,
         user_message=user_message,
         raw_reference=raw_reference,
+    )
+
+
+def readiness_diagnostic(
+    *,
+    platform_id: str,
+    check_key: str,
+    user_message: str,
+    stage: str = "readiness",
+    check_severity: str = "follow_up",
+) -> StandardDiagnostic:
+    is_blocker = check_severity == "blocker"
+    return standard_diagnostic(
+        "validation",
+        platform_id=platform_id,
+        capability_key="readiness.second_platform",
+        stage=stage,
+        correlation_id=check_key,
+        user_message=user_message,
+        raw_reference=f"diagnostic:{check_key}",
+        severity=("blocked" if is_blocker else "warning"),
+        recoverable=not is_blocker,
+    )
+
+
+def skipped_save_diagnostic(
+    *,
+    platform_id: str,
+    skipped_item: dict[str, Any],
+    correlation_id: str,
+) -> StandardDiagnostic:
+    kind = str(skipped_item.get("save_diagnostic_kind") or "save_skipped_low_quality")
+    category = "rate_limited" if skipped_item.get("quality_status") == "rate_limited" or skipped_item.get("diagnostic_kind") == "xhs_rate_limited" else "validation"
+    return standard_diagnostic(
+        category,
+        platform_id=platform_id,
+        capability_key="content.save",
+        stage="save",
+        correlation_id=correlation_id,
+        user_message=str(skipped_item.get("user_message") or "内容质量不足，已跳过入库。"),
+        raw_reference=f"diagnostic:{kind}",
+        recoverable=bool(skipped_item.get("recoverable", False)),
     )

@@ -45,6 +45,9 @@ export const platformSectionRegistry: Record<string, PlatformSectionConfig[]> = 
     { key: "auto-ops", path: "/platforms/xhs/auto-ops", icon: <ThunderboltOutlined />, label: "小红书自动运营", title: "小红书自动运营", description: "关键词自动抓取、AI 改写和发布任务生产线。", status: "available" },
     { key: "benchmarks", path: "/platforms/xhs/benchmarks", icon: <AimOutlined />, label: "小红书竞品监控", title: "小红书竞品监控", description: "跟踪目标账号、品牌、关键词与内容模式。", status: "available" },
   ],
+  "demo-platform": [
+    { key: "library", path: "/platforms/demo-platform/library", icon: <DatabaseOutlined />, label: "Demo 内容库", title: "Demo 内容库", description: "只读 fixture，验证 Platform Core 共享内容库路径。", status: "partial" },
+  ],
   "wechat-official": [
     { key: "dashboard", path: "/platforms/wechat-official/dashboard", icon: <DashboardOutlined />, label: "公众号总览", title: "公众号运营总览", description: "汇总 Redfox 配置、爆文候选、内容库和 blocked 动作状态。", status: "available" },
     { key: "accounts", path: "/platforms/wechat-official/accounts", icon: <SafetyCertificateOutlined />, label: "公众号账号矩阵", title: "公众号账号矩阵", description: "查看公众号账号接入状态；真实授权和发布动作仍保持阻断。", status: "partial" },

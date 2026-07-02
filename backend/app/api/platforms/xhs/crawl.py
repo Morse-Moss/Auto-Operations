@@ -23,6 +23,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, NoteAsset, NoteComment, PlatformAccount, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.crawl_diagnostics import create_crawl_diagnostic, serialize_crawl_diagnostic
+from backend.app.services.diagnostic_service import skipped_save_diagnostic
 from backend.app.services.xhs_detail_recovery import (
     build_user_message,
     evaluate_detail_quality,
@@ -279,6 +280,16 @@ def _record_save_skipped_diagnostics(
     skipped_items: list[dict[str, Any]],
 ) -> None:
     for skipped in skipped_items:
+        diagnostic = skipped_save_diagnostic(
+            platform_id="xhs",
+            skipped_item=skipped,
+            correlation_id=f"task:{task.id}",
+        ).to_payload()
+        existing_diagnostics = skipped.get("diagnostics")
+        skipped["diagnostics"] = [
+            *(existing_diagnostics if isinstance(existing_diagnostics, list) else []),
+            diagnostic,
+        ]
         _record_crawl_diagnostic(
             db,
             current_user=current_user,

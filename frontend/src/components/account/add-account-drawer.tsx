@@ -1,17 +1,20 @@
-import { Drawer, Segmented, message } from "antd";
+import { Alert, Drawer, Segmented, message } from "antd";
 import { useEffect, useState } from "react";
 
+import { fetchPlatforms } from "../../lib/api";
 import type { PlatformAccount } from "../../types";
 import {
-  accountAuthSchemas,
   accountDrawerTitleFor,
   accountTypeOptionsFor,
   getAccountAuthSchema,
   getDefaultAccountType,
   getDefaultLoginMethod,
+  isUnavailableLoginMethod,
   loginMethodOptionsFor,
+  mapPlatformRegistryToAccountAuthSchemas,
   platformOptionsFor,
   supportsPhoneLogin,
+  type AccountAuthSchema,
   type AccountPlatform,
   type AccountType,
   type LoginMethod,
@@ -25,30 +28,54 @@ type AddAccountDrawerProps = {
   onClose: () => void;
   onBound: () => void;
   defaultAccountType?: "pc" | "creator";
+  schemas?: readonly AccountAuthSchema[];
 };
 
-const platformOptions = platformOptionsFor(accountAuthSchemas);
-const drawerTitle = accountDrawerTitleFor(accountAuthSchemas);
-
-export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = "pc" }: AddAccountDrawerProps) {
-  const defaultSchema = getAccountAuthSchema("xhs");
+export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = "pc", schemas }: AddAccountDrawerProps) {
+  const [registrySchemas, setRegistrySchemas] = useState<readonly AccountAuthSchema[]>(() => mapPlatformRegistryToAccountAuthSchemas([]));
+  const availableSchemas = schemas ?? registrySchemas;
+  const defaultSchema = getAccountAuthSchema("xhs", availableSchemas);
   const [platform, setPlatform] = useState<AccountPlatform>(defaultSchema.platform);
   const [accountType, setAccountType] = useState<AccountType>(() => getDefaultAccountType(defaultSchema, defaultAccountType));
   const [method, setMethod] = useState<LoginMethod>(() => getDefaultLoginMethod(defaultSchema));
-  const schema = getAccountAuthSchema(platform);
+  const schema = getAccountAuthSchema(platform, availableSchemas);
   const effectiveAccountType = getDefaultAccountType(schema, accountType);
   const effectiveMethod = getDefaultLoginMethod(schema, method);
+  const selectedLoginMethod = schema.loginMethods.find((option) => option.value === effectiveMethod);
+  const unavailableReason = selectedLoginMethod?.description || schema.unavailableReason || "该账号绑定方式暂未开放。";
+  const loginUnavailable = isUnavailableLoginMethod(schema, effectiveMethod);
+  const platformOptions = platformOptionsFor(availableSchemas);
+  const drawerTitle = accountDrawerTitleFor(availableSchemas);
+
+  useEffect(() => {
+    if (schemas || !open) return;
+    let ignore = false;
+    fetchPlatforms()
+      .then((platforms) => {
+        if (!ignore) {
+          setRegistrySchemas(mapPlatformRegistryToAccountAuthSchemas(platforms));
+        }
+      })
+      .catch(() => {
+        if (!ignore) {
+          setRegistrySchemas(mapPlatformRegistryToAccountAuthSchemas([]));
+        }
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [open, schemas]);
 
   useEffect(() => {
     if (!open) return;
-    const nextSchema = getAccountAuthSchema("xhs");
+    const nextSchema = getAccountAuthSchema("xhs", availableSchemas);
     setPlatform(nextSchema.platform);
     setAccountType(getDefaultAccountType(nextSchema, defaultAccountType));
     setMethod(getDefaultLoginMethod(nextSchema));
-  }, [defaultAccountType, open]);
+  }, [availableSchemas, defaultAccountType, open]);
 
   function handlePlatformChange(nextPlatform: AccountPlatform) {
-    const nextSchema = getAccountAuthSchema(nextPlatform);
+    const nextSchema = getAccountAuthSchema(nextPlatform, availableSchemas);
     setPlatform(nextSchema.platform);
     setAccountType(getDefaultAccountType(nextSchema));
     setMethod(getDefaultLoginMethod(nextSchema));
@@ -109,11 +136,13 @@ export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = 
         />
       </div>
 
-      {effectiveMethod === "qr" ? (
+      {loginUnavailable ? (
+        <Alert type="info" showIcon message="账号绑定暂未开放" description={unavailableReason} />
+      ) : effectiveMethod === "qr" && (schema.platform === "xhs" || schema.platform === "huitun") ? (
         <QrLoginPanel platform={schema.platform} accountType={effectiveAccountType} onConfirmed={handleConfirmed} />
-      ) : effectiveMethod === "cookie" ? (
+      ) : effectiveMethod === "cookie" && (schema.platform === "xhs" || schema.platform === "huitun") ? (
         <CookieImportPanel platform={schema.platform} accountType={effectiveAccountType} onImported={handleConfirmed} />
-      ) : supportsPhoneLogin(effectiveAccountType) ? (
+      ) : effectiveMethod === "phone" && schema.platform === "xhs" && supportsPhoneLogin(effectiveAccountType) ? (
         <PhoneLoginPanel accountType={effectiveAccountType} onConfirmed={handleConfirmed} />
       ) : null}
     </Drawer>
