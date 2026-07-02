@@ -14,6 +14,7 @@ from backend.app.core.database import Base
 from backend.app.models.ai import AiDraft
 from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.keyword_group import KeywordGroup
+from backend.app.models.note_exclusion import NoteExclusion
 from backend.app.models.user import User
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
 
@@ -414,6 +415,47 @@ def test_analysis_health_standard_allows_high_confidence(db_session: Session):
     assert health["status"] == "standard"
     assert health["can_generate"] is True
     assert health["confidence_cap"] == "high"
+
+
+def test_analysis_health_and_evidence_pool_exclude_persisted_note_exclusions(db_session: Session):
+    user = _create_user(db_session, "persisted-exclusion-scope")
+    group = _create_keyword_group(db_session, user.id, ["Claude Code", "AI编程", "Cursor"])
+    active_note = _create_note_with_comments(
+        db_session,
+        user.id,
+        title="Claude Code 新手配置",
+        content="Claude Code Cursor AI编程 入门教程",
+        comments=["新手怎么配置？"],
+        raw_json={"liked_count": 100, "collected_count": 60, "comment_count": 1, "share_count": 5},
+    )
+    excluded_note = _create_note_with_comments(
+        db_session,
+        user.id,
+        title="Claude Code 废弃样本",
+        content="Claude Code Cursor AI编程 旧资料",
+        comments=["不应进入证据池"],
+        raw_json={"liked_count": 100, "collected_count": 60, "comment_count": 1, "share_count": 5},
+    )
+    db_session.add(
+        NoteExclusion(
+            user_id=user.id,
+            note_id=None,
+            platform="xhs",
+            platform_note_id=excluded_note.note_id,
+            reason_code="manual_excluded",
+            reason_text="已废弃",
+        )
+    )
+    db_session.commit()
+
+    service = XhsAnalysisCenterService(db_session)
+    health = service.check_health(user_id=user.id, keyword_group_id=group.id, excluded_note_ids=[])
+    pool = service.build_evidence_pool(user_id=user.id, keyword_group_id=group.id, excluded_note_ids=[])
+
+    assert health["metrics"]["valid_note_count"] == 1
+    assert [item["note_id"] for item in pool["notes"]] == [active_note.id]
+    assert {item["note_id"] for item in pool["comments"]} == {active_note.id}
+    assert excluded_note.id not in [item["note_id"] for item in pool["notes"]]
 
 
 def test_evidence_pool_contains_only_real_notes_comments_keywords_and_metrics(db_session: Session):

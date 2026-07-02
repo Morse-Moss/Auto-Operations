@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from typing import Any, Generator, Literal
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -20,7 +21,7 @@ from backend.app.api.platforms.xhs.pc import (
 from backend.app.api.tasks import serialize_task
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, NoteAsset, NoteComment, PlatformAccount, Task, User
+from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, NoteAsset, NoteComment, NoteExclusion, PlatformAccount, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.crawl_diagnostics import create_crawl_diagnostic, serialize_crawl_diagnostic
 from backend.app.services.diagnostic_service import skipped_save_diagnostic
@@ -185,6 +186,50 @@ def _filter_saveable_notes(normalized_items: list[dict[str, Any]]) -> tuple[list
     return saveable, skipped
 
 
+def _split_excluded_saveable_notes(
+    db: Session,
+    account: PlatformAccount,
+    saveable_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    note_ids = [str(item.get("note_id") or "").strip() for item in saveable_items]
+    unique_note_ids = [note_id for note_id in dict.fromkeys(note_ids) if note_id]
+    exclusions = (
+        db.scalars(
+            select(NoteExclusion).where(
+                NoteExclusion.user_id == account.user_id,
+                NoteExclusion.platform == account.platform,
+                NoteExclusion.platform_note_id.in_(unique_note_ids),
+            )
+        ).all()
+        if unique_note_ids
+        else []
+    )
+    exclusion_by_note_id = {exclusion.platform_note_id: exclusion for exclusion in exclusions}
+    remaining: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for item in saveable_items:
+        note_id = str(item.get("note_id") or "").strip()
+        exclusion = exclusion_by_note_id.get(note_id)
+        if exclusion is None:
+            remaining.append(item)
+            continue
+        item.update(
+            {
+                "can_save": False,
+                "quality_status": "excluded",
+                "diagnostic_kind": "excluded_note",
+                "save_diagnostic_kind": "excluded_note",
+                "user_message": "该笔记已标记废弃，本轮跳过评论抓取和保存。",
+                "recoverable": False,
+                "reason": "excluded",
+                "reason_code": exclusion.reason_code,
+                "reason_text": exclusion.reason_text,
+            }
+        )
+        skipped.append(item)
+    return remaining, skipped
+
+
 def _quality_item_fields(quality: dict[str, Any], *, saved: bool = False, save_diagnostic_kind: str | None = None) -> dict[str, Any]:
     return {
         "quality_status": quality.get("quality_status", "unknown"),
@@ -314,7 +359,9 @@ def _save_with_quality_gate(
     account: PlatformAccount,
     normalized_items: list[dict[str, Any]],
 ) -> tuple[list[Note], list[dict[str, Any]]]:
-    saveable_items, skipped_items = _filter_saveable_notes(normalized_items)
+    remaining_items, excluded_items = _split_excluded_saveable_notes(db, account, normalized_items)
+    saveable_items, skipped_items = _filter_saveable_notes(remaining_items)
+    skipped_items.extend(excluded_items)
     if skipped_items:
         _record_save_skipped_diagnostics(
             db,
@@ -335,12 +382,27 @@ def _save_normalized_notes(
     normalized_items: list[dict[str, Any]],
 ) -> list[Note]:
     saved: list[Note] = []
+    normalized_note_ids = [str(normalized.get("note_id") or "").strip() for normalized in normalized_items]
+    unique_note_ids = [note_id for note_id in dict.fromkeys(normalized_note_ids) if note_id]
+    excluded_note_ids = set(
+        db.scalars(
+            select(NoteExclusion.platform_note_id).where(
+                NoteExclusion.user_id == account.user_id,
+                NoteExclusion.platform == account.platform,
+                NoteExclusion.platform_note_id.in_(unique_note_ids),
+            )
+        ).all()
+    ) if unique_note_ids else set()
     for normalized in normalized_items:
         note_id = str(normalized.get("note_id") or "").strip()
-        if not note_id:
+        if not note_id or note_id in excluded_note_ids:
             continue
         note = db.scalars(
-            select(Note).where(Note.user_id == account.user_id, Note.note_id == note_id)
+            select(Note).where(
+                Note.user_id == account.user_id,
+                Note.platform == account.platform,
+                Note.note_id == note_id,
+            )
         ).first()
         if note is None:
             note = Note(user_id=account.user_id, platform_account_id=account.id, platform=account.platform, note_id=note_id)
@@ -411,6 +473,66 @@ def _comment_failure_status(message: str) -> str:
 
 def _comment_skip_error() -> str:
     return "评论接口访问频繁，本轮后续评论已跳过。"
+
+
+def _platform_note_id_from_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+    parts = [part for part in parsed.path.split("/") if part]
+    if "explore" in parts:
+        index = parts.index("explore")
+        if index + 1 < len(parts):
+            return parts[index + 1].strip()
+    return ""
+
+
+def _is_platform_note_id_excluded(db: Session, account: PlatformAccount, note_id: str) -> bool:
+    note_id = str(note_id or "").strip()
+    if not note_id:
+        return False
+    return (
+        db.scalar(
+            select(NoteExclusion.id).where(
+                NoteExclusion.user_id == account.user_id,
+                NoteExclusion.platform == account.platform,
+                NoteExclusion.platform_note_id == note_id,
+            )
+        )
+        is not None
+    )
+
+
+def _is_normalized_note_excluded(db: Session, account: PlatformAccount, normalized: dict[str, Any]) -> bool:
+    return _is_platform_note_id_excluded(db, account, str(normalized.get("note_id") or "").strip())
+
+
+def _record_excluded_crawl_diagnostic(
+    db: Session,
+    *,
+    current_user: User,
+    task: Task,
+    account: PlatformAccount,
+    source: str,
+    note: dict[str, Any],
+    note_url: str | None = None,
+) -> None:
+    _record_crawl_diagnostic(
+        db,
+        current_user=current_user,
+        task=task,
+        account=account,
+        source=source,
+        note=note,
+        stage="save",
+        kind="excluded_note",
+        message="Note is excluded and skipped before comments/save",
+        user_message="该笔记已标记废弃，本轮跳过评论抓取和保存。",
+        recoverable=False,
+        raw_payload=note.get("raw") if isinstance(note.get("raw"), dict) else {},
+        note_url=note_url,
+    )
 
 
 def _crawl_data_item(
@@ -865,9 +987,12 @@ def crawl_keyword_group(
                     detail_note["note_url"] = detail_note.get("note_url") or note_url
                     quality = evaluate_detail_quality(detail_note, detail_payload)
                     detail_note.update(quality)
+                    excluded_note = _is_normalized_note_excluded(db, account, detail_note)
+                    if excluded_note:
+                        quality = {**quality, "can_save": False}
                     comments_list: list[dict[str, Any]] = []
-                    comment_status = "not_requested"
-                    comment_error = ""
+                    comment_status = "skipped_excluded" if excluded_note else "not_requested"
+                    comment_error = "该笔记已标记废弃，本轮跳过评论抓取和保存。" if excluded_note else ""
                     if payload.fetch_comments and quality["can_save"]:
                         if comments_rate_limited:
                             comment_status = "skipped_rate_limited"
@@ -894,22 +1019,33 @@ def crawl_keyword_group(
                         saved_count += 1 if saved else 0
                     else:
                         skipped_count += 1
-                        missing_detail_count += 1
-                        _record_crawl_diagnostic(
-                            db,
-                            current_user=current_user,
-                            task=task,
-                            account=account,
-                            source=source,
-                            note=detail_note,
-                            stage="detail",
-                            kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
-                            message=str(quality["diagnostic_kind"] or "low quality detail"),
-                            user_message=quality["user_message"],
-                            recoverable=bool(quality["recoverable"]),
-                            raw_payload=detail_payload or {},
-                            note_url=note_url,
-                        )
+                        if excluded_note:
+                            _record_excluded_crawl_diagnostic(
+                                db,
+                                current_user=current_user,
+                                task=task,
+                                account=account,
+                                source=source,
+                                note=detail_note,
+                                note_url=note_url,
+                            )
+                        else:
+                            missing_detail_count += 1
+                            _record_crawl_diagnostic(
+                                db,
+                                current_user=current_user,
+                                task=task,
+                                account=account,
+                                source=source,
+                                note=detail_note,
+                                stage="detail",
+                                kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
+                                message=str(quality["diagnostic_kind"] or "low quality detail"),
+                                user_message=quality["user_message"],
+                                recoverable=bool(quality["recoverable"]),
+                                raw_payload=detail_payload or {},
+                                note_url=note_url,
+                            )
                     item = _crawl_data_item(
                         source=source,
                         status="success" if saved else "partial",
@@ -1038,9 +1174,12 @@ def crawl_data(
                         quality = evaluate_detail_quality(note, raw_payload)
                         note.update(quality)
                         normalized_for_save.append(note)
+                        excluded_note = _is_normalized_note_excluded(db, account, note)
+                        if excluded_note:
+                            quality = {**quality, "can_save": False}
                         comments_list: list[dict[str, Any]] = []
-                        comment_status = "not_requested"
-                        comment_error = ""
+                        comment_status = "skipped_excluded" if excluded_note else "not_requested"
+                        comment_error = "该笔记已标记废弃，本轮跳过评论抓取和保存。" if excluded_note else ""
                         if payload.fetch_comments and quality["can_save"]:
                             if comments_rate_limited:
                                 comment_status = "skipped_rate_limited"
@@ -1058,21 +1197,32 @@ def crawl_data(
                                         yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
                                 _sleep_between_requests(payload.comment_sleep)
                         if not quality["can_save"]:
-                            _record_crawl_diagnostic(
-                                db,
-                                current_user=current_user,
-                                task=task,
-                                account=account,
-                                source=url,
-                                note=note,
-                                stage="detail",
-                                kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
-                                message=str(quality["diagnostic_kind"] or "low quality detail"),
-                                user_message=quality["user_message"],
-                                recoverable=bool(quality["recoverable"]),
-                                raw_payload=raw_payload or {},
-                                note_url=url,
-                            )
+                            if excluded_note:
+                                _record_excluded_crawl_diagnostic(
+                                    db,
+                                    current_user=current_user,
+                                    task=task,
+                                    account=account,
+                                    source=url,
+                                    note=note,
+                                    note_url=url,
+                                )
+                            else:
+                                _record_crawl_diagnostic(
+                                    db,
+                                    current_user=current_user,
+                                    task=task,
+                                    account=account,
+                                    source=url,
+                                    note=note,
+                                    stage="detail",
+                                    kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
+                                    message=str(quality["diagnostic_kind"] or "low quality detail"),
+                                    user_message=quality["user_message"],
+                                    recoverable=bool(quality["recoverable"]),
+                                    raw_payload=raw_payload or {},
+                                    note_url=url,
+                                )
                         saved = False
                         if payload.save_to_library and quality["can_save"]:
                             saved_notes = _save_normalized_notes(db, account, [note])
@@ -1132,7 +1282,21 @@ def crawl_data(
 
             elif payload.mode == "comments":
                 for index, url in enumerate(payload.urls):
-                    if comments_rate_limited:
+                    platform_note_id = _platform_note_id_from_url(url)
+                    if platform_note_id and _is_platform_note_id_excluded(db, account, platform_note_id):
+                        skip_error = "该笔记已标记废弃，本轮跳过评论抓取和保存。"
+                        item = _crawl_data_item(source=url, status="partial", error=skip_error, comment_status="skipped_excluded", comment_error=skip_error)
+                        skipped_count += 1
+                        _record_excluded_crawl_diagnostic(
+                            db,
+                            current_user=current_user,
+                            task=task,
+                            account=account,
+                            source=url,
+                            note={"note_id": platform_note_id, "note_url": url},
+                            note_url=url,
+                        )
+                    elif comments_rate_limited:
                         skip_error = _comment_skip_error()
                         item = _crawl_data_item(source=url, status="failed", error=skip_error, comment_status="skipped_rate_limited", comment_error=skip_error)
                     else:
@@ -1227,9 +1391,12 @@ def crawl_data(
                                 continue
                         quality = evaluate_detail_quality(detail_note, detail_note.get("raw") if isinstance(detail_note.get("raw"), dict) else None)
                         detail_note.update(quality)
+                        excluded_note = _is_normalized_note_excluded(db, account, detail_note)
+                        if excluded_note:
+                            quality = {**quality, "can_save": False}
                         comments_list = []
-                        comment_status = "not_requested"
-                        comment_error = ""
+                        comment_status = "skipped_excluded" if excluded_note else "not_requested"
+                        comment_error = "该笔记已标记废弃，本轮跳过评论抓取和保存。" if excluded_note else ""
                         if payload.fetch_comments and note_url and quality["can_save"]:
                             if comments_rate_limited:
                                 comment_status = "skipped_rate_limited"
@@ -1247,21 +1414,32 @@ def crawl_data(
                                         yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
                                 _sleep_between_requests(payload.comment_sleep)
                         if not quality["can_save"]:
-                            _record_crawl_diagnostic(
-                                db,
-                                current_user=current_user,
-                                task=task,
-                                account=account,
-                                source=source,
-                                note=detail_note,
-                                stage="detail",
-                                kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
-                                message=str(quality["diagnostic_kind"] or "low quality detail"),
-                                user_message=quality["user_message"],
-                                recoverable=bool(quality["recoverable"]),
-                                raw_payload=detail_note.get("raw") if isinstance(detail_note.get("raw"), dict) else {},
-                                note_url=note_url,
-                            )
+                            if excluded_note:
+                                _record_excluded_crawl_diagnostic(
+                                    db,
+                                    current_user=current_user,
+                                    task=task,
+                                    account=account,
+                                    source=source,
+                                    note=detail_note,
+                                    note_url=note_url,
+                                )
+                            else:
+                                _record_crawl_diagnostic(
+                                    db,
+                                    current_user=current_user,
+                                    task=task,
+                                    account=account,
+                                    source=source,
+                                    note=detail_note,
+                                    stage="detail",
+                                    kind=str(quality["diagnostic_kind"] or "empty_detail_payload"),
+                                    message=str(quality["diagnostic_kind"] or "low quality detail"),
+                                    user_message=quality["user_message"],
+                                    recoverable=bool(quality["recoverable"]),
+                                    raw_payload=detail_note.get("raw") if isinstance(detail_note.get("raw"), dict) else {},
+                                    note_url=note_url,
+                                )
                         normalized_for_save.append(detail_note)
                         saved = False
                         if payload.save_to_library and quality["can_save"]:

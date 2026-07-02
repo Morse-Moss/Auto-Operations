@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -149,6 +150,51 @@ def test_feishu_ensure_fields_dry_run_returns_expected_template(tmp_path):
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_feishu_ensure_fields_endpoint_marks_config_failed_when_service_fails(tmp_path, monkeypatch):
+    SessionLocal = _override_database(tmp_path, "feishu-fields-failed.db")
+    fake = FakeFeishuClient()
+    fake.fields = [
+        {
+            "field_id": "fld_analysis_status_alias",
+            "field_name": "分析状态确认",
+            "type": 3,
+            "property": {"options": [{"name": "待分析"}, {"name": "分析中"}, {"name": "已完成"}]},
+        }
+    ]
+
+    def fake_create_client(config):
+        return fake
+
+    monkeypatch.setattr("backend.app.api.feishu_integration.create_feishu_client_from_config", fake_create_client)
+    try:
+        user_id = _create_user(SessionLocal)
+        headers = _auth_headers(user_id)
+        client.put(
+            "/api/integrations/feishu/config",
+            headers=headers,
+            json={"app_id": "cli_xxx", "app_secret": "secret", "bitable_url": "https://example.feishu.cn/base/app?table=tbl", "enabled": True},
+        )
+
+        response = client.post("/api/integrations/feishu/ensure-fields", headers=headers, json={"dry_run": False})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "failed"
+        assert "字段补齐完成" not in body["message"]
+        assert "分析状态确认" in body["message"]
+        assert "已废弃" in body["message"]
+        db = SessionLocal()
+        try:
+            config = db.scalar(select(FeishuIntegrationConfig))
+            assert config.last_test_status == "failed"
+            assert "分析状态确认" in config.last_test_message
+            assert "已废弃" in config.last_test_message
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_push_notes_to_feishu_dry_run_creates_analysis_result_state(tmp_path):
     SessionLocal = _override_database(tmp_path, "feishu-push.db")
     try:
@@ -192,6 +238,7 @@ class FakeFeishuClient:
         self.fields = []
         self.records = []
         self.created_fields = []
+        self.updated_fields = []
         self.created_records = []
         self.updated_records = []
         self.created_apps = []
@@ -215,10 +262,19 @@ class FakeFeishuClient:
         return self.fields
 
     def create_field(self, definition):
-        field = {"field_name": definition["field_name"], "type": definition["type"]}
+        field = feishu_bitable_service._feishu_field_payload(definition)
         self.fields.append(field)
         self.created_fields.append(field)
         return field
+
+    def update_field(self, field_id, definition):
+        updated = {"field_id": field_id, **feishu_bitable_service._feishu_field_payload(definition)}
+        for field in self.fields:
+            if field.get("field_id") == field_id:
+                field.update(updated)
+                self.updated_fields.append(updated)
+                return updated
+        raise AssertionError(f"field_id not found: {field_id}")
 
     def list_records(self):
         return self.records
@@ -348,6 +404,82 @@ def test_create_analysis_base_endpoint_updates_config_with_fake_client(tmp_path,
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_feishu_analysis_status_definition_includes_discarded():
+    analysis_status = next(item for item in feishu_bitable_service.FEISHU_FIELD_DEFINITIONS if item["field_name"] == "分析状态")
+
+    assert "已废弃" in analysis_status["options"]
+
+
+def test_ensure_feishu_fields_updates_existing_analysis_status_options():
+    fake = FakeFeishuClient()
+    existing_options = [
+        {"name": "待分析", "id": "opt_1", "color": 0},
+        {"name": "分析中", "id": "opt_2", "color": 1},
+        {"name": "已完成", "id": "opt_3", "color": 2},
+    ]
+    fake.fields = [
+        {
+            "field_id": "fld_analysis_status",
+            "field_name": "分析状态",
+            "type": 3,
+            "property": {"options": existing_options},
+        }
+    ]
+
+    result = feishu_bitable_service.ensure_feishu_fields(fake)
+
+    assert result["status"] == "ok"
+    assert fake.updated_fields[0]["field_id"] == "fld_analysis_status"
+    assert fake.updated_fields[0]["property"]["options"] == [
+        {"name": "待分析", "id": "opt_1", "color": 0},
+        {"name": "分析中", "id": "opt_2", "color": 1},
+        {"name": "已完成", "id": "opt_3", "color": 2},
+        {"name": "废弃"},
+        {"name": "已废弃"},
+    ]
+
+
+def test_ensure_feishu_fields_fails_when_analysis_status_is_non_select_and_missing_option():
+    fake = FakeFeishuClient()
+    fake.fields = [
+        {
+            "field_id": "fld_analysis_status",
+            "field_name": "分析状态",
+            "type": 1,
+            "property": {"options": [{"name": "待分析"}]},
+        }
+    ]
+
+    result = feishu_bitable_service.ensure_feishu_fields(fake)
+
+    assert result["status"] == "failed"
+    assert result["updated_count"] == 0
+    assert fake.updated_fields == []
+    assert "分析状态" in result["errors"][0]
+    assert "单选" in result["errors"][0]
+
+
+def test_ensure_feishu_fields_fails_when_analysis_status_alias_lacks_discarded_option():
+    fake = FakeFeishuClient()
+    fake.fields = [
+        {
+            "field_id": "fld_analysis_status_alias",
+            "field_name": "分析状态确认",
+            "type": 3,
+            "property": {"options": [{"name": "待分析"}, {"name": "分析中"}, {"name": "已完成"}]},
+        }
+    ]
+
+    result = feishu_bitable_service.ensure_feishu_fields(fake)
+
+    assert result["status"] == "failed"
+    assert result["updated_count"] == 0
+    assert fake.updated_fields == []
+    assert result["errors"]
+    assert "分析状态确认" in result["errors"][0]
+    assert "已废弃" in result["errors"][0]
+
+
 def test_real_ensure_fields_service_uses_client_without_network():
     fake = FakeFeishuClient()
 
@@ -357,6 +489,43 @@ def test_real_ensure_fields_service_uses_client_without_network():
     assert result["status"] == "ok"
     assert result["created_count"] == len(feishu_bitable_service.FEISHU_FIELD_DEFINITIONS)
     assert fake.created_fields[0]["field_name"] == "系统笔记ID"
+
+
+def test_push_notes_to_feishu_stops_when_required_feishu_fields_fail(tmp_path):
+    SessionLocal = _override_database(tmp_path, "feishu-push-field-failure.db")
+    try:
+        user_id = _create_user(SessionLocal)
+        db = SessionLocal()
+        try:
+            note = Note(user_id=user_id, platform_account_id=1, platform="xhs", note_id="xhs-field-fail", title="标题", content="正文", author_name="作者")
+            db.add(note)
+            db.commit()
+            db.refresh(note)
+            note_id = note.id
+        finally:
+            db.close()
+
+        fake = FakeFeishuClient()
+        fake.fields = [
+            {
+                "field_id": "fld_analysis_status_alias",
+                "field_name": "分析状态确认",
+                "type": 3,
+                "property": {"options": [{"name": "待分析"}, {"name": "分析中"}, {"name": "已完成"}]},
+            }
+        ]
+        db = SessionLocal()
+        try:
+            with pytest.raises(feishu_bitable_service.FeishuIntegrationError) as exc_info:
+                feishu_bitable_service.push_notes_to_feishu(db, user_id=user_id, note_ids=[note_id], client=fake)
+        finally:
+            db.close()
+
+        assert "分析状态确认" in str(exc_info.value)
+        assert "已废弃" in str(exc_info.value)
+        assert fake.created_records == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 def test_real_push_service_creates_or_updates_feishu_records_with_fake_client(tmp_path):
@@ -386,7 +555,13 @@ def test_real_push_service_creates_or_updates_feishu_records_with_fake_client(tm
             assert fake.created_records[0]["fields"]["内容利用方式"] == ["选题参考"]
             assert fake.created_records[0]["fields"]["搜索属性"] == "泛流量"
 
-            fake.fields = [{"field_name": "系统笔记ID"}, {"field_name": "平台笔记ID"}, {"field_name": "分析状态"}, {"field_name": "内容类型"}, {"field_name": "内容利用方式"}]
+            fake.fields = [
+                {"field_name": "系统笔记ID"},
+                {"field_name": "平台笔记ID"},
+                {"field_id": "fld_analysis_status", "field_name": "分析状态", "type": 3, "property": {"options": [{"name": option} for option in feishu_bitable_service.ANALYSIS_STATUS_OPTIONS]}},
+                {"field_name": "内容类型"},
+                {"field_name": "内容利用方式"},
+            ]
             fake.records[0]["fields"]["内容类型"] = "测评"
             updated = feishu_bitable_service.push_notes_to_feishu(db, user_id=user_id, note_ids=[note_id], client=fake)
             assert updated["created_count"] == 0

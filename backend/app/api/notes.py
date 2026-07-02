@@ -22,9 +22,11 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.time import shanghai_now
 from backend.app.core.security import decrypt_text
-from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAnalysisResult, NoteAsset, NoteComment, PlatformAccount, Tag, User, note_tags
+from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAnalysisResult, NoteAsset, NoteComment, NoteExclusion, PlatformAccount, Tag, User, note_tags
 from backend.app.schemas.common import paginated
 from backend.app.services.asset_storage_policy import export_owner_prefix
+from backend.app.services.feishu_bitable_service import get_or_create_analysis_result
+from backend.app.services.note_exclusion_service import build_current_cleanup_candidates, mark_notes_excluded
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 
@@ -62,6 +64,13 @@ class BatchCreateDraftsRequest(BaseModel):
 class ExportNotesRequest(BaseModel):
     note_ids: list[int] = Field(min_length=1)
     format: Literal["json", "csv"] = "json"
+
+
+class MarkNoteExclusionsRequest(BaseModel):
+    note_ids: list[int] = Field(min_length=1)
+    reason_code: str = Field(min_length=1, max_length=64)
+    reason_text: str = ""
+    sync_feishu: bool = False
 
 
 def _serialize_tag(tag: Tag) -> dict:
@@ -375,6 +384,14 @@ def _get_unique_owned_notes(db: Session, current_user: User, note_ids: list[int]
     return [_get_owned_note(db, current_user, note_id) for note_id in dict.fromkeys(note_ids)]
 
 
+def _not_excluded_note_condition(user_id: int):
+    return ~select(NoteExclusion.id).where(
+        NoteExclusion.user_id == user_id,
+        NoteExclusion.platform == Note.platform,
+        NoteExclusion.platform_note_id == Note.note_id,
+    ).exists()
+
+
 def _split_filter_values(value: Optional[str]) -> list[str]:
     if not value:
         return []
@@ -432,6 +449,7 @@ def get_note_filter_options(
             Note.user_id == current_user.id,
             NoteAnalysisResult.user_id == current_user.id,
             NoteAnalysisResult.source == "feishu",
+            _not_excluded_note_condition(current_user.id),
         )
     )
     if platform:
@@ -468,7 +486,10 @@ def get_note_ids(
 ):
     statement = (
         select(Note.note_id)
-        .where(Note.user_id == current_user.id)
+        .where(
+            Note.user_id == current_user.id,
+            _not_excluded_note_condition(current_user.id),
+        )
     )
     if platform:
         statement = statement.where(Note.platform == platform)
@@ -499,7 +520,10 @@ def get_notes(
 ):
     statement = (
         select(Note)
-        .where(Note.user_id == current_user.id)
+        .where(
+            Note.user_id == current_user.id,
+            _not_excluded_note_condition(current_user.id),
+        )
     )
     if platform:
         statement = statement.where(Note.platform == platform)
@@ -600,6 +624,65 @@ def batch_create_drafts(
         "created_count": len(drafts),
         "items": [_serialize_draft(draft) for draft in drafts],
     }
+
+
+@router.post("/exclusions/mark")
+def mark_note_exclusions(
+    payload: MarkNoteExclusionsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    client = None
+    feishu_client_error: Exception | None = None
+    if payload.sync_feishu:
+        from backend.app.api.feishu_integration import _client_or_error, _get_config
+
+        try:
+            client = _client_or_error(_get_config(db, current_user.id))
+        except Exception as exc:
+            feishu_client_error = exc
+    response = mark_notes_excluded(
+        db,
+        user_id=current_user.id,
+        note_ids=payload.note_ids,
+        reason_code=payload.reason_code,
+        reason_text=payload.reason_text,
+        client=client,
+    )
+    if feishu_client_error is not None:
+        unique_note_ids = list(dict.fromkeys(payload.note_ids))
+        notes = db.scalars(
+            select(Note).where(
+                Note.user_id == current_user.id,
+                Note.platform == "xhs",
+                Note.id.in_(unique_note_ids),
+            )
+        ).all() if unique_note_ids else []
+        failed_message = f"Feishu client error: {feishu_client_error}"
+        for note in notes:
+            analysis = get_or_create_analysis_result(db, user_id=current_user.id, note_id=note.id)
+            analysis.push_status = "failed"
+            analysis.last_error = failed_message
+            response["errors"].append(
+                {
+                    "note_id": note.id,
+                    "feishu_failed": True,
+                    "error": failed_message,
+                }
+            )
+        if notes:
+            db.commit()
+            response["feishu_failed_count"] += len(notes)
+    return response
+
+
+@router.get("/exclusions/current-cleanup-candidates")
+def get_current_cleanup_candidates(
+    strict: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return {"items": build_current_cleanup_candidates(db, user_id=current_user.id, strict=strict)}
 
 
 @router.get("/{note_id}")
@@ -735,17 +818,46 @@ def batch_save_notes(
     adapter_factory=Depends(get_xhs_pc_api_adapter_factory),
 ):
     account = _get_owned_account(db, current_user, payload.account_id, expected_platform="xhs")
+    saved_notes: list[Note] = []
+    skipped_items: list[dict[str, str]] = []
+    notes_to_save: list[BatchSaveNoteItem] = []
+
+    payload_note_ids = list(dict.fromkeys(note.note_id for note in payload.notes))
+    excluded_note_ids = set(
+        db.scalars(
+            select(NoteExclusion.platform_note_id).where(
+                NoteExclusion.user_id == current_user.id,
+                NoteExclusion.platform == account.platform,
+                NoteExclusion.platform_note_id.in_(payload_note_ids),
+            )
+        ).all()
+    )
+
+    for note_payload in payload.notes:
+        if note_payload.note_id in excluded_note_ids:
+            skipped_items.append({"note_id": note_payload.note_id, "reason": "excluded"})
+        else:
+            notes_to_save.append(note_payload)
+
+    if not notes_to_save:
+        return {
+            "saved_count": 0,
+            "skipped_count": len(skipped_items),
+            "skipped_items": skipped_items,
+            "items": [],
+        }
+
     comment_adapter = None
     if payload.fetch_comments:
         if account.sub_type != "pc":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PC account is required to fetch comments")
         comment_adapter = adapter_factory(_get_latest_account_cookies(db, account))
-    saved_notes: list[Note] = []
 
-    for note_payload in payload.notes:
+    for note_payload in notes_to_save:
         existing = db.scalars(
             select(Note).where(
                 Note.user_id == current_user.id,
+                Note.platform == account.platform,
                 Note.note_id == note_payload.note_id,
             )
         ).first()
@@ -806,6 +918,8 @@ def batch_save_notes(
 
     return {
         "saved_count": len(saved_notes),
+        "skipped_count": len(skipped_items),
+        "skipped_items": skipped_items,
         "items": [_serialize_note_with_tags(db, note) for note in saved_notes],
     }
 

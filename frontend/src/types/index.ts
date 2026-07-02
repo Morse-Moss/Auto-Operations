@@ -1184,6 +1184,8 @@ export type CreateDraftFromTopicCardsPayload = {
 
 export type SaveNotesResponse = {
   saved_count: number;
+  skipped_count: number;
+  skipped_items: Array<{ note_id: string; reason: string }>;
   items: SavedNote[];
 };
 

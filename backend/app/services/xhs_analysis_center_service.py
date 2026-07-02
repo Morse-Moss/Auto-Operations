@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.app.core.time import shanghai_now
 from backend.app.models.keyword_group import KeywordGroup
 from backend.app.models.note import Note, NoteComment
+from backend.app.models.note_exclusion import NoteExclusion
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 MINIMUM_THRESHOLDS = {
@@ -110,7 +111,12 @@ class XhsAnalysisCenterService:
 
         keywords = [str(item).strip() for item in (keyword_group.keywords or []) if str(item).strip()]
         excluded = {int(item) for item in excluded_note_ids}
-        note_stmt = select(Note).where(Note.user_id == user_id, Note.platform == "xhs")
+        persisted_exclusions = select(NoteExclusion.id).where(
+            NoteExclusion.user_id == user_id,
+            NoteExclusion.platform == Note.platform,
+            NoteExclusion.platform_note_id == Note.note_id,
+        )
+        note_stmt = select(Note).where(Note.user_id == user_id, Note.platform == "xhs", ~persisted_exclusions.exists())
         notes = [note for note in self.db.scalars(note_stmt).all() if note.id not in excluded and self._note_matches_keywords(note, keywords)]
         note_ids = [note.id for note in notes]
         comments_by_note_id: dict[int, list[NoteComment]] = {note_id: [] for note_id in note_ids}

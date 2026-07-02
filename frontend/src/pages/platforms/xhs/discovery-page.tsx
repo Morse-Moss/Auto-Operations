@@ -13,7 +13,7 @@ import {
   SearchOutlined,
   StarOutlined,
 } from "@ant-design/icons";
-import { Alert, Badge, Button, Card, Col, Descriptions, Drawer, Empty, Input, Row, Select, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Badge, Button, Card, Col, Descriptions, Drawer, Empty, Input, Row, Select, Space, Spin, Tag, Typography, message } from "antd";
 import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -136,7 +136,16 @@ export function XhsDiscoveryPage() {
   async function handleSaveNote(note: XhsSearchNote) {
     setError(null); if (!selectedAccountId) { setError("请先选择一个 PC 账号。"); return; }
     setSavingNoteIds((c) => [...c, note.note_id]);
-    try { const d = await ensureNoteDetail(note); await saveXhsNotesToLibrary({ account_id: selectedAccountId, notes: [d] }); setSavedNoteIds((c) => c.includes(note.note_id) ? c : [...c, note.note_id]); }
+    try {
+      const d = await ensureNoteDetail(note);
+      const result = await saveXhsNotesToLibrary({ account_id: selectedAccountId, notes: [d] });
+      if (result.saved_count > 0) {
+        setSavedNoteIds((c) => c.includes(note.note_id) ? c : [...c, note.note_id]);
+      }
+      if (result.skipped_count > 0) {
+        message.warning("该内容已被废弃库拦截，不会重复入库。");
+      }
+    }
     catch { setError("保存到内容库失败。"); } finally { setSavingNoteIds((c) => c.filter((id) => id !== note.note_id)); }
   }
 

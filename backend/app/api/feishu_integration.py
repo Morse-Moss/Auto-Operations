@@ -9,7 +9,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import encrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import FeishuIntegrationConfig, Note, NoteAnalysisResult, User
+from backend.app.models import FeishuIntegrationConfig, Note, NoteAnalysisResult, NoteExclusion, User
 from backend.app.services.feishu_bitable_service import (
     FEISHU_FIELD_DEFINITIONS,
     FeishuIntegrationError,
@@ -283,11 +283,16 @@ def ensure_feishu_fields(payload: FeishuDryRunPayload, current_user: User = Depe
     try:
         client = create_feishu_client_from_config(config)
         result = ensure_feishu_fields_service(client)
-        config.last_test_status = "success"
-        config.last_test_message = f"字段补齐完成：新增 {result.get('created_count', 0)} 个，已存在 {result.get('skipped_count', 0)} 个"
+        if result.get("status") == "failed":
+            errors = result.get("errors") or []
+            config.last_test_status = "failed"
+            config.last_test_message = "；".join(str(error) for error in errors) or "字段补齐失败"
+        else:
+            config.last_test_status = "success"
+            config.last_test_message = f"字段补齐完成：新增 {result.get('created_count', 0)} 个，已存在 {result.get('skipped_count', 0)} 个"
         config.last_tested_at = shanghai_now()
         db.commit()
-        return result
+        return {**result, "message": config.last_test_message}
     except Exception as exc:
         config.last_test_status = "failed"
         config.last_test_message = str(exc)
@@ -318,7 +323,20 @@ def push_xhs_notes_to_feishu(payload: FeishuPushNotesPayload, current_user: User
 
 @router.post("/xhs-notes/push-all")
 def push_all_xhs_notes_to_feishu(payload: FeishuPushAllNotesPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    note_ids_query = select(Note.id).where(Note.user_id == current_user.id, Note.platform == "xhs").order_by(Note.id.asc())
+    excluded_notes = select(NoteExclusion.id).where(
+        NoteExclusion.user_id == current_user.id,
+        NoteExclusion.platform == Note.platform,
+        NoteExclusion.platform_note_id == Note.note_id,
+    )
+    note_ids_query = (
+        select(Note.id)
+        .where(
+            Note.user_id == current_user.id,
+            Note.platform == "xhs",
+            ~excluded_notes.exists(),
+        )
+        .order_by(Note.id.asc())
+    )
     note_ids = list(db.scalars(note_ids_query).all())
     if payload.only_unsynced and note_ids:
         synced_ids = set(

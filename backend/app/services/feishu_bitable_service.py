@@ -18,10 +18,10 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import get_settings
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import FeishuIntegrationConfig, ModelConfig, Note, NoteAnalysisResult, NoteAsset
+from backend.app.models import FeishuIntegrationConfig, ModelConfig, Note, NoteAnalysisResult, NoteAsset, NoteExclusion
 from backend.app.services.ai_service import OpenAICompatibleTextClient
 
-ANALYSIS_STATUS_OPTIONS = ["待分析", "分析中", "已完成", "废弃"]
+ANALYSIS_STATUS_OPTIONS = ["待分析", "分析中", "已完成", "废弃", "已废弃"]
 CONTENT_TYPE_OPTIONS = ["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事", "经验分享", "观点输出", "记录日常"]
 REUSABLE_MODEL_OPTIONS = [
     "问题驱动模型",
@@ -202,14 +202,13 @@ class FeishuBitableClient:
         return list(payload.get("data", {}).get("items", []))
 
     def create_field(self, definition: dict[str, Any]) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "field_name": definition["field_name"],
-            "type": FEISHU_FIELD_TYPE_MAP.get(str(definition.get("type")), 1),
-        }
-        options = definition.get("options") or []
-        if options:
-            body["property"] = {"options": [{"name": str(option)} for option in options]}
+        body = _feishu_field_payload(definition)
         payload = self._request("POST", f"/bitable/v1/apps/{self.bitable_app_token}/tables/{self.table_id}/fields", json=body)
+        return dict(payload.get("data", {}).get("field", payload.get("data", {})))
+
+    def update_field(self, field_id: str, definition: dict[str, Any]) -> dict[str, Any]:
+        body = _feishu_field_payload(definition)
+        payload = self._request("PUT", f"/bitable/v1/apps/{self.bitable_app_token}/tables/{self.table_id}/fields/{field_id}", json=body)
         return dict(payload.get("data", {}).get("field", payload.get("data", {})))
 
     def list_records(self) -> list[dict[str, Any]]:
@@ -374,26 +373,93 @@ def create_feishu_analysis_base(client: Any, *, base_name: str = "小红书内�
     }
 
 
+def _normalize_option(option: Any) -> dict[str, Any]:
+    if isinstance(option, dict):
+        return dict(option)
+    return {"name": str(option)}
+
+
+def _feishu_field_payload(definition: dict[str, Any]) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "field_name": definition["field_name"],
+        "type": FEISHU_FIELD_TYPE_MAP.get(str(definition.get("type")), 1),
+    }
+    options = definition.get("options") or []
+    if options:
+        body["property"] = {"options": [_normalize_option(option) for option in options]}
+    return body
+
+
+def _field_options(field: dict[str, Any]) -> list[dict[str, Any]]:
+    property_value = field.get("property") if isinstance(field.get("property"), dict) else {}
+    options = property_value.get("options") if isinstance(property_value, dict) else []
+    if not isinstance(options, list):
+        return []
+    return [_normalize_option(option) for option in options]
+
+
+def _field_option_names(field: dict[str, Any]) -> set[str]:
+    return {str(option["name"]) for option in _field_options(field) if option.get("name")}
+
+
+def _field_id(field: dict[str, Any]) -> str:
+    return str(field.get("field_id") or field.get("fieldId") or "")
+
+
+def _field_type(field: dict[str, Any]) -> int | None:
+    try:
+        return int(field.get("type"))
+    except (TypeError, ValueError):
+        return None
+
+
 def ensure_feishu_fields(client: Any) -> dict[str, Any]:
     existing = client.list_fields()
-    existing_names = {str(field.get("field_name")) for field in existing}
+    existing_by_name = {str(field.get("field_name")): field for field in existing if field.get("field_name")}
+    existing_names = set(existing_by_name)
     created: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
     skipped: list[str] = []
+    errors: list[str] = []
     for definition in FEISHU_FIELD_DEFINITIONS:
         field_name = definition["field_name"]
         aliases = FIELD_ALIASES.get(field_name, [])
-        if field_name in existing_names or any(alias in existing_names for alias in aliases):
+        existing_name = field_name if field_name in existing_names else next((alias for alias in aliases if alias in existing_names), "")
+        if existing_name:
+            field = existing_by_name[existing_name]
+            if field_name == "分析状态":
+                options = definition.get("options") or []
+                missing_options = [option for option in options if option not in _field_option_names(field)]
+                field_id = _field_id(field)
+                if missing_options:
+                    missing_text = "、".join(str(option) for option in missing_options)
+                    if existing_name != field_name:
+                        errors.append(f"分析状态别名字段 {existing_name} 缺少选项：{missing_text}；请在飞书中人工补齐，或改用规范字段名 分析状态")
+                    elif _field_type(field) != FEISHU_FIELD_TYPE_MAP["single_select"]:
+                        errors.append("分析状态字段不是飞书单选字段，无法自动补齐选项：" + missing_text)
+                    elif not field_id:
+                        errors.append("分析状态字段缺少 field_id，无法自动补齐选项：" + missing_text)
+                    elif not hasattr(client, "update_field"):
+                        errors.append("飞书客户端不支持 update_field，无法自动补齐分析状态选项：" + missing_text)
+                    else:
+                        existing_options = _field_options(field)
+                        update_definition = dict(definition)
+                        update_definition["options"] = [*existing_options, *({"name": str(option)} for option in missing_options)]
+                        updated.append(client.update_field(field_id, update_definition))
             skipped.append(field_name)
             continue
         created.append(client.create_field(definition))
         existing_names.add(field_name)
     return {
         "dry_run": False,
-        "status": "ok",
+        "status": "failed" if errors else "ok",
         "created_count": len(created),
+        "updated_count": len(updated),
         "skipped_count": len(skipped),
         "created": created,
+        "updated": updated,
         "skipped": skipped,
+        "errors": errors,
         "fields": FEISHU_FIELD_DEFINITIONS,
     }
 
@@ -744,10 +810,12 @@ def existing_empty_only_fields(fields: dict[str, Any], existing_fields: dict[str
     return update_fields
 
 
-def field_names_for_client(client: Any) -> set[str]:
+def field_names_for_client(client: Any, *, raise_errors: bool = False) -> set[str]:
     try:
         return {str(field.get("field_name")) for field in client.list_fields() if field.get("field_name")}
     except Exception:
+        if raise_errors:
+            raise
         return set()
 
 
@@ -883,6 +951,26 @@ def _unique_note_ids(note_ids: list[int]) -> list[int]:
     return list(dict.fromkeys(note_ids))
 
 
+def _excluded_note_ids_for_notes(db: Session, *, user_id: int, notes: list[Note]) -> set[int]:
+    note_ids = [note.id for note in notes]
+    platform_note_ids = [note.note_id for note in notes if note.platform == "xhs" and note.note_id]
+    if not note_ids and not platform_note_ids:
+        return set()
+    exclusions = db.scalars(
+        select(NoteExclusion).where(
+            NoteExclusion.user_id == user_id,
+            NoteExclusion.platform == "xhs",
+            NoteExclusion.platform_note_id.in_(platform_note_ids),
+        )
+    ).all() if platform_note_ids else []
+    excluded_platform_note_ids = {exclusion.platform_note_id for exclusion in exclusions}
+    return {note.id for note in notes if note.platform == "xhs" and note.note_id in excluded_platform_note_ids}
+
+
+def _skipped_excluded_record(note_id: int) -> dict[str, Any]:
+    return {"note_id": note_id, "status": "skipped", "reason": "excluded"}
+
+
 def _records_by_system_and_platform_id(records: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, str]]:
     by_system_id: dict[str, str] = {}
     by_platform_id: dict[str, str] = {}
@@ -906,6 +994,7 @@ def push_notes_to_feishu_dry_run(db: Session, *, user_id: int, note_ids: list[in
         return {"dry_run": True, "updated_count": 0, "failed_count": len(unique_ids), "errors": [f"每次最多同步 {MAX_SYNC_ITEMS} 条"], "records": []}
     notes = db.scalars(select(Note).where(Note.id.in_(unique_ids), Note.user_id == user_id)).all()
     by_id = {note.id: note for note in notes}
+    excluded_note_ids = _excluded_note_ids_for_notes(db, user_id=user_id, notes=notes)
     records = []
     errors = []
     updated = 0
@@ -914,6 +1003,9 @@ def push_notes_to_feishu_dry_run(db: Session, *, user_id: int, note_ids: list[in
         note = by_id.get(note_id)
         if note is None:
             errors.append({"note_id": note_id, "error": "Note not found"})
+            continue
+        if note.id in excluded_note_ids:
+            records.append(_skipped_excluded_record(note.id))
             continue
         result = get_or_create_analysis_result(db, user_id=user_id, note_id=note.id)
         analysis, warning = preanalyze_note_for_feishu(db, user_id=user_id, note=note)
@@ -935,20 +1027,41 @@ def push_notes_to_feishu(db: Session, *, user_id: int, note_ids: list[int], clie
         return {"dry_run": False, "created_count": 0, "updated_count": 0, "failed_count": len(unique_ids), "errors": [f"每次最多同步 {MAX_SYNC_ITEMS} 条"], "records": []}
     notes = db.scalars(select(Note).where(Note.id.in_(unique_ids), Note.user_id == user_id)).all()
     by_id = {note.id: note for note in notes}
-    ensure_feishu_fields(client)
+    excluded_note_ids = _excluded_note_ids_for_notes(db, user_id=user_id, notes=notes)
+    preflight_records = []
+    preflight_errors = []
+    processable_ids = []
+    for note_id in unique_ids:
+        note = by_id.get(note_id)
+        if note is None:
+            preflight_errors.append({"note_id": note_id, "error": "Note not found"})
+        elif note.id in excluded_note_ids:
+            preflight_records.append(_skipped_excluded_record(note.id))
+        else:
+            processable_ids.append(note_id)
+    if not processable_ids:
+        return {"dry_run": False, "created_count": 0, "updated_count": 0, "failed_count": len(preflight_errors), "errors": preflight_errors, "records": preflight_records}
+    fields_result = ensure_feishu_fields(client)
+    if fields_result.get("status") == "failed":
+        errors = fields_result.get("errors") or []
+        message = "；".join(str(error) for error in errors) or "飞书字段补齐失败"
+        raise FeishuIntegrationError(message)
     existing_records = client.list_records()
     existing_field_names = field_names_for_client(client)
     by_system_id, by_platform_id = _records_by_system_and_platform_id(existing_records)
     existing_fields_by_id = _record_fields_by_id(existing_records)
     created_count = 0
     updated_count = 0
-    records = []
-    errors = []
+    records = list(preflight_records)
+    errors = list(preflight_errors)
     now = shanghai_now()
-    for note_id in unique_ids:
+    for note_id in processable_ids:
         note = by_id.get(note_id)
         if note is None:
             errors.append({"note_id": note_id, "error": "Note not found"})
+            continue
+        if note.id in excluded_note_ids:
+            records.append(_skipped_excluded_record(note.id))
             continue
         result = get_or_create_analysis_result(db, user_id=user_id, note_id=note.id)
         analysis, warning = preanalyze_note_for_feishu(db, user_id=user_id, note=note)
@@ -1053,6 +1166,7 @@ def pull_feishu_analysis_records(db: Session, *, user_id: int, records: list[dic
     allowed_note_ids = set(_unique_note_ids(note_ids or []))
     updated = 0
     unmatched = 0
+    skipped = 0
     errors = []
     now = shanghai_now()
     for record in records:
@@ -1071,6 +1185,15 @@ def pull_feishu_analysis_records(db: Session, *, user_id: int, records: list[dic
         note = db.get(Note, note_id)
         if note is None or note.user_id != user_id:
             unmatched += 1
+            continue
+        if db.scalar(
+            select(NoteExclusion.id).where(
+                NoteExclusion.user_id == user_id,
+                NoteExclusion.platform == note.platform,
+                NoteExclusion.platform_note_id == note.note_id,
+            )
+        ) is not None:
+            skipped += 1
             continue
         result = get_or_create_analysis_result(db, user_id=user_id, note_id=note.id)
         result.external_record_id = _as_text(record.get("record_id") or result.external_record_id) or None
@@ -1095,7 +1218,7 @@ def pull_feishu_analysis_records(db: Session, *, user_id: int, records: list[dic
         result.updated_at = now
         updated += 1
     db.commit()
-    return {"updated_count": updated, "unmatched_count": unmatched, "failed_count": len(errors), "errors": errors}
+    return {"updated_count": updated, "unmatched_count": unmatched, "skipped_count": skipped, "failed_count": len(errors), "errors": errors}
 
 
 def pull_feishu_analysis_records_from_client(db: Session, *, user_id: int, client: Any, note_ids: list[int] | None = None) -> dict[str, Any]:
