@@ -125,20 +125,20 @@ def test_usage_quota_reserve_commit_refund_and_idempotency_are_ledgered(tmp_path
             assert committed.status == "committed"
             assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 19
 
-            refunded = service.refund(reservation.id, failure_reason="provider failed after reservation")
-            assert refunded.status == "refunded"
-            assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 20
-
-            duplicate_refund = service.refund(reservation.id, failure_reason="retry duplicate")
-            assert duplicate_refund.id == refunded.id
-            assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 20
+            try:
+                service.refund(reservation.id, failure_reason="provider failed after reservation")
+            except ValueError as exc:
+                assert "committed" in str(exc)
+            else:  # pragma: no cover - the assertion above is the contract.
+                raise AssertionError("committed reservations must not be refunded")
+            assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 19
 
             ledger_rows = db.scalars(
                 select(models.UsageLedger)
                 .where(models.UsageLedger.tenant_id == context.tenant.id)
                 .order_by(models.UsageLedger.id)
             ).all()
-            assert [row.operation for row in ledger_rows] == ["reserve", "commit", "refund"]
+            assert [row.operation for row in ledger_rows] == ["reserve", "commit"]
             assert all("secret" not in str(row.request_summary).lower() for row in ledger_rows)
         finally:
             db.close()

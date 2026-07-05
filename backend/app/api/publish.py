@@ -16,6 +16,7 @@ from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import AccountCookieVersion, PlatformAccount, PublishAsset, PublishJob, Task, User
 from backend.app.schemas.common import paginated
+from backend.app.services.asset_storage_policy import owned_media_api_path
 from backend.app.services.publish_orchestration_service import PublishOrchestrationService
 
 router = APIRouter(prefix="/publish", tags=["publish"])
@@ -217,6 +218,13 @@ def _get_owned_publish_asset(db: Session, current_user: User, asset_id: int) -> 
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Publish asset not found")
     return asset
+
+
+def _owned_media_path_or_404(file_path: str, current_user: User) -> str:
+    try:
+        return owned_media_api_path(file_path, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found") from None
 
 
 def _get_latest_account_cookies(db: Session, account_id: int) -> str:
@@ -424,7 +432,8 @@ def create_publish_asset(
     db: Session = Depends(get_db),
 ):
     job = _get_owned_publish_job(db, current_user, job_id)
-    asset = PublishAsset(publish_job_id=job.id, asset_type=payload.asset_type, file_path=payload.file_path)
+    file_path = _owned_media_path_or_404(payload.file_path, current_user)
+    asset = PublishAsset(publish_job_id=job.id, asset_type=payload.asset_type, file_path=file_path)
     db.add(asset)
     db.commit()
     db.refresh(asset)
@@ -467,8 +476,9 @@ def upload_publish_asset(
     asset.upload_error = ""
     db.commit()
 
+    file_path = _owned_media_path_or_404(asset.file_path, current_user)
     try:
-        payload = adapter_factory(cookies).upload_media(asset.file_path, asset.asset_type)
+        payload = adapter_factory(cookies).upload_media(file_path, asset.asset_type)
         asset.upload_status = "uploaded"
         asset.creator_media_id = _extract_creator_media_id(payload)
         asset.creator_upload_info = json.dumps(payload, ensure_ascii=False)
@@ -525,8 +535,9 @@ def publish_job_to_creator(
 
     for asset in assets:
         if asset.upload_status in ("pending", "failed"):
+            file_path = _owned_media_path_or_404(asset.file_path, current_user)
             try:
-                payload = adapter.upload_media(asset.file_path, asset.asset_type)
+                payload = adapter.upload_media(file_path, asset.asset_type)
                 asset.upload_status = "uploaded"
                 asset.creator_media_id = _extract_creator_media_id(payload)
                 asset.creator_upload_info = json.dumps(payload, ensure_ascii=False)

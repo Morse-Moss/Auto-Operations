@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import PureWindowsPath
 from typing import Iterable
+from urllib.parse import quote, urlsplit
 
+from backend.app.core.config import get_settings
 from backend.app.core.platforms import PlatformId
 
 MEDIA_OWNER_KINDS = {"upload", "asset", "image"}
@@ -91,6 +98,78 @@ def validate_owned_media_file_name(file_name: str, user_id: int) -> str:
     if not safe_name.startswith(valid_media_owner_prefixes(user_id)):
         raise ValueError("Media file not found")
     return safe_name
+
+
+def media_file_name_from_reference(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        raise ValueError("Media file not found")
+    media_prefix = "/api/files/media/"
+    path = urlsplit(text).path
+    if path.startswith(media_prefix):
+        text = path[len(media_prefix):]
+    elif text.startswith(media_prefix):
+        text = text[len(media_prefix):]
+    return _safe_basename(text)
+
+
+def validate_owned_media_reference(value: str, user_id: int) -> str:
+    return validate_owned_media_file_name(media_file_name_from_reference(value), user_id)
+
+
+def owned_media_api_path(value: str, user_id: int) -> str:
+    return f"/api/files/media/{validate_owned_media_reference(value, user_id)}"
+
+
+def _base64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("utf-8").rstrip("=")
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("utf-8"))
+
+
+def _sign_media_payload(payload: dict) -> str:
+    body = _base64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(get_settings().secret_key.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
+    return f"{body}.{_base64url_encode(signature)}"
+
+
+def create_signed_media_token(file_name: str, user_id: int, *, expires_delta: timedelta = timedelta(minutes=30)) -> str:
+    safe_name = validate_owned_media_file_name(file_name, user_id)
+    expires_at = datetime.now(timezone.utc) + expires_delta
+    return _sign_media_payload({"file_name": safe_name, "user_id": user_id, "exp": int(expires_at.timestamp())})
+
+
+def create_signed_media_url(file_name: str, user_id: int, *, expires_delta: timedelta = timedelta(minutes=30)) -> str:
+    safe_name = validate_owned_media_file_name(file_name, user_id)
+    token = create_signed_media_token(safe_name, user_id, expires_delta=expires_delta)
+    return f"/api/files/media/{quote(safe_name)}?token={quote(token)}"
+
+
+def verify_signed_media_token(file_name: str, token: str) -> str:
+    safe_name = _safe_basename(file_name)
+    if not token:
+        raise ValueError("Invalid media token")
+    try:
+        body, signature = token.split(".", 1)
+        expected = hmac.new(get_settings().secret_key.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
+        actual = _base64url_decode(signature)
+        payload = json.loads(_base64url_decode(body))
+    except Exception as exc:
+        raise ValueError("Invalid media token") from exc
+    if not hmac.compare_digest(actual, expected):
+        raise ValueError("Invalid media token")
+    if payload.get("file_name") != safe_name:
+        raise ValueError("Invalid media token")
+    expires_at = payload.get("exp")
+    if not isinstance(expires_at, int) or expires_at < int(datetime.now(timezone.utc).timestamp()):
+        raise ValueError("Invalid media token")
+    user_id = payload.get("user_id")
+    if not isinstance(user_id, int):
+        raise ValueError("Invalid media token")
+    return validate_owned_media_file_name(safe_name, user_id)
 
 
 def validate_owned_export_file_name(file_name: str, user_id: int) -> str:

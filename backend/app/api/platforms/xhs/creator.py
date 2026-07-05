@@ -15,6 +15,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
 from backend.app.models import AccountCookieVersion, PlatformAccount, Task, User
+from backend.app.services.asset_storage_policy import owned_media_api_path
 
 router = APIRouter(prefix="/xhs/creator", tags=["xhs-creator"])
 
@@ -215,14 +216,18 @@ def upload_asset(
     adapter_factory=Depends(get_creator_api_adapter_factory),
 ):
     account, adapter = _adapter_for_account(db, current_user, payload.account_id, adapter_factory)
+    try:
+        file_path = owned_media_api_path(payload.file_path, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found") from None
     task = _create_operation_task(
         db,
         current_user,
         "creator_direct_upload",
-        {"account_id": account.id, "file_path": payload.file_path, "media_type": payload.media_type},
+        {"account_id": account.id, "file_path": file_path, "media_type": payload.media_type},
     )
     try:
-        upload_payload = adapter.upload_media(payload.file_path, payload.media_type)
+        upload_payload = adapter.upload_media(file_path, payload.media_type)
         task = _complete_operation_task(db, task, {"payload": upload_payload})
         return {"task": serialize_task(task), "payload": upload_payload}
     except Exception as exc:
