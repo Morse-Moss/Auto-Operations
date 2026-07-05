@@ -226,8 +226,44 @@ def _get_latest_account_cookies(db: Session, account_id: int) -> str:
         .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
     ).first()
     if cookie_version is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account has no cookies")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator 账号缺少 Cookie，请在账号矩阵重新登录后再发布")
     return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+
+
+def _ensure_creator_account_publishable(account: PlatformAccount) -> None:
+    if account.status == "deleted":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="发布账号已删除，请重新选择 Creator 账号")
+    if account.status == "expired":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator 登录态已失效，请在账号矩阵重新登录或更新 Cookie 后再发布")
+
+
+_CREATOR_AUTH_FAILURE_MARKERS = (
+    "auth",
+    "cookie",
+    "login",
+    "session",
+    "expired",
+    "unauthorized",
+    "401",
+    "403",
+    "登录",
+    "失效",
+    "过期",
+    "未登录",
+)
+
+
+def _is_creator_auth_failure(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in _CREATOR_AUTH_FAILURE_MARKERS)
+
+
+def _mark_creator_account_expired_if_auth_failure(account: PlatformAccount, error: Exception) -> None:
+    if not _is_creator_auth_failure(error):
+        return
+    account.status = "expired"
+    account.status_message = "Creator 登录态已失效，请在账号矩阵重新登录或更新 Cookie 后再发布。"
+    account.updated_at = shanghai_now()
 
 
 def _record_publish_control_task(db: Session, current_user: User, job: PublishJob, task_type: str) -> None:
@@ -424,6 +460,7 @@ def upload_publish_asset(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     if account.platform != "xhs" or account.sub_type != "creator":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator account required")
+    _ensure_creator_account_publishable(account)
 
     cookies = _get_latest_account_cookies(db, account.id)
     asset.upload_status = "uploading"
@@ -442,6 +479,7 @@ def upload_publish_asset(
     except Exception as exc:
         asset.upload_status = "failed"
         asset.upload_error = str(exc)
+        _mark_creator_account_expired_if_auth_failure(account, exc)
         db.commit()
         db.refresh(asset)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=asset.upload_error)
@@ -465,6 +503,7 @@ def publish_job_to_creator(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     if account.platform != "xhs" or account.sub_type != "creator":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator account required")
+    _ensure_creator_account_publishable(account)
     if job.status in {"publishing", "published", "scheduled"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish job is already completed")
     if not job.title.strip():
@@ -495,6 +534,7 @@ def publish_job_to_creator(
             except Exception as exc:
                 asset.upload_status = "failed"
                 asset.upload_error = str(exc)[:500]
+                _mark_creator_account_expired_if_auth_failure(account, exc)
                 db.commit()
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
@@ -563,6 +603,7 @@ def publish_job_to_creator(
         task.status = "failed"
         task.progress = 100
         task.payload = {**(task.payload or {}), "error": str(exc)}
+        _mark_creator_account_expired_if_auth_failure(account, exc)
         db.commit()
         db.refresh(job)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=job.publish_error)

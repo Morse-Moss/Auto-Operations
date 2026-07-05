@@ -15,7 +15,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import AccountCookieVersion, PlatformAccount, User
+from backend.app.models import AccountCookieVersion, PlatformAccount, PublishJob, User
 from backend.app.schemas.common import paginated
 from backend.app.services.account_service import (
     account_profile_from_user_info,
@@ -251,5 +251,14 @@ def delete_account(
     account.status = "deleted"
     account.status_message = "Account credentials deleted by user"
     account.updated_at = shanghai_now()
+    if account.platform == "xhs" and account.sub_type == "creator":
+        for job in db.scalars(
+            select(PublishJob).where(
+                PublishJob.platform_account_id == account.id,
+                PublishJob.status.in_({"pending", "failed", "cancelled"}),
+            )
+        ).all():
+            job.platform_account_id = None
+            job.publish_error = "原发布账号已删除，请重新选择 Creator 账号。"
     db.commit()
     return {"id": account_id, "status": "deleted"}

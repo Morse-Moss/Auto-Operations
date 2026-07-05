@@ -1981,6 +1981,72 @@ def test_account_delete_requires_owner_and_removes_account(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_deleting_creator_account_unbinds_editable_publish_jobs(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, PublishJob
+
+    db_dependency, owner_token, creator_account_id = _create_creator_account_with_cookie(
+        tmp_path, "delete-creator-unbind-owner"
+    )
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            pending_job = PublishJob(
+                user_id=1,
+                platform="xhs",
+                platform_account_id=creator_account_id,
+                title="Pending title",
+                body="Pending body",
+                status="pending",
+            )
+            failed_job = PublishJob(
+                user_id=1,
+                platform="xhs",
+                platform_account_id=creator_account_id,
+                title="Failed title",
+                body="Failed body",
+                status="failed",
+            )
+            published_job = PublishJob(
+                user_id=1,
+                platform="xhs",
+                platform_account_id=creator_account_id,
+                title="Published title",
+                body="Published body",
+                status="published",
+            )
+            db.add_all([pending_job, failed_job, published_job])
+            db.commit()
+            pending_job_id = pending_job.id
+            failed_job_id = failed_job.id
+            published_job_id = published_job.id
+        finally:
+            db.close()
+
+        response = client.delete(
+            f"/api/accounts/{creator_account_id}",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+
+        assert response.status_code == 200
+        verify_db = next(app.dependency_overrides[get_db]())
+        try:
+            account = verify_db.get(PlatformAccount, creator_account_id)
+            pending_job = verify_db.get(PublishJob, pending_job_id)
+            failed_job = verify_db.get(PublishJob, failed_job_id)
+            published_job = verify_db.get(PublishJob, published_job_id)
+            assert account.status == "deleted"
+            assert pending_job.platform_account_id is None
+            assert "原发布账号已删除" in pending_job.publish_error
+            assert failed_job.platform_account_id is None
+            assert "原发布账号已删除" in failed_job.publish_error
+            assert published_job.platform_account_id == creator_account_id
+        finally:
+            verify_db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_xhs_pc_qrcode_requires_platform_login(tmp_path):
     get_db = _override_database(tmp_path)
     try:
@@ -7939,6 +8005,103 @@ def test_publish_assets_api_adds_lists_and_deletes_owned_assets(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_publish_asset_upload_rejects_deleted_creator_account_before_adapter(tmp_path):
+    from backend.app.api.publish import get_creator_publish_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, PublishAsset, PublishJob
+
+    class TrapCreatorPublishAdapter:
+        def __init__(self, cookies):
+            raise AssertionError("deleted account must be rejected before adapter init")
+
+    db_dependency, owner_token, creator_account_id = _create_creator_account_with_cookie(
+        tmp_path, "upload-deleted-creator-owner"
+    )
+    app.dependency_overrides[get_creator_publish_adapter_factory] = lambda: TrapCreatorPublishAdapter
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.get(PlatformAccount, creator_account_id)
+            account.status = "deleted"
+            account.status_message = "Account credentials deleted by user"
+            job = PublishJob(
+                user_id=1,
+                platform="xhs",
+                platform_account_id=creator_account_id,
+                title="Deleted account upload",
+                body="Body",
+                status="pending",
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            asset = PublishAsset(publish_job_id=job.id, asset_type="image", file_path="storage/media/cover.png")
+            db.add(asset)
+            db.commit()
+            asset_id = asset.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/publish/assets/{asset_id}/upload",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "发布账号已删除，请重新选择 Creator 账号"
+    finally:
+        app.dependency_overrides.pop(get_creator_publish_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_publish_job_rejects_creator_account_without_cookies_before_adapter(tmp_path):
+    from backend.app.api.publish import get_creator_publish_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import AccountCookieVersion, PublishAsset, PublishJob
+
+    class TrapCreatorPublishAdapter:
+        def __init__(self, cookies):
+            raise AssertionError("missing cookies must be rejected before adapter init")
+
+    db_dependency, owner_token, creator_account_id = _create_creator_account_with_cookie(
+        tmp_path, "publish-missing-cookie-owner"
+    )
+    app.dependency_overrides[get_creator_publish_adapter_factory] = lambda: TrapCreatorPublishAdapter
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            for cookie_version in db.query(AccountCookieVersion).filter(AccountCookieVersion.platform_account_id == creator_account_id).all():
+                db.delete(cookie_version)
+            job = PublishJob(
+                user_id=1,
+                platform="xhs",
+                platform_account_id=creator_account_id,
+                title="Missing cookie publish",
+                body="Body",
+                status="pending",
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            asset = PublishAsset(publish_job_id=job.id, asset_type="image", file_path="storage/media/cover.png")
+            db.add(asset)
+            db.commit()
+            job_id = job.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Creator 账号缺少 Cookie，请在账号矩阵重新登录后再发布"
+    finally:
+        app.dependency_overrides.pop(get_creator_publish_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_publish_asset_upload_requires_authentication(tmp_path):
     db_dependency = _override_database(tmp_path)
     try:
@@ -8004,6 +8167,61 @@ def test_publish_asset_upload_uses_creator_cookie_and_updates_asset(tmp_path):
                 "media_type": "image",
             }
         ]
+    finally:
+        app.dependency_overrides.pop(get_creator_publish_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_publish_asset_upload_auth_failure_marks_account_expired(tmp_path):
+    from backend.app.api.publish import get_creator_publish_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    class AuthExpiredCreatorPublishAdapter:
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def upload_media(self, file_path, media_type):
+            raise RuntimeError("cookie expired while uploading")
+
+    db_dependency, owner_token, creator_account_id = _create_creator_account_with_cookie(
+        tmp_path, "publish-upload-auth-expired-owner"
+    )
+    app.dependency_overrides[get_creator_publish_adapter_factory] = lambda: AuthExpiredCreatorPublishAdapter
+    try:
+        draft_response = client.post(
+            "/api/drafts",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"platform": "xhs", "title": "Upload auth title", "body": "Upload auth body"},
+        )
+        draft_id = draft_response.json()["id"]
+        job_response = client.post(
+            f"/api/drafts/{draft_id}/send-to-publish",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"platform_account_id": creator_account_id},
+        )
+        job_id = job_response.json()["id"]
+        asset_response = client.post(
+            f"/api/publish/jobs/{job_id}/assets",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+        )
+        asset_id = asset_response.json()["id"]
+
+        upload_response = client.post(
+            f"/api/publish/assets/{asset_id}/upload",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+
+        assert upload_response.status_code == 502
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            refreshed_account = db.get(PlatformAccount, creator_account_id)
+            assert refreshed_account.status == "expired"
+            assert "重新登录" in refreshed_account.status_message
+            assert "Cookie" in refreshed_account.status_message
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(get_creator_publish_adapter_factory, None)
         app.dependency_overrides.pop(db_dependency, None)
@@ -8319,6 +8537,72 @@ def test_publish_job_publish_records_failed_task(tmp_path):
             assert task.payload["error"] == "creator publish denied"
         finally:
             db.close()
+    finally:
+        app.dependency_overrides.pop(get_creator_publish_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_publish_creator_auth_failure_marks_account_expired(tmp_path):
+    from backend.app.api.publish import get_creator_publish_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, PublishAsset, PublishJob
+
+    class AuthExpiredCreatorPublishAdapter:
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def upload_media(self, file_path, media_type):
+            return {"creator_media_id": "creator-media-001", "fileIds": "file-001", "width": 1080, "height": 1440}
+
+        def post_note(self, note_info):
+            raise RuntimeError("login expired: creator cookie invalid")
+
+    db_dependency, owner_token, creator_account_id = _create_creator_account_with_cookie(
+        tmp_path, "publish-auth-expired-owner"
+    )
+    app.dependency_overrides[get_creator_publish_adapter_factory] = lambda: AuthExpiredCreatorPublishAdapter
+    headers = {"Authorization": f"Bearer {owner_token}"}
+
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            job = PublishJob(
+                user_id=1,
+                platform="xhs",
+                platform_account_id=creator_account_id,
+                title="Auth expired title",
+                body="Auth expired body",
+                status="pending",
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            asset = PublishAsset(
+                publish_job_id=job.id,
+                asset_type="image",
+                file_path="/api/files/media/auth-expired.png",
+                upload_status="pending",
+            )
+            db.add(asset)
+            db.commit()
+            job_id = job.id
+        finally:
+            db.close()
+
+        response = client.post(f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true", headers=headers)
+
+        assert response.status_code == 502
+        verify_db = next(app.dependency_overrides[get_db]())
+        try:
+            refreshed_job = verify_db.get(PublishJob, job_id)
+            refreshed_account = verify_db.get(PlatformAccount, creator_account_id)
+            assert refreshed_job.status == "failed"
+            assert "login expired" in refreshed_job.publish_error
+            assert refreshed_account.status == "expired"
+            assert "重新登录" in refreshed_account.status_message
+            assert "Cookie" in refreshed_account.status_message
+        finally:
+            verify_db.close()
     finally:
         app.dependency_overrides.pop(get_creator_publish_adapter_factory, None)
         app.dependency_overrides.pop(db_dependency, None)

@@ -204,9 +204,15 @@ export function getDefaultAccountType(schema: AccountAuthSchema, requested?: Acc
   return schema.accountTypes.find((option) => option.value === schema.defaultAccountType && !option.disabled)?.value ?? schema.defaultAccountType;
 }
 
-export function getDefaultLoginMethod(schema: AccountAuthSchema, requested?: LoginMethod): LoginMethod {
+export function getDefaultLoginMethod(schema: AccountAuthSchema, requested?: LoginMethod, accountType?: AccountType): LoginMethod {
   if (requested && schema.loginMethods.some((option) => option.value === requested && !option.disabled)) {
     return requested;
+  }
+  if (schema.platform === "xhs" && accountType === "creator") {
+    const qrLogin = schema.loginMethods.find((option) => option.value === "qr" && !option.disabled);
+    if (qrLogin) {
+      return qrLogin.value;
+    }
   }
   return schema.loginMethods.find((option) => !option.disabled)?.value ?? schema.loginMethods[0]?.value ?? "qr";
 }

@@ -283,6 +283,9 @@ export function XhsPublishPage() {
         setJobs((current) => current.map((job) => (job.id === refreshed.id ? refreshed : job)));
         updateSelectedJobId(refreshed.id);
       } catch { /* keep original error */ }
+      try {
+        await loadAccounts();
+      } catch { /* keep original error */ }
     } finally {
       setIsPublishing(false);
     }

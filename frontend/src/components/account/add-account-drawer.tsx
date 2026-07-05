@@ -35,12 +35,13 @@ export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = 
   const [registrySchemas, setRegistrySchemas] = useState<readonly AccountAuthSchema[]>(() => mapPlatformRegistryToAccountAuthSchemas([]));
   const availableSchemas = schemas ?? registrySchemas;
   const defaultSchema = getAccountAuthSchema("xhs", availableSchemas);
+  const initialAccountType = getDefaultAccountType(defaultSchema, defaultAccountType);
   const [platform, setPlatform] = useState<AccountPlatform>(defaultSchema.platform);
-  const [accountType, setAccountType] = useState<AccountType>(() => getDefaultAccountType(defaultSchema, defaultAccountType));
-  const [method, setMethod] = useState<LoginMethod>(() => getDefaultLoginMethod(defaultSchema));
+  const [accountType, setAccountType] = useState<AccountType>(() => initialAccountType);
+  const [method, setMethod] = useState<LoginMethod>(() => getDefaultLoginMethod(defaultSchema, undefined, initialAccountType));
   const schema = getAccountAuthSchema(platform, availableSchemas);
   const effectiveAccountType = getDefaultAccountType(schema, accountType);
-  const effectiveMethod = getDefaultLoginMethod(schema, method);
+  const effectiveMethod = getDefaultLoginMethod(schema, method, effectiveAccountType);
   const selectedLoginMethod = schema.loginMethods.find((option) => option.value === effectiveMethod);
   const unavailableReason = selectedLoginMethod?.description || schema.unavailableReason || "该账号绑定方式暂未开放。";
   const loginUnavailable = isUnavailableLoginMethod(schema, effectiveMethod);
@@ -69,16 +70,18 @@ export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = 
   useEffect(() => {
     if (!open) return;
     const nextSchema = getAccountAuthSchema("xhs", availableSchemas);
+    const nextAccountType = getDefaultAccountType(nextSchema, defaultAccountType);
     setPlatform(nextSchema.platform);
-    setAccountType(getDefaultAccountType(nextSchema, defaultAccountType));
-    setMethod(getDefaultLoginMethod(nextSchema));
+    setAccountType(nextAccountType);
+    setMethod(getDefaultLoginMethod(nextSchema, undefined, nextAccountType));
   }, [availableSchemas, defaultAccountType, open]);
 
   function handlePlatformChange(nextPlatform: AccountPlatform) {
     const nextSchema = getAccountAuthSchema(nextPlatform, availableSchemas);
+    const nextAccountType = getDefaultAccountType(nextSchema);
     setPlatform(nextSchema.platform);
-    setAccountType(getDefaultAccountType(nextSchema));
-    setMethod(getDefaultLoginMethod(nextSchema));
+    setAccountType(nextAccountType);
+    setMethod(getDefaultLoginMethod(nextSchema, undefined, nextAccountType));
   }
 
   function handleConfirmed(account: PlatformAccount) {

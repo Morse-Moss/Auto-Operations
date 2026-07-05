@@ -21,6 +21,62 @@ type QrLoginPanelProps = {
   onConfirmed: (account: PlatformAccount) => void;
 };
 
+type ReusableQrSession = {
+  session: XhsQrLoginSession;
+  expiresAt: number;
+};
+
+const reusableQrSessions = new Map<string, ReusableQrSession>();
+const inFlightQrSessions = new Map<string, Promise<XhsQrLoginSession>>();
+
+function qrSessionKey(platform: "xhs" | "huitun", accountType: "pc" | "creator" | "main", syncCreator: boolean): string {
+  return `${platform}:${accountType}:${syncCreator}`;
+}
+
+async function createQrSession(
+  platform: "xhs" | "huitun",
+  accountType: "pc" | "creator" | "main",
+  syncCreator: boolean,
+  reuseExisting: boolean,
+): Promise<XhsQrLoginSession> {
+  const key = qrSessionKey(platform, accountType, syncCreator);
+  if (reuseExisting) {
+    const reusable = reusableQrSessions.get(key);
+    if (reusable && reusable.expiresAt > Date.now()) {
+      return reusable.session;
+    }
+    const inFlight = inFlightQrSessions.get(key);
+    if (inFlight) {
+      return inFlight;
+    }
+  }
+
+  const request = platform === "huitun"
+    ? createHuitunQrLoginSession()
+    : accountType === "pc"
+      ? createXhsPcQrLoginSession({ sync_creator: syncCreator })
+      : createXhsCreatorQrLoginSession();
+
+  if (!reuseExisting) {
+    return request;
+  }
+
+  inFlightQrSessions.set(key, request);
+  try {
+    const session = await request;
+    reusableQrSessions.set(key, { session, expiresAt: Date.now() + 1500 });
+    window.setTimeout(() => {
+      const current = reusableQrSessions.get(key);
+      if (current?.session.session_id === session.session_id) {
+        reusableQrSessions.delete(key);
+      }
+    }, 1500);
+    return session;
+  } finally {
+    inFlightQrSessions.delete(key);
+  }
+}
+
 export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrLoginPanelProps) {
   const [session, setSession] = useState<XhsQrLoginSession | null>(null);
   const [statusText, setStatusText] = useState("准备生成二维码");
@@ -39,16 +95,12 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
     return "二维码生成失败，请稍后重试。";
   }
 
-  async function startSession() {
+  async function startSession(reuseExisting = false) {
     setIsLoading(true);
     setError(null);
     confirmedRef.current = false;
     try {
-      const nextSession = platform === "huitun"
-        ? await createHuitunQrLoginSession()
-        : accountType === "pc"
-          ? await createXhsPcQrLoginSession({ sync_creator: syncCreator })
-          : await createXhsCreatorQrLoginSession();
+      const nextSession = await createQrSession(platform, accountType, syncCreator, reuseExisting);
       setSession(nextSession);
       if (platform === "xhs" && accountType === "creator") {
         rememberPendingCreatorLoginSession(nextSession);
@@ -68,7 +120,7 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
   }
 
   useEffect(() => {
-    void startSession();
+    void startSession(true);
   }, [platform, accountType, syncCreator]);
 
   useEffect(() => {
@@ -178,7 +230,7 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
       <Button
         block
         icon={<ReloadOutlined />}
-        onClick={startSession}
+        onClick={() => void startSession(false)}
         loading={isLoading}
       >
         {isLoading ? "生成中..." : "刷新二维码"}
