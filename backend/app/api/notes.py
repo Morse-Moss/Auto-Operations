@@ -24,7 +24,7 @@ from backend.app.core.time import shanghai_now
 from backend.app.core.security import decrypt_text
 from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAnalysisResult, NoteAsset, NoteComment, NoteExclusion, PlatformAccount, Tag, User, note_tags
 from backend.app.schemas.common import paginated
-from backend.app.services.asset_storage_policy import export_owner_prefix
+from backend.app.services.asset_storage_policy import create_signed_media_url, export_owner_prefix, validate_owned_media_reference
 from backend.app.services.feishu_bitable_service import get_or_create_analysis_result
 from backend.app.services.note_exclusion_service import build_current_cleanup_candidates, mark_notes_excluded
 
@@ -95,8 +95,13 @@ def _get_note_assets(db: Session, note: Note) -> list[NoteAsset]:
     return db.scalars(select(NoteAsset).where(NoteAsset.note_id == note.id).order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())).all()
 
 
-def _asset_display_url(asset: NoteAsset) -> str:
+def _asset_display_url(asset: NoteAsset, user_id: int | None = None) -> str:
     if asset.local_path:
+        if user_id is not None:
+            try:
+                return create_signed_media_url(asset.local_path, user_id)
+            except ValueError:
+                return ""
         return f"/api/files/media/{asset.local_path}"
     return asset.url
 
@@ -251,7 +256,7 @@ def _serialize_note(
     assets = _get_note_assets(db, note)
     image_assets = [asset for asset in assets if asset.asset_type == "image"]
     video_assets = [asset for asset in assets if asset.asset_type == "video"]
-    asset_urls = [_asset_display_url(asset) for asset in assets if asset.url or asset.local_path]
+    asset_urls = [_asset_display_url(asset, note.user_id) for asset in assets if asset.url or asset.local_path]
     raw = note.raw_json if isinstance(note.raw_json, dict) else {}
     raw_cover = raw.get("cover_url") if isinstance(raw.get("cover_url"), str) else ""
     mapping = _xhs_content_mapping(note, mapping_cache)
@@ -259,8 +264,8 @@ def _serialize_note(
     mapped_video_url = mapping.video_url if mapping else ""
     mapped_asset_urls = mapping.asset_urls if mapping else []
     response_asset_urls = asset_urls or mapped_asset_urls
-    response_cover_url = _asset_display_url(image_assets[0]) if image_assets else (mapped_cover_url or raw_cover)
-    response_video_url = _asset_display_url(video_assets[0]) if video_assets else mapped_video_url
+    response_cover_url = _asset_display_url(image_assets[0], note.user_id) if image_assets else (mapped_cover_url or raw_cover)
+    response_video_url = _asset_display_url(video_assets[0], note.user_id) if video_assets else mapped_video_url
     marks = (top20_marks or {}).get(note.id, [])
     analysis = _get_feishu_analysis_result(db, note.id)
     return {
@@ -316,14 +321,15 @@ def _build_notes_csv(db: Session, notes: list[Note]) -> str:
     return output.getvalue()
 
 
-def _serialize_asset(asset: NoteAsset) -> dict:
+def _serialize_asset(asset: NoteAsset, user_id: int | None = None) -> dict:
+    download_url = _asset_display_url(asset, user_id) if asset.local_path else ""
     return {
         "id": asset.id,
         "note_id": asset.note_id,
         "asset_type": asset.asset_type,
-        "url": _asset_display_url(asset),
+        "url": _asset_display_url(asset, user_id),
         "local_path": asset.local_path,
-        "download_url": f"/api/files/media/{asset.local_path}" if asset.local_path else "",
+        "download_url": download_url,
         "sort_order": asset.sort_order,
     }
 
@@ -762,7 +768,7 @@ def get_note_assets(
 ):
     note = _get_owned_note(db, current_user, note_id)
     assets = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note.id).order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())).all()
-    return paginated([_serialize_asset(asset) for asset in assets], page, page_size)
+    return paginated([_serialize_asset(asset, current_user.id) for asset in assets], page, page_size)
 
 
 class AddNoteAssetRequest(BaseModel):
@@ -781,16 +787,22 @@ def add_note_asset(
     note = _get_owned_note(db, current_user, note_id)
     if not payload.url and not payload.local_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="url or local_path is required")
+    local_path = payload.local_path
+    if local_path:
+        try:
+            local_path = validate_owned_media_reference(local_path, current_user.id)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found") from None
     asset = NoteAsset(
         note_id=note.id,
         asset_type=payload.asset_type,
         url=payload.url,
-        local_path=payload.local_path,
+        local_path=local_path,
     )
     db.add(asset)
     db.commit()
     db.refresh(asset)
-    return _serialize_asset(asset)
+    return _serialize_asset(asset, current_user.id)
 
 
 @router.delete("/{note_id}/assets/{asset_id}")

@@ -580,6 +580,8 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
                 )
             except ValueError as exc:
                 redacted_error = _redact_sensitive_text(str(exc), [api_key])
+                if isinstance(usage_reservation_id, int):
+                    UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
                 task.status = "failed"
                 task.progress = 100
                 task.finished_at = shanghai_now()

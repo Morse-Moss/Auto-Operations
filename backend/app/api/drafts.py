@@ -19,7 +19,7 @@ from backend.app.models import AiDraft, DraftAiScoreResult, DraftAsset, Note, No
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import TextAiClient
 from backend.app.services.asset_downloader import download_asset_to_local
-from backend.app.services.asset_storage_policy import valid_media_owner_prefixes
+from backend.app.services.asset_storage_policy import create_signed_media_url, valid_media_owner_prefixes
 from backend.app.services.draft_ai_scoring_service import DraftAiScoringService
 from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
@@ -690,8 +690,16 @@ def get_latest_draft_ai_score(
 # Draft assets
 # ---------------------------------------------------------------------------
 
-def _serialize_draft_asset(asset: DraftAsset) -> dict:
-    display_url = f"/api/files/media/{asset.local_path}" if asset.local_path else asset.url
+def _serialize_draft_asset(asset: DraftAsset, user_id: int | None = None) -> dict:
+    display_url = asset.url
+    if asset.local_path:
+        if user_id is not None:
+            try:
+                display_url = create_signed_media_url(asset.local_path, user_id)
+            except ValueError:
+                display_url = ""
+        else:
+            display_url = f"/api/files/media/{asset.local_path}"
     return {
         "id": asset.id,
         "draft_id": asset.draft_id,
@@ -724,7 +732,7 @@ def get_draft_assets(
     assets = db.scalars(
         select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
     ).all()
-    return {"items": [_serialize_draft_asset(a) for a in assets]}
+    return {"items": [_serialize_draft_asset(a, current_user.id) for a in assets]}
 
 
 @router.post("/{draft_id}/assets")
@@ -755,7 +763,7 @@ def add_draft_asset(
     db.add(asset)
     db.commit()
     db.refresh(asset)
-    return _serialize_draft_asset(asset)
+    return _serialize_draft_asset(asset, current_user.id)
 
 
 @router.post("/{draft_id}/assets/{asset_id}/localize")
@@ -775,7 +783,7 @@ def localize_draft_asset(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image draft assets can be localized")
     if asset.local_path:
         _validate_draft_asset_local_path(asset.local_path, current_user, require_image=True)
-        return _serialize_draft_asset(asset)
+        return _serialize_draft_asset(asset, current_user.id)
     if not asset.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片本地化失败，请先上传本地图或更换图片。")
     file_name = download_asset_to_local(asset.url, current_user.id, "image", platform="xhs")
@@ -795,7 +803,7 @@ def localize_draft_asset(
             db.commit()
             downloaded_file_names.clear()
             db.refresh(asset)
-            return _serialize_draft_asset(asset)
+            return _serialize_draft_asset(asset, current_user.id)
 
         db.rollback()
         _delete_downloaded_media_files(downloaded_file_names)
@@ -804,7 +812,7 @@ def localize_draft_asset(
         if existing_asset is None or not existing_asset.local_path:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Draft asset localization was updated concurrently; please retry.")
         _validate_draft_asset_local_path(existing_asset.local_path, current_user, require_image=True)
-        return _serialize_draft_asset(existing_asset)
+        return _serialize_draft_asset(existing_asset, current_user.id)
     except Exception:
         db.rollback()
         _delete_downloaded_media_files(downloaded_file_names)
@@ -858,7 +866,7 @@ def update_draft_asset(
         ) if payload.local_path else ""
     db.commit()
     db.refresh(asset)
-    return _serialize_draft_asset(asset)
+    return _serialize_draft_asset(asset, current_user.id)
 
 
 @router.put("/{draft_id}/assets/reorder")

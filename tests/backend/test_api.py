@@ -5038,7 +5038,7 @@ def test_xhs_creator_routes_use_owned_creator_account_and_record_tasks(tmp_path)
         upload_response = client.post(
             "/api/xhs/creator/assets/upload",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"account_id": creator_account_id, "file_path": "storage/media/cover.png", "media_type": "image"},
+            json={"account_id": creator_account_id, "file_path": "/api/files/media/xhs-upload-u1-cover.png", "media_type": "image"},
         )
         assert upload_response.status_code == 200
         assert upload_response.json()["payload"]["fileIds"] == "file-creator-001"
@@ -7961,13 +7961,13 @@ def test_publish_assets_api_adds_lists_and_deletes_owned_assets(tmp_path):
         create_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         assert create_response.status_code == 200
         created = create_response.json()
         assert created["publish_job_id"] == job_id
         assert created["asset_type"] == "image"
-        assert created["file_path"] == "storage/media/cover.png"
+        assert created["file_path"] == "/api/files/media/xhs-upload-u1-cover.png"
 
         list_response = client.get(
             f"/api/publish/jobs/{job_id}/assets",
@@ -8035,7 +8035,7 @@ def test_publish_asset_upload_rejects_deleted_creator_account_before_adapter(tmp
             db.add(job)
             db.commit()
             db.refresh(job)
-            asset = PublishAsset(publish_job_id=job.id, asset_type="image", file_path="storage/media/cover.png")
+            asset = PublishAsset(publish_job_id=job.id, asset_type="image", file_path="/api/files/media/xhs-upload-u1-cover.png")
             db.add(asset)
             db.commit()
             asset_id = asset.id
@@ -8083,7 +8083,7 @@ def test_publish_job_rejects_creator_account_without_cookies_before_adapter(tmp_
             db.add(job)
             db.commit()
             db.refresh(job)
-            asset = PublishAsset(publish_job_id=job.id, asset_type="image", file_path="storage/media/cover.png")
+            asset = PublishAsset(publish_job_id=job.id, asset_type="image", file_path="/api/files/media/xhs-upload-u1-cover.png")
             db.add(asset)
             db.commit()
             job_id = job.id
@@ -8146,7 +8146,7 @@ def test_publish_asset_upload_uses_creator_cookie_and_updates_asset(tmp_path):
         asset_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         asset_id = asset_response.json()["id"]
 
@@ -8163,7 +8163,7 @@ def test_publish_asset_upload_uses_creator_cookie_and_updates_asset(tmp_path):
         assert FakeCreatorPublishAdapter.calls == [
             {
                 "cookies": "web_session=creator-session; a1=creator-a1",
-                "file_path": "storage/media/cover.png",
+                "file_path": "/api/files/media/xhs-upload-u1-cover.png",
                 "media_type": "image",
             }
         ]
@@ -8204,7 +8204,7 @@ def test_publish_asset_upload_auth_failure_marks_account_expired(tmp_path):
         asset_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         asset_id = asset_response.json()["id"]
 
@@ -8255,7 +8255,7 @@ def test_publish_asset_upload_rejects_cross_user_asset(tmp_path):
         asset_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         asset_id = asset_response.json()["id"]
 
@@ -8319,7 +8319,7 @@ def test_publish_job_publish_uses_creator_cookie_and_updates_status(tmp_path):
         asset_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         asset_id = asset_response.json()["id"]
         upload_response = client.post(
@@ -8425,7 +8425,7 @@ def test_publish_job_publish_passes_optional_creator_parameters(tmp_path):
         asset_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         asset_id = asset_response.json()["id"]
         upload_response = client.post(
@@ -8513,7 +8513,7 @@ def test_publish_job_publish_records_failed_task(tmp_path):
         asset_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         asset_id = asset_response.json()["id"]
         upload_response = client.post(
@@ -8580,7 +8580,7 @@ def test_publish_creator_auth_failure_marks_account_expired(tmp_path):
             asset = PublishAsset(
                 publish_job_id=job.id,
                 asset_type="image",
-                file_path="/api/files/media/auth-expired.png",
+                file_path="/api/files/media/xhs-upload-u1-auth-expired.png",
                 upload_status="pending",
             )
             db.add(asset)
@@ -8703,7 +8703,7 @@ def test_publish_job_publish_rejects_past_scheduled_time_before_adapter(tmp_path
                 PublishAsset(
                     publish_job_id=job_id,
                     asset_type="image",
-                    file_path="storage/media/cover.png",
+                    file_path="/api/files/media/xhs-upload-u1-cover.png",
                     upload_status="uploaded",
                     creator_media_id="creator-media-001",
                     creator_upload_info='{"fileIds":"file-001","width":1080,"height":1440}',
@@ -8769,7 +8769,7 @@ def test_publish_job_publish_rejects_already_completed_job(tmp_path):
         asset_response = client.post(
             f"/api/publish/jobs/{job_id}/assets",
             headers={"Authorization": f"Bearer {owner_token}"},
-            json={"asset_type": "image", "file_path": "storage/media/cover.png"},
+            json={"asset_type": "image", "file_path": "/api/files/media/xhs-upload-u1-cover.png"},
         )
         asset_id = asset_response.json()["id"]
         upload_response = client.post(
@@ -8881,7 +8881,7 @@ def test_image_utilities_compose_resize_download_and_enforce_scope(tmp_path):
         composed = compose_response.json()
         assert composed["file_name"].startswith("xhs-image-u1-")
         assert composed["file_name"].endswith(".png")
-        assert composed["download_url"] == f"/api/files/media/{composed['file_name']}"
+        assert composed["download_url"].startswith(f"/api/files/media/{composed['file_name']}?token=")
         assert composed["width"] == 720
         assert composed["height"] == 960
         assert composed["media_type"] == "image/png"
@@ -8923,10 +8923,8 @@ def test_image_utilities_compose_resize_download_and_enforce_scope(tmp_path):
         assert resized_download_response.status_code == 200
         assert resized_download_response.content.startswith(b"\xff\xd8")
 
-        forbidden_download = client.get(
-            composed["download_url"],
-        )
-        assert forbidden_download.status_code == 200
+        bare_download = client.get(f"/api/files/media/{composed['file_name']}")
+        assert bare_download.status_code == 404
 
         forbidden_resize = client.post(
             "/api/files/images/resize",

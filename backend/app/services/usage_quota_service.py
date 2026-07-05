@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.app.models import BetaCreditAccount, Tenant, TenantMember, UsageLedger
@@ -68,6 +69,13 @@ def _create_tenant_slug(db: Session, username: str, user_id: int) -> str:
         slug = f"{base}-{suffix}"
         suffix += 1
     return slug
+
+
+def _safe_idempotency_key(value: str) -> str:
+    text = (value or "").strip()
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    prefix = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", text[:48]).strip("-._:") or "usage"
+    return f"{prefix}:sha256:{digest}"
 
 
 def get_or_create_default_tenant_context(db: Session, user_id: int) -> TenantContext:
@@ -165,15 +173,32 @@ class UsageQuotaService:
         model_config_id: int | None = None,
         external_request_id: str = "",
     ) -> UsageLedger:
-        existing = self._find_reservation(tenant_id, feature_key, idempotency_key)
+        safe_idempotency_key = _safe_idempotency_key(idempotency_key)
+        existing = self._find_reservation(tenant_id, feature_key, safe_idempotency_key)
         if existing is not None:
             return existing
 
         account = self._get_account(tenant_id, bucket)
+        if account.status != "active":
+            raise ValueError(f"Usage bucket is not active: {bucket}")
         if account.remaining < amount:
             raise UsageQuotaInsufficientError(feature_key=feature_key, bucket=bucket, required=amount, remaining=account.remaining)
 
-        account.remaining -= amount
+        updated = self.db.execute(
+            update(BetaCreditAccount)
+            .where(
+                BetaCreditAccount.id == account.id,
+                BetaCreditAccount.status == "active",
+                BetaCreditAccount.remaining >= amount,
+            )
+            .values(remaining=BetaCreditAccount.remaining - amount)
+        )
+        if updated.rowcount != 1:
+            self.db.refresh(account)
+            if account.status != "active":
+                raise ValueError(f"Usage bucket is not active: {bucket}")
+            raise UsageQuotaInsufficientError(feature_key=feature_key, bucket=bucket, required=amount, remaining=account.remaining)
+        self.db.refresh(account)
         ledger = UsageLedger(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -183,7 +208,7 @@ class UsageQuotaService:
             amount=amount,
             balance_after=account.remaining,
             status="reserved",
-            idempotency_key=idempotency_key,
+            idempotency_key=safe_idempotency_key,
             task_id=task_id,
             resource_type=resource_type,
             resource_id=resource_id,
@@ -204,6 +229,10 @@ class UsageQuotaService:
         existing = self._find_followup(reservation.id, "commit")
         if existing is not None:
             return existing
+        if self._find_followup(reservation.id, "refund") is not None or reservation.status == "refunded":
+            raise ValueError("Usage reservation has already been refunded")
+        if reservation.status not in {"reserved", "committed"}:
+            raise ValueError("Usage reservation is not active")
         reservation.status = "committed"
         ledger = UsageLedger(
             tenant_id=reservation.tenant_id,
@@ -236,6 +265,10 @@ class UsageQuotaService:
         existing = self._find_followup(reservation.id, "refund")
         if existing is not None:
             return existing
+        if self._find_followup(reservation.id, "commit") is not None or reservation.status == "committed":
+            raise ValueError("Usage reservation has already been committed")
+        if reservation.status not in {"reserved", "refunded"}:
+            raise ValueError("Usage reservation is not active")
 
         account = self._get_account(reservation.tenant_id, reservation.bucket)
         account.remaining += reservation.amount

@@ -13,9 +13,11 @@ from backend.app.core.deps import get_current_user
 from backend.app.models import User
 from backend.app.services.asset_storage_policy import (
     asset_owner_prefix,
+    create_signed_media_url,
     validate_owned_export_file_name,
     validate_owned_media_file_name,
     valid_media_owner_prefixes,
+    verify_signed_media_token,
 )
 from backend.app.services.image_util import compose_cover_image, resize_image_file
 
@@ -81,11 +83,11 @@ def _media_type(file_name: str) -> str:
     return "image/png"
 
 
-def _serialize_media_file(*, file_name: str, width: int, height: int) -> dict:
+def _serialize_media_file(*, file_name: str, width: int, height: int, current_user: User) -> dict:
     return {
         "file_name": file_name,
         "file_path": str(_media_dir() / file_name),
-        "download_url": f"/api/files/media/{file_name}",
+        "download_url": create_signed_media_url(file_name, current_user.id),
         "width": width,
         "height": height,
         "media_type": _media_type(file_name),
@@ -101,7 +103,7 @@ def list_user_images(current_user: User = Depends(get_current_user)):
     if media_dir.is_dir():
         for f in sorted(media_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if f.name.startswith(prefixes) and f.suffix.lower() in image_exts:
-                files.append({"file_name": f.name, "url": f"/api/files/media/{f.name}", "size": f.stat().st_size})
+                files.append({"file_name": f.name, "url": create_signed_media_url(f.name, current_user.id), "size": f.stat().st_size})
     return {"items": files}
 
 
@@ -133,7 +135,7 @@ def compose_image(payload: ComposeImageRequest, current_user: User = Depends(get
         background_color=payload.background_color,
         accent_color=payload.accent_color,
     )
-    return _serialize_media_file(file_name=file_name, width=payload.width, height=payload.height)
+    return _serialize_media_file(file_name=file_name, width=payload.width, height=payload.height, current_user=current_user)
 
 
 @router.post("/images/resize")
@@ -155,17 +157,19 @@ def resize_image(payload: ResizeImageRequest, current_user: User = Depends(get_c
         image_format=payload.format,
         quality=payload.quality,
     )
-    return _serialize_media_file(file_name=file_name, width=payload.width, height=payload.height)
+    return _serialize_media_file(file_name=file_name, width=payload.width, height=payload.height, current_user=current_user)
 
 
 @router.get("/media/{file_name}")
-def download_media(file_name: str):
-    if Path(file_name).name != file_name or ".." in file_name:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found")
-    file_path = _media_dir() / file_name
+def download_media(file_name: str, token: str = ""):
+    try:
+        safe_name = verify_signed_media_token(file_name, token)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found") from None
+    file_path = _media_dir() / safe_name
     if not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found")
-    return FileResponse(file_path, filename=file_name, media_type=_media_type(file_name))
+    return FileResponse(file_path, filename=safe_name, media_type=_media_type(safe_name))
 
 
 @router.get("/exports/{file_name}")
@@ -212,7 +216,7 @@ async def upload_file(file: UploadFile, platform: str = "xhs", current_user: Use
     return {
         "file_name": file_name,
         "file_path": str(output_path.resolve()),
-        "download_url": f"/api/files/media/{file_name}",
+        "download_url": create_signed_media_url(file_name, current_user.id),
         "asset_type": asset_type,
         "size": len(content),
     }
