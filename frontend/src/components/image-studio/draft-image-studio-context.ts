@@ -40,6 +40,15 @@ export type DraftImageStudioDraftContext = {
 
 export type DraftImageStudioDraftContextInput = Omit<DraftImageStudioDraftContext, "created_at"> & { created_at?: number };
 
+export function shouldRestoreDraftImageStudioContext(options: {
+  hasCurrentContext: boolean;
+  fromDraft: boolean;
+  isReload: boolean;
+  hasRouteRestoreSignal: boolean;
+}): boolean {
+  return options.hasCurrentContext || options.fromDraft || options.isReload || options.hasRouteRestoreSignal;
+}
+
 function getSessionStorage(): Storage | null {
   if (typeof window === "undefined") return null;
   try {

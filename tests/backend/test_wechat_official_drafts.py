@@ -260,16 +260,27 @@ def test_draft_dry_run_blocks_publish_preview_and_reports_content_checks(tmp_pat
         assert payload["publish_blocked"] is True
         assert payload["sendall_blocked"] is True
         assert payload["preview_blocked"] is True
+        assert payload["material_upload_blocked"] is True
         assert payload["checks"]["title"] == "ok"
         assert payload["checks"]["body"] == "ok"
         assert payload["checks"]["external_images"] == "ok"
+        assert payload["checks"]["source_article"] == "ok"
+        assert payload["checks"]["material_upload"] == "blocked"
+        assert "本地草稿检查" in payload["message"]
+        assert "不代表可以发布" in payload["message"]
+        assert any("图片工坊" in action for action in payload["next_actions"])
 
         empty = client.post(f"/api/wechat-official/drafts/{draft_id}/dry-run", headers=headers, json={"title": "", "body": "![x](https://example.com/a.png)"})
         assert empty.status_code == 200
         empty_payload = empty.json()
         assert empty_payload["ok"] is False
+        assert empty_payload["material_upload_blocked"] is True
         assert empty_payload["checks"]["title"] == "missing"
+        assert empty_payload["checks"]["body"] == "ok"
         assert empty_payload["checks"]["external_images"] == "warning"
+        assert empty_payload["checks"]["material_upload"] == "blocked"
+        assert any("补标题" in action for action in empty_payload["next_actions"])
+        assert any("外链图片" in action for action in empty_payload["next_actions"])
     finally:
         app.dependency_overrides.pop(get_db, None)
 

@@ -75,16 +75,29 @@ class WechatOfficialDraftService:
         payload = payload or {}
         title = str(payload.get("title") if "title" in payload else draft.title)
         body = str(payload.get("body") if "body" in payload else draft.body)
+        source = self.db.scalar(select(WechatOfficialDraftSource).where(WechatOfficialDraftSource.draft_id == draft.id))
         checks = {
             "title": "ok" if title.strip() else "missing",
             "body": "ok" if body.strip() else "missing",
+            "source_article": "ok" if source else "missing",
             "publish": "blocked",
             "sendall": "blocked",
             "preview": "blocked",
+            "material_upload": "blocked",
             "external_images": "warning" if _has_external_images(body) else "ok",
         }
         ok = checks["title"] == "ok" and checks["body"] == "ok"
-        return {"draft_id": draft.id, "ok": ok, "publish_blocked": True, "sendall_blocked": True, "preview_blocked": True, "checks": checks}
+        return {
+            "draft_id": draft.id,
+            "ok": ok,
+            "publish_blocked": True,
+            "sendall_blocked": True,
+            "preview_blocked": True,
+            "material_upload_blocked": True,
+            "checks": checks,
+            "message": "dry-run 只代表本地草稿检查结果，不代表可以发布、预览发送、群发或上传公众号素材。",
+            "next_actions": _dry_run_next_actions(checks),
+        }
 
 
 def serialize_draft(draft: AiDraft, *, source_article_id: int | None = None) -> dict[str, Any]:
@@ -135,6 +148,21 @@ def _hotspot_text(hotspot: dict[str, Any]) -> str:
     }
     lines = [f"- {label}: {hotspot.get(key)}" for key, label in labels.items() if hotspot.get(key)]
     return "\n".join(lines) if lines else "- 待拆解：可先从标题钩子、读者痛点、可信证据和可复用角度补充。"
+
+
+def _dry_run_next_actions(checks: dict[str, str]) -> list[str]:
+    actions: list[str] = []
+    if checks["title"] == "missing":
+        actions.append("先补标题，让草稿具备可读入口。")
+    if checks["body"] == "missing":
+        actions.append("先补正文，再做本地草稿检查。")
+    if checks["external_images"] == "warning":
+        actions.append("正文包含外链图片，请进入图片工坊整理为本地封面/正文图候选。")
+    if checks["source_article"] == "missing":
+        actions.append("草稿缺少来源文章，请回到内容库从文章重新生成草稿或补充来源记录。")
+    if not actions:
+        actions.append("本地草稿检查通过，可进入图片工坊整理封面/正文图；真实发布、预览发送、群发和素材上传仍保持阻断。")
+    return actions
 
 
 def _has_external_images(body: str) -> bool:

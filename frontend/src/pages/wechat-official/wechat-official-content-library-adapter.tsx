@@ -500,6 +500,11 @@ export function createWechatOfficialContentLibraryAdapter(navigate: WechatOffici
       const response = await fetchWechatOfficialContentLibrary({
         keyword: filters.q,
         pool_status: "shortlisted",
+        category: filters.category,
+        tag: filters.tag,
+        is_favorite: filters.is_favorite,
+        read_status: filters.read_status,
+        detail_complete: filters.detail_complete,
         page: filters.page,
         page_size: filters.page_size,
       });

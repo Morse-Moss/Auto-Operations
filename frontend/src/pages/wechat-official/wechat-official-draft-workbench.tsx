@@ -90,8 +90,8 @@ export function WechatOfficialDraftWorkbench() {
       }
       antMessage.success(
         candidateImages.length > 0
-          ? `已保存草稿并带入 ${candidateImages.length} 张候选图，正在进入图片工坊。`
-          : "已保存草稿，正在进入图片工坊。这个公众号草稿暂无候选图，可在图片工坊手动上传参考图；不会上传公众号素材。",
+          ? `已保存草稿并带入 ${candidateImages.length} 张候选图，正在进入图片工坊整理封面/正文图。`
+          : "已保存草稿，正在进入图片工坊整理封面/正文图。这个公众号草稿暂无候选图，可在图片工坊手动添加本地参考图；不会上传公众号素材。",
       );
       navigate("/platforms/wechat-official/image-studio?from=draft");
     } catch (error) {
@@ -133,8 +133,8 @@ export function WechatOfficialDraftWorkbench() {
           <Alert
             type="warning"
             showIcon
-            message="真实发布保持阻断"
-            description="公众号草稿工坊当前只支持编辑和 dry-run 校验，不执行真实发布、预览发送或群发。"
+            message="真实发布与素材上传保持阻断"
+            description="公众号草稿工坊当前只支持编辑、dry-run 校验和本地图片整理，不执行真实发布、预览发送、群发或公众号素材上传。"
           />
           <Space wrap>
             <Button type="primary" icon={<SafetyCertificateOutlined />} onClick={() => void handleDryRun()} disabled={!controller.selectedDraft}>
@@ -145,14 +145,29 @@ export function WechatOfficialDraftWorkbench() {
             </Button>
           </Space>
           {dryRunResult ? (
-            <Descriptions column={1} size="small" bordered>
-              <Descriptions.Item label="标题">{dryRunResult.checks.title}</Descriptions.Item>
-              <Descriptions.Item label="正文">{dryRunResult.checks.body}</Descriptions.Item>
-              <Descriptions.Item label="外链图片">{dryRunResult.checks.external_images}</Descriptions.Item>
-              <Descriptions.Item label="真实发布">{dryRunResult.publish_blocked ? "blocked" : "unexpected"}</Descriptions.Item>
-              <Descriptions.Item label="预览发送">{dryRunResult.preview_blocked ? "blocked" : "unexpected"}</Descriptions.Item>
-              <Descriptions.Item label="群发">{dryRunResult.sendall_blocked ? "blocked" : "unexpected"}</Descriptions.Item>
-            </Descriptions>
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <Alert
+                type={dryRunResult.ok ? "success" : "warning"}
+                showIcon
+                message={dryRunResult.ok ? "本地草稿检查通过" : "本地草稿需要补充"}
+                description={dryRunResult.message || "dry-run 只代表本地草稿检查，不代表可以发布。"}
+              />
+              <Descriptions column={1} size="small" bordered>
+                <Descriptions.Item label="标题">{dryRunResult.checks.title}</Descriptions.Item>
+                <Descriptions.Item label="正文">{dryRunResult.checks.body}</Descriptions.Item>
+                <Descriptions.Item label="来源文章">{dryRunResult.checks.source_article || "unknown"}</Descriptions.Item>
+                <Descriptions.Item label="外链图片">{dryRunResult.checks.external_images}</Descriptions.Item>
+                <Descriptions.Item label="真实发布">{dryRunResult.publish_blocked ? "blocked" : "unexpected"}</Descriptions.Item>
+                <Descriptions.Item label="预览发送">{dryRunResult.preview_blocked ? "blocked" : "unexpected"}</Descriptions.Item>
+                <Descriptions.Item label="群发">{dryRunResult.sendall_blocked ? "blocked" : "unexpected"}</Descriptions.Item>
+                <Descriptions.Item label="公众号素材上传">{dryRunResult.material_upload_blocked ? "blocked" : "unexpected"}</Descriptions.Item>
+              </Descriptions>
+              {dryRunResult.next_actions?.length ? (
+                <Space direction="vertical" size={4}>
+                  {dryRunResult.next_actions.map((action) => <Tag key={action} color="blue">{action}</Tag>)}
+                </Space>
+              ) : null}
+            </Space>
           ) : null}
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
             草稿保留来源文章和分析依据，只做本地编辑、dry-run 校验与图片工坊整理，不上传公众号素材。

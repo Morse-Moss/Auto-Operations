@@ -35,6 +35,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
+import { shouldRestoreDraftImageStudioContext } from "../../../components/image-studio/draft-image-studio-context";
 import { PageHeader } from "../../../components/layout/app-shell";
 import {
   deleteGeneratedImageAsset,
@@ -191,6 +192,7 @@ export function XhsImageStudioPage() {
   const [generatedMediaPath, setGeneratedMediaPath] = useState<string | null>(null);
   const [draftContext, setDraftContext] = useState<ImageStudioDraftContext | null>(null);
   const draftContextRef = useRef<ImageStudioDraftContext | null>(null);
+  const generationInFlightRef = useRef(false);
   const [finalPublishImages, setFinalPublishImages] = useState<FinalPublishImage[]>([]);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
   const [isAttachingDraftAsset, setIsAttachingDraftAsset] = useState(false);
@@ -285,10 +287,12 @@ export function XhsImageStudioPage() {
   }
 
   async function handleGenerate() {
+    if (generationInFlightRef.current) return;
     if (!prompt.trim()) {
       setError("请填写提示词。");
       return;
     }
+    generationInFlightRef.current = true;
     setIsGenerating(true);
     setError(null);
     setMessage(null);
@@ -408,8 +412,10 @@ export function XhsImageStudioPage() {
           ? err.response.data.detail
           : "";
       const detail = responseDetail || (err instanceof Error ? err.message : "");
+      setMessage(null);
       setError(detail || "AI 图片生成失败，请确认已配置图片生成模型。");
     } finally {
+      generationInFlightRef.current = false;
       setIsGenerating(false);
     }
   }
@@ -584,7 +590,12 @@ export function XhsImageStudioPage() {
     const searchParams = new URLSearchParams(location.search);
     const shouldLoadDraftContext = searchParams.get("from") === "draft";
     const isWechatOfficialRoute = location.pathname.startsWith("/platforms/wechat-official/");
-    const shouldRestoreExistingDraftContext = Boolean(draftContextRef.current) || shouldLoadDraftContext || isPageReloadNavigation();
+    const shouldRestoreExistingDraftContext = shouldRestoreDraftImageStudioContext({
+      hasCurrentContext: Boolean(draftContextRef.current),
+      fromDraft: shouldLoadDraftContext,
+      isReload: isPageReloadNavigation(),
+      hasRouteRestoreSignal: location.pathname.endsWith("/image-studio"),
+    });
     const context = shouldRestoreExistingDraftContext ? loadDraftContextForCurrentRoute(isWechatOfficialRoute) : null;
     if (!context) {
       if (draftContextRef.current) {

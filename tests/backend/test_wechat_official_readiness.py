@@ -80,6 +80,10 @@ def test_wechat_official_readiness_empty_workspace_returns_actionable_missing_ch
         assert payload["safety"]["sendall_blocked"] is True
         assert payload["safety"]["preview_blocked"] is True
         assert payload["safety"]["material_upload_blocked"] is True
+        assert "保持阻断" in payload["safety"]["message"]
+        assert "可发布" not in payload["safety"]["message"]
+        assert checks["safety.publish"]["message"] == "真实发布、预览发送、群发和素材上传均保持阻断。"
+        assert "风险和 QA 设计" in checks["safety.publish"]["action"]
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -179,5 +183,9 @@ def test_wechat_official_readiness_counts_config_sessions_content_and_drafts_wit
         assert payload["safety"]["sendall_blocked"] is True
         assert payload["safety"]["preview_blocked"] is True
         assert payload["safety"]["material_upload_blocked"] is True
+        assert "保持阻断" in payload["safety"]["message"]
+        assert checks["safety.publish"]["status"] == "blocked"
+        assert "可发布" not in checks["safety.publish"]["message"]
+        assert "风险和 QA 设计" in checks["safety.publish"]["action"]
     finally:
         app.dependency_overrides.pop(get_db, None)

@@ -18,7 +18,10 @@ export type DraftWorkbenchDryRunResult = {
   publish_blocked: boolean;
   sendall_blocked: boolean;
   preview_blocked?: boolean;
+  material_upload_blocked?: boolean;
   checks: Record<string, string>;
+  message?: string;
+  next_actions?: string[];
 };
 
 export type DraftWorkbenchCapabilities = {
