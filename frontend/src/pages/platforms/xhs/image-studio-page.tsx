@@ -37,6 +37,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { shouldRestoreDraftImageStudioContext } from "../../../components/image-studio/draft-image-studio-context";
 import { PageHeader } from "../../../components/layout/app-shell";
+import { useUsageBalance } from "../../../hooks/use-usage-balance";
 import {
   deleteGeneratedImageAsset,
   deleteUserImage,
@@ -44,7 +45,9 @@ import {
   fetchGeneratedImageAssets,
   fetchTask,
   addDraftAsset,
+  apiErrorMessage,
   fetchUserImages,
+  getUsageLimitError,
   sendDraftToPublish,
   startImageGenerationTask,
   uploadAssetFile,
@@ -196,6 +199,9 @@ export function XhsImageStudioPage() {
   const [finalPublishImages, setFinalPublishImages] = useState<FinalPublishImage[]>([]);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
   const [isAttachingDraftAsset, setIsAttachingDraftAsset] = useState(false);
+  const usage = useUsageBalance();
+  const imageGenerationRemaining = usage.bucketRemaining("image_generation");
+  const textActionRemaining = usage.bucketRemaining("text_action");
 
   useEffect(() => {
     draftContextRef.current = draftContext;
@@ -389,6 +395,7 @@ export function XhsImageStudioPage() {
           } else {
             void loadAssets();
           }
+          void usage.refresh();
           return;
         }
         if (["failed", "cancelled", "exhausted"].includes(task.status)) {
@@ -398,22 +405,10 @@ export function XhsImageStudioPage() {
       }
       setMessage(`图片生成任务仍在运行（#${startedTask.task_id}）。你可以稍后点击“刷新资产”查看结果。`);
     } catch (err) {
-      const responseDetail =
-        typeof err === "object" &&
-        err !== null &&
-        "response" in err &&
-        typeof err.response === "object" &&
-        err.response !== null &&
-        "data" in err.response &&
-        typeof err.response.data === "object" &&
-        err.response.data !== null &&
-        "detail" in err.response.data &&
-        typeof err.response.data.detail === "string"
-          ? err.response.data.detail
-          : "";
-      const detail = responseDetail || (err instanceof Error ? err.message : "");
+      const limitError = getUsageLimitError(err);
       setMessage(null);
-      setError(detail || "AI 图片生成失败，请确认已配置图片生成模型。");
+      setError(limitError?.message || apiErrorMessage(err, err instanceof Error ? err.message : "AI 图片生成失败，请确认已配置图片生成模型。"));
+      void usage.refresh();
     } finally {
       generationInFlightRef.current = false;
       setIsGenerating(false);
@@ -435,8 +430,11 @@ export function XhsImageStudioPage() {
       });
       setDescription(result.text);
       setMessage("图片描述已生成。");
-    } catch {
-      setError("图片描述失败，请确认已配置支持视觉理解的图片模型。");
+      void usage.refresh();
+    } catch (err) {
+      const limitError = getUsageLimitError(err);
+      setError(limitError?.message || apiErrorMessage(err, "图片描述失败，请确认已配置支持视觉理解的图片模型。"));
+      void usage.refresh();
     } finally {
       setIsDescribing(false);
     }
@@ -663,6 +661,14 @@ export function XhsImageStudioPage() {
             刷新资产
           </Button>
         }
+      />
+
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message={`图片生成额度：${imageGenerationRemaining ?? "加载中"} 次；图片描述走文本 AI 额度：${textActionRemaining ?? "加载中"} 次`}
+        description="生成/改图会先预占 1 次图片额度，任务失败会自动退回；成功后页面会刷新余额。"
       />
 
       {error && (
@@ -961,8 +967,9 @@ export function XhsImageStudioPage() {
                     icon={<RobotOutlined />}
                     onClick={handleGenerate}
                     loading={isGenerating}
+                    disabled={imageGenerationRemaining === 0}
                   >
-                    {draftContext && !isWechatOfficialDraftContext(draftContext) ? <>生成 AI 改图</> : "生成"}
+                    {draftContext && !isWechatOfficialDraftContext(draftContext) ? <>生成 AI 改图</> : "生成"}（消耗 1 次）
                   </Button>
                 </Space>
               </Col>
@@ -1080,10 +1087,11 @@ export function XhsImageStudioPage() {
             <Button
               onClick={handleDescribeImage}
               loading={isDescribing}
+              disabled={textActionRemaining === 0}
               block
               style={{ marginBottom: 12 }}
             >
-              生成描述
+              生成描述（消耗 1 次）
             </Button>
             {description && (
               <Paragraph

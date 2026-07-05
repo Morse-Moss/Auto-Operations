@@ -5,15 +5,17 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api import accounts, ai, auth, auto_tasks, drafts, feishu_integration, files, huitun_login_sessions, keyword_groups, login_sessions, model_configs, notes, notifications, publish, tags, tasks
+from backend.app.api import accounts, ai, auth, auto_tasks, drafts, feishu_integration, files, huitun_login_sessions, keyword_groups, login_sessions, model_configs, notes, notifications, publish, tags, tasks, usage
 from backend.app.api.platforms import registry
 from backend.app.api.platforms.wechat_official import router as wechat_official_router
 from backend.app.api.platforms.xhs import analysis_center, analytics, crawl, creator, monitoring, pc
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
 from backend.app.services.scheduler_service import run_due_auto_tasks, shutdown_due_publish_scheduler, start_due_publish_scheduler
+from backend.app.services.usage_quota_service import UsageQuotaInsufficientError
 
 
 @asynccontextmanager
@@ -43,6 +45,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.exception_handler(UsageQuotaInsufficientError)
+    async def _usage_quota_insufficient_handler(_request, exc: UsageQuotaInsufficientError):
+        return JSONResponse(status_code=exc.status_code, content=exc.payload)
+
     @app.get("/api/health", tags=["health"])
     def health() -> dict:
         return {"status": "ok", "service": "spider-xhs"}
@@ -59,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(feishu_integration.router, prefix="/api")
     app.include_router(ai.router, prefix="/api")
     app.include_router(tasks.router, prefix="/api")
+    app.include_router(usage.router, prefix="/api")
     app.include_router(model_configs.router, prefix="/api")
     app.include_router(tags.router, prefix="/api")
     app.include_router(notifications.router, prefix="/api")

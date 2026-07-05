@@ -11,11 +11,14 @@ from backend.app.core.database import get_db
 from backend.app.main import app
 
 from backend.app.core.database import Base
-from backend.app.models.ai import AiDraft
+from backend.app.core.security import encrypt_text
+from backend.app.models.ai import AiDraft, ModelConfig
 from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.keyword_group import KeywordGroup
 from backend.app.models.note_exclusion import NoteExclusion
+from backend.app.models.usage_quota import UsageLedger
 from backend.app.models.user import User
+from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
 
 
@@ -107,6 +110,25 @@ def _seed_keyword_group_via_db(username: str) -> int:
     return _with_api_db(action)
 
 
+def _seed_minimum_keyword_group_via_db(username: str) -> int:
+    def action(db: Session) -> int:
+        user = db.scalar(select(User).where(User.username == username))
+        assert user is not None
+        group = _create_keyword_group(db, user.id, ["Claude Code", "AI编程", "Cursor"])
+        for index in range(10):
+            _create_note_with_comments(
+                db,
+                user.id,
+                title=f"Claude Code 入门 {index}",
+                content="Claude Code Cursor AI编程 入门配置",
+                comments=[f"新手怎么配置 {index}-{item}？" for item in range(3)],
+                raw_json={"liked_count": 70, "collected_count": 30, "comment_count": 3, "share_count": 5},
+            )
+        return group.id
+
+    return _with_api_db(action)
+
+
 def _seed_report_via_db(username: str, *, title: str = "失败报告") -> int:
     def action(db: Session) -> int:
         user = db.scalar(select(User).where(User.username == username))
@@ -135,13 +157,44 @@ def _seed_failed_report_via_db(username: str) -> int:
     return _seed_report_via_db(username)
 
 
+def _create_text_model_config_via_db(username: str) -> int:
+    def action(db: Session) -> int:
+        user = db.scalar(select(User).where(User.username == username))
+        assert user is not None
+        config = ModelConfig(
+            user_id=user.id,
+            name="Default Text",
+            model_type="text",
+            provider="openai-compatible",
+            model_name="gpt-analysis-quota-test",
+            base_url="https://api.example.test/v1",
+            encrypted_api_key=encrypt_text("sk-analysis-secret"),
+            is_default=True,
+        )
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+        return config.id
+
+    return _with_api_db(action)
+
+
 class FakeApiJsonAiClient:
-    def __init__(self):
+    def __init__(self, response: str = "{}"):
+        self.response = response
         self.calls = 0
 
     def complete_json_prompt(self, **kwargs):
         self.calls += 1
-        return "{}"
+        return self.response
+
+
+class TrapApiJsonAiClient:
+    called = False
+
+    def complete_json_prompt(self, **kwargs):
+        self.called = True
+        raise AssertionError("provider must not be called when analysis_report quota is exhausted")
 
 
 def _create_note_with_comments(
@@ -195,6 +248,9 @@ def test_health_api_returns_can_generate_false_for_insufficient_data(client: Tes
     assert response.status_code == 200
     assert response.json()["can_generate"] is False
 
+    ledger_count = _with_api_db(lambda db: db.scalar(select(func.count(UsageLedger.id)).where(UsageLedger.bucket == "analysis_report")))
+    assert ledger_count == 0
+
 
 def test_reports_api_rejects_other_user_report(client: TestClient):
     _register_and_get_access_token(client, username="owner")
@@ -238,7 +294,7 @@ def test_create_report_api_below_minimum_does_not_call_model(client: TestClient)
     try:
         response = client.post(
             "/api/xhs/analytics/analysis/reports",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "analysis-below-minimum"},
             json={"keyword_group_id": group_id, "title": "数据不足报告", "excluded_note_ids": []},
         )
     finally:
@@ -248,6 +304,147 @@ def test_create_report_api_below_minimum_does_not_call_model(client: TestClient)
     assert response.json()["status"] == "failed"
     assert "数据低于最低门槛" in response.json()["error_message"]
     assert fake_client.calls == 0
+
+    balance = client.get("/api/usage/balance", headers={"Authorization": f"Bearer {token}"})
+    assert balance.status_code == 200
+    assert balance.json()["buckets"]["analysis_report"]["remaining"] == 5
+    operations = _with_api_db(
+        lambda db: [
+            row.operation
+            for row in db.scalars(
+                select(UsageLedger).where(UsageLedger.bucket == "analysis_report").order_by(UsageLedger.id)
+            ).all()
+        ]
+    )
+    assert operations == ["reserve", "refund"]
+
+
+def test_create_report_api_completed_commits_analysis_report_quota(client: TestClient):
+    from backend.app.api.platforms.xhs import analysis_center
+
+    token = _register_and_get_access_token(client, username="analysis-success")
+    group_id = _seed_minimum_keyword_group_via_db("analysis-success")
+    model_config_id = _create_text_model_config_via_db("analysis-success")
+    fake_client = FakeApiJsonAiClient(response=json.dumps(_valid_ai_result(["metric:question_rate"]), ensure_ascii=False))
+    app.dependency_overrides[analysis_center.get_text_ai_client] = lambda: fake_client
+    try:
+        response = client.post(
+            "/api/xhs/analytics/analysis/reports",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "analysis-report-success"},
+            json={"keyword_group_id": group_id, "title": "完成报告", "excluded_note_ids": []},
+        )
+    finally:
+        app.dependency_overrides.pop(analysis_center.get_text_ai_client, None)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert fake_client.calls == 1
+
+    balance = client.get("/api/usage/balance", headers={"Authorization": f"Bearer {token}"})
+    assert balance.status_code == 200
+    assert balance.json()["buckets"]["analysis_report"]["remaining"] == 4
+    rows = _with_api_db(
+        lambda db: db.scalars(
+            select(UsageLedger).where(UsageLedger.bucket == "analysis_report").order_by(UsageLedger.id)
+        ).all()
+    )
+    assert [(row.feature_key, row.operation, row.model_config_id) for row in rows] == [
+        ("analysis.report_create", "reserve", model_config_id),
+        ("analysis.report_create.commit", "commit", model_config_id),
+    ]
+    assert rows[0].request_summary == {
+        "keyword_group_id": group_id,
+        "excluded_note_count": 0,
+        "source_note_count": 0,
+        "benchmark_target_count": 0,
+    }
+
+
+def test_create_report_api_quota_shortage_returns_402_without_calling_provider(client: TestClient):
+    from backend.app.api.platforms.xhs import analysis_center
+
+    token = _register_and_get_access_token(client, username="analysis-limit")
+    group_id = _seed_minimum_keyword_group_via_db("analysis-limit")
+    _create_text_model_config_via_db("analysis-limit")
+    trap_client = TrapApiJsonAiClient()
+
+    def exhaust_quota(db: Session) -> None:
+        user = db.scalar(select(User).where(User.username == "analysis-limit"))
+        assert user is not None
+        context = get_or_create_default_tenant_context(db, user.id)
+        UsageQuotaService(db).adjust_bucket(context.tenant.id, "analysis_report", total=0, reason="test exhausts analysis report quota")
+
+    _with_api_db(exhaust_quota)
+    app.dependency_overrides[analysis_center.get_text_ai_client] = lambda: trap_client
+    try:
+        response = client.post(
+            "/api/xhs/analytics/analysis/reports",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "analysis-report-limit"},
+            json={"keyword_group_id": group_id, "title": "超额报告", "excluded_note_ids": []},
+        )
+    finally:
+        app.dependency_overrides.pop(analysis_center.get_text_ai_client, None)
+
+    assert response.status_code == 402
+    assert response.json()["bucket"] == "analysis_report"
+    assert trap_client.called is False
+
+
+def test_rerun_report_api_commits_analysis_report_quota(client: TestClient):
+    from backend.app.api.platforms.xhs import analysis_center
+
+    token = _register_and_get_access_token(client, username="analysis-rerun")
+    group_id = _seed_minimum_keyword_group_via_db("analysis-rerun")
+    _create_text_model_config_via_db("analysis-rerun")
+
+    def seed_original_report(db: Session) -> int:
+        user = db.scalar(select(User).where(User.username == "analysis-rerun"))
+        assert user is not None
+        report = AnalysisReport(
+            user_id=user.id,
+            platform="xhs",
+            report_type="content_analysis",
+            status="completed",
+            title="原报告",
+            input_config={"keyword_group_id": group_id, "excluded_note_ids": []},
+            data_health={"status": "minimum", "can_generate": True},
+            evidence_pool={"notes": [], "comments": [], "keywords": [], "metrics": [], "benchmarks": []},
+            result_json=_valid_ai_result(["metric:question_rate"]),
+            html_file_path="exports/original.html",
+        )
+        db.add(report)
+        db.commit()
+        db.refresh(report)
+        return report.id
+
+    original_report_id = _with_api_db(seed_original_report)
+    fake_client = FakeApiJsonAiClient(response=json.dumps(_valid_ai_result(["metric:question_rate"]), ensure_ascii=False))
+    app.dependency_overrides[analysis_center.get_text_ai_client] = lambda: fake_client
+    try:
+        response = client.post(
+            f"/api/xhs/analytics/analysis/reports/{original_report_id}/rerun",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "analysis-report-rerun"},
+        )
+    finally:
+        app.dependency_overrides.pop(analysis_center.get_text_ai_client, None)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["rerun_from_report_id"] == original_report_id
+    assert fake_client.calls == 1
+
+    balance = client.get("/api/usage/balance", headers={"Authorization": f"Bearer {token}"})
+    assert balance.status_code == 200
+    assert balance.json()["buckets"]["analysis_report"]["remaining"] == 4
+    operations = _with_api_db(
+        lambda db: [
+            (row.feature_key, row.operation)
+            for row in db.scalars(
+                select(UsageLedger).where(UsageLedger.bucket == "analysis_report").order_by(UsageLedger.id)
+            ).all()
+        ]
+    )
+    assert operations == [("analysis.report_rerun", "reserve"), ("analysis.report_rerun.commit", "commit")]
 
 
 def test_create_drafts_api_allows_owner_and_rejects_other_user_report(client: TestClient):

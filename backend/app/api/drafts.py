@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from backend.app.services.ai_service import TextAiClient
 from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.asset_storage_policy import valid_media_owner_prefixes
 from backend.app.services.draft_ai_scoring_service import DraftAiScoringService
+from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
@@ -585,6 +586,7 @@ def delete_draft(
 def score_draft_with_ai(
     draft_id: int,
     payload: DraftAiScoreRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     text_client: TextAiClient = Depends(get_text_ai_client),
@@ -599,6 +601,18 @@ def score_draft_with_ai(
         select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
     ).all()
     model_config, api_key = _text_model_context(db, current_user)
+    tenant_context = get_or_create_default_tenant_context(db, current_user.id)
+    usage_reservation = UsageQuotaService(db).reserve(
+        tenant_id=tenant_context.tenant.id,
+        user_id=current_user.id,
+        feature_key="draft.ai_score",
+        bucket="draft_score",
+        amount=1,
+        idempotency_key=request.headers.get("Idempotency-Key") or f"draft.ai_score:{current_user.id}:{draft.id}:{payload.force}",
+        request_summary={"draft_id": draft.id, "title_length": len(draft.title), "body_length": len(draft.body), "asset_count": len(assets), "force": payload.force},
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     scoring_service = DraftAiScoringService()
 
     def action():
@@ -625,6 +639,7 @@ def score_draft_with_ai(
             "preview_only": True,
         },
         action=action,
+        usage_reservation_id=usage_reservation.id,
     )
     result = scoring_payload["result"]
     score = DraftAiScoreResult(

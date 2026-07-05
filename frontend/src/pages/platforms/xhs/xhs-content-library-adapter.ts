@@ -586,7 +586,7 @@ export function createXhsContentLibraryAdapter(navigate: XhsNavigate): ContentLi
       contentUsage: [],
       searchAttribute: [],
     },
-    loadFilterOptions: (filters) => fetchSavedNoteFilterOptions("xhs", filters),
+    loadFilterOptions: () => fetchSavedNoteFilterOptions("xhs"),
     emptyState: { description: "内容库还是空的", actionLabel: "去发现笔记", actionPath: "/platforms/xhs/discovery" },
     renderToolbarExtras: renderFeishuToolbar,
     loadItems: (filters) => fetchSavedNotes({ platform: "xhs", ...filters }),

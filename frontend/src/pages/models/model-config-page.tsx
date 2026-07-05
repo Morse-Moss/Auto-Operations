@@ -36,9 +36,11 @@ import {
   deleteModelConfig,
   fetchModelConfigs,
   setDefaultModelConfig,
+  apiErrorMessage,
   testModelConfig,
   updateModelConfig,
 } from "../../lib/api";
+import { useUsageBalance } from "../../hooks/use-usage-balance";
 import type { ModelConfig, ModelConfigPayload, ModelType } from "../../types";
 
 const { Text } = Typography;
@@ -95,6 +97,7 @@ export function ModelConfigPage() {
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, { status: string; message: string }>>({});
+  const usage = useUsageBalance();
 
   const grouped = useMemo(
     () => ({
@@ -200,8 +203,8 @@ export function ModelConfigPage() {
     try {
       const result = await testModelConfig(configId);
       setTestResults((prev) => ({ ...prev, [configId]: { status: result.status, message: result.message } }));
-    } catch {
-      setTestResults((prev) => ({ ...prev, [configId]: { status: "error", message: "检查请求失败" } }));
+    } catch (err) {
+      setTestResults((prev) => ({ ...prev, [configId]: { status: "error", message: apiErrorMessage(err, "检查请求失败") } }));
     } finally {
       setTestingId(null);
     }
@@ -255,9 +258,14 @@ export function ModelConfigPage() {
         message="模型配置建议"
         description={<>
           图片工坊默认推荐 RunningHub：Provider <Typography.Text code>runninghub-ai-app</Typography.Text>，Base URL <Typography.Text code>https://www.runninghub.cn</Typography.Text>，模型名称可填 <Typography.Text code>runninghub-image-g</Typography.Text>。<br />
-          文本模型仍使用 OpenAI 兼容接口：例如 <Typography.Text code>https://api.openai-next.com/v1</Typography.Text>、火山方舟或阿里云百炼兼容模式。
+          文本模型仍使用 OpenAI 兼容接口：例如 <Typography.Text code>https://api.openai-next.com/v1</Typography.Text>、火山方舟或阿里云百炼兼容模式。<br />
+          模型连接测试首期不扣主额度；每天每个用户免费 3 次，超出后当天不再请求模型服务。
         </>}
       />
+
+      {usage.error ? (
+        <Alert type="warning" showIcon style={{ marginBottom: 16 }} message={usage.error} />
+      ) : null}
 
       {error && (
         <Alert
