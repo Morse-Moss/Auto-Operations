@@ -92,6 +92,8 @@ import type {
   UserImageFile,
   TagPayload,
   TaskRecord,
+  UsageBalance,
+  UsageLimitError,
   WechatOfficialArticleComment,
   WechatOfficialArticleCommentsPayload,
   WechatOfficialArticleMetric,
@@ -207,8 +209,7 @@ http.interceptors.response.use(
     }
     if (error.response?.status !== 401 || originalRequest?._authRetry || isRefreshRequest || !getRefreshToken()) {
       if (!originalRequest?._silent) {
-        const detail = error.response?.data?.detail;
-        const msg = typeof detail === "string" ? detail : "请求失败，请稍后重试";
+        const msg = apiErrorMessage(error, "请求失败，请稍后重试");
         message.error(msg);
       }
       return Promise.reject(error);
@@ -262,6 +263,38 @@ export async function refreshAccessToken(): Promise<string> {
   });
 
   return refreshPromise;
+}
+
+export function apiErrorMessage(error: unknown, fallback: string): string {
+  if (!axios.isAxiosError(error)) return fallback;
+  const data = error.response?.data;
+  if (data && typeof data === "object") {
+    const record = data as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim()) return record.message;
+    const detail = record.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    if (detail && typeof detail === "object") {
+      const detailRecord = detail as Record<string, unknown>;
+      if (typeof detailRecord.message === "string" && detailRecord.message.trim()) return detailRecord.message;
+    }
+  }
+  return fallback;
+}
+
+export function getUsageLimitError(error: unknown): UsageLimitError | null {
+  if (!axios.isAxiosError(error)) return null;
+  const data = error.response?.data;
+  const detail = data && typeof data === "object" ? (data as Record<string, unknown>).detail : null;
+  const payload = detail && typeof detail === "object" ? detail : data;
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as UsageLimitError;
+  if (record.code === "usage_quota_insufficient" || record.code === "model_test_daily_limit_exceeded") return record;
+  return null;
+}
+
+export async function fetchUsageBalance(): Promise<UsageBalance> {
+  const response = await http.get<UsageBalance>("/usage/balance", { _silent: true } as never);
+  return response.data;
 }
 
 export async function fetchMe(): Promise<PlatformUser> {

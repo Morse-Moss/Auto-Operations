@@ -5,18 +5,22 @@ from typing import Optional
 
 import requests as http_requests
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import encrypt_text
-from backend.app.models import DEFAULT_TEXT_MODEL_NAME, ModelConfig, User
+from backend.app.core.time import shanghai_now
+from backend.app.models import DEFAULT_TEXT_MODEL_NAME, ApiLog, ModelConfig, User
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import RUNNINGHUB_DEFAULT_BASE_URL
 
 router = APIRouter(prefix="/model-configs", tags=["model-configs"])
+
+MODEL_TEST_DAILY_FREE_LIMIT = 3
 
 
 class ModelConfigCreateRequest(BaseModel):
@@ -83,6 +87,57 @@ def _redact_api_key(message: object, api_key: str) -> str:
         redacted = redacted.replace(api_key, "[REDACTED]")
     redacted = re.sub(r"(?i)(api[_-]?key=)[^&\s\"'}]+", r"\1[REDACTED]", redacted)
     return redacted
+
+
+def _model_test_daily_start():
+    now = shanghai_now()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _model_test_count_today(db: Session, user_id: int) -> int:
+    return int(
+        db.scalar(
+            select(func.count(ApiLog.id)).where(
+                ApiLog.user_id == user_id,
+                ApiLog.endpoint == "model_config.test",
+                ApiLog.created_at >= _model_test_daily_start(),
+            )
+        )
+        or 0
+    )
+
+
+def _model_test_limit_response(used: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "code": "model_test_daily_limit_exceeded",
+            "message": f"模型连接测试每日免费 {MODEL_TEST_DAILY_FREE_LIMIT} 次，今天已用完。",
+            "feature_key": "model_test",
+            "limit": MODEL_TEST_DAILY_FREE_LIMIT,
+            "used": used,
+        },
+    )
+
+
+def _record_model_test_attempt(db: Session, *, current_user: User, config: ModelConfig, result_status: str, used_before: int) -> None:
+    db.add(
+        ApiLog(
+            user_id=current_user.id,
+            platform="ai",
+            endpoint="model_config.test",
+            status=result_status,
+            meta={
+                "feature_key": "model_test",
+                "model_config_id": config.id,
+                "model_type": config.model_type,
+                "provider": config.provider,
+                "attempt": used_before + 1,
+                "limit": MODEL_TEST_DAILY_FREE_LIMIT,
+            },
+        )
+    )
+    db.commit()
 
 
 @router.get("")
@@ -152,6 +207,14 @@ def test_model_config(
     else:
         base_url = config.base_url.rstrip("/")
 
+    used_today = _model_test_count_today(db, current_user.id)
+    if used_today >= MODEL_TEST_DAILY_FREE_LIMIT:
+        return _model_test_limit_response(used_today)
+
+    def finish(result: dict) -> dict:
+        _record_model_test_attempt(db, current_user=current_user, config=config, result_status=result["status"], used_before=used_today)
+        return result
+
     try:
         if config.provider == "runninghub-ai-app":
             resp = http_requests.get(
@@ -181,33 +244,40 @@ def test_model_config(
                 if config.provider == "runninghub-ai-app":
                     if body.get("code") != 0 or not isinstance(body.get("data"), dict):
                         message = body.get("msg") or body.get("message") or body
-                        return {
-                            "id": config.id,
-                            "status": "error",
-                            "message": _redact_api_key(f"RunningHub 连接失败: {message}", api_key)[:200],
-                        }
-                    return {"id": config.id, "status": "ok", "message": f"连接成功 ({resp.status_code})"}
+                        return finish(
+                            {
+                                "id": config.id,
+                                "status": "error",
+                                "message": _redact_api_key(f"RunningHub 连接失败: {message}", api_key)[:200],
+                            }
+                        )
+                    return finish({"id": config.id, "status": "ok", "message": f"连接成功 ({resp.status_code})"})
                 if body.get("choices") or body.get("data") or body.get("object"):
-                    return {"id": config.id, "status": "ok", "message": f"连接成功 ({resp.status_code})"}
-                return {
-                    "id": config.id,
-                    "status": "error",
-                    "message": _redact_api_key(f"响应格式异常: {resp.text[:150]}", api_key),
-                }
+                    return finish({"id": config.id, "status": "ok", "message": f"连接成功 ({resp.status_code})"})
+                return finish(
+                    {
+                        "id": config.id,
+                        "status": "error",
+                        "message": _redact_api_key(f"响应格式异常: {resp.text[:150]}", api_key),
+                    }
+                )
             except Exception:
-                return {
-                    "id": config.id,
-                    "status": "error",
-                    "message": _redact_api_key(f"响应非 JSON: {resp.text[:150]}", api_key),
-                }
-        else:
-            return {
+                return finish(
+                    {
+                        "id": config.id,
+                        "status": "error",
+                        "message": _redact_api_key(f"响应非 JSON: {resp.text[:150]}", api_key),
+                    }
+                )
+        return finish(
+            {
                 "id": config.id,
                 "status": "error",
                 "message": _redact_api_key(f"HTTP {resp.status_code}: {resp.text[:150]}", api_key),
             }
+        )
     except Exception as exc:
-        return {"id": config.id, "status": "error", "message": _redact_api_key(exc, api_key)[:200]}
+        return finish({"id": config.id, "status": "error", "message": _redact_api_key(exc, api_key)[:200]})
 
 
 @router.patch("/{config_id}")

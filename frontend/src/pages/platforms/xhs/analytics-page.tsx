@@ -40,12 +40,15 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../../../components/layout/app-shell";
+import { useUsageBalance } from "../../../hooks/use-usage-balance";
 import {
   checkXhsAnalysisHealth,
   createXhsAnalysisDrafts,
+  apiErrorMessage,
   createXhsAnalysisReport,
   createXhsAnalyticsReport,
   downloadExportFile,
+  getUsageLimitError,
   fetchKeywordGroups,
   fetchSavedNote,
   fetchXhsAnalysisReport,
@@ -54,6 +57,7 @@ import {
   fetchXhsHotTopics,
   fetchXhsOverview,
   fetchXhsTopContent,
+  rerunXhsAnalysisReport,
 } from "../../../lib/api";
 import type {
   AnalysisDataHealth,
@@ -244,8 +248,11 @@ export function XhsAnalyticsPage() {
   const [creatingDraftCardId, setCreatingDraftCardId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [rerunningReportId, setRerunningReportId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reportMessage, setReportMessage] = useState<string | null>(null);
+  const usage = useUsageBalance();
+  const analysisReportRemaining = usage.bucketRemaining("analysis_report");
 
   async function loadAnalysisReports() {
     const reports = await fetchXhsAnalysisReports();
@@ -408,10 +415,13 @@ export function XhsAnalyticsPage() {
       });
       setSelectedReport(report);
       await loadAnalysisReports();
+      await usage.refresh();
       setWizardOpen(false);
       message.success(report.status === "completed" ? "分析报告已生成" : "分析报告生成失败，请查看原因");
-    } catch {
-      message.error("分析报告创建失败，请查看模型配置或稍后重试。");
+    } catch (err) {
+      const limitError = getUsageLimitError(err);
+      message.error(limitError?.message || apiErrorMessage(err, "分析报告创建失败，请查看模型配置或稍后重试。"));
+      void usage.refresh();
     } finally {
       setCreatingReport(false);
     }
@@ -425,6 +435,23 @@ export function XhsAnalyticsPage() {
         ...patch,
       },
     }));
+  }
+
+  async function handleRerunReport(report: AnalysisReport) {
+    setRerunningReportId(report.id);
+    try {
+      const next = await rerunXhsAnalysisReport(report.id);
+      setSelectedReport(next);
+      await loadAnalysisReports();
+      await usage.refresh();
+      message.success(next.status === "completed" ? "分析报告已重跑" : "分析报告重跑失败，请查看原因");
+    } catch (err) {
+      const limitError = getUsageLimitError(err);
+      message.error(limitError?.message || apiErrorMessage(err, "分析报告重跑失败，请稍后重试。"));
+      void usage.refresh();
+    } finally {
+      setRerunningReportId(null);
+    }
   }
 
   async function handleCreateDraft(card: TopicCard) {
@@ -550,7 +577,9 @@ export function XhsAnalyticsPage() {
           showIcon
           type={analysisHealth.can_generate ? "success" : "warning"}
           message={analysisHealth.can_generate ? "当前数据达到生成门槛" : "当前数据低于最低门槛"}
-          description={`健康状态：${analysisHealth.status}，置信度上限：${analysisHealth.confidence_cap}`}
+          description={analysisHealth.can_generate
+            ? `健康状态：${analysisHealth.status}，置信度上限：${analysisHealth.confidence_cap}。生成报告将消耗 1 次分析报告额度（剩余 ${analysisReportRemaining ?? "加载中"} 次）。`
+            : `健康状态：${analysisHealth.status}，置信度上限：${analysisHealth.confidence_cap}。健康检查不消耗额度。`}
         />
         <Row gutter={[12, 12]}>
           {metricItems.map((item) => (
@@ -1095,9 +1124,29 @@ export function XhsAnalyticsPage() {
         </div>
       ) : (
         <>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`分析报告额度：${analysisReportRemaining ?? "加载中"} 次`}
+            description="数据健康检查不扣额度；生成或重跑分析报告各消耗 1 次，失败会由后端自动退回。"
+          />
           <Card
             title="当前报告"
-            extra={selectedReport ? <Tag color={statusColorMap[selectedReport.status]}>{selectedReport.status}</Tag> : null}
+            extra={selectedReport ? (
+              <Space>
+                <Tag color={statusColorMap[selectedReport.status]}>{selectedReport.status}</Tag>
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={rerunningReportId === selectedReport.id}
+                  disabled={analysisReportRemaining === 0}
+                  onClick={() => void handleRerunReport(selectedReport)}
+                >
+                  重跑（消耗 1 次）
+                </Button>
+              </Space>
+            ) : null}
             style={{ background: "#1f1f1f", borderColor: "#303030", minHeight: 300, marginBottom: 24 }}
           >
             {renderReportDetail()}

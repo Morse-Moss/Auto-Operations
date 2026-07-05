@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import urllib3
+from starlette.requests import Request
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -27,6 +28,7 @@ from backend.app.models import AiDraft, AiGeneratedAsset, ModelConfig, Task, Use
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 from backend.app.services.asset_storage_policy import asset_owner_prefix
+from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -381,6 +383,7 @@ def _recorded_text_task(
     task_type: str,
     payload: dict[str, Any],
     action: Callable[[], Any],
+    usage_reservation_id: int | None = None,
 ):
     task = Task(
         user_id=current_user.id,
@@ -395,21 +398,59 @@ def _recorded_text_task(
     try:
         result = action()
     except ValueError as exc:
+        if usage_reservation_id is not None:
+            UsageQuotaService(db).refund(usage_reservation_id, failure_reason=str(exc))
         task.status = "failed"
         task.progress = 100
         task.payload = {**(task.payload or {}), "error": str(exc)}
         db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
+        if usage_reservation_id is not None:
+            UsageQuotaService(db).refund(usage_reservation_id, failure_reason=str(exc))
         task.status = "failed"
         task.progress = 100
         task.payload = {**(task.payload or {}), "error": str(exc)}
         db.commit()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI text generation failed: {exc}") from exc
 
+    if usage_reservation_id is not None:
+        UsageQuotaService(db).commit(usage_reservation_id)
     task.status = "completed"
     task.progress = 100
     return task, result
+
+
+def _quota_idempotency_key(request: Request | None, fallback: str) -> str:
+    if request is None:
+        return fallback
+    return request.headers.get("Idempotency-Key") or fallback
+
+
+def _reserve_usage(
+    *,
+    db: Session,
+    current_user: User,
+    feature_key: str,
+    bucket: str,
+    amount: int,
+    idempotency_key: str,
+    request_summary: dict[str, Any] | None = None,
+    model_config_id: int | None = None,
+    provider: str = "",
+):
+    context = get_or_create_default_tenant_context(db, current_user.id)
+    return UsageQuotaService(db).reserve(
+        tenant_id=context.tenant.id,
+        user_id=current_user.id,
+        feature_key=feature_key,
+        bucket=bucket,
+        amount=amount,
+        idempotency_key=idempotency_key,
+        request_summary=request_summary,
+        model_config_id=model_config_id,
+        provider=provider,
+    )
 
 
 def _recorded_image_task(
@@ -420,6 +461,7 @@ def _recorded_image_task(
     payload: dict[str, Any],
     action: Callable[[], Any],
     sensitive_values: list[str] | None = None,
+    usage_reservation_id: int | None = None,
 ):
     task = Task(
         user_id=current_user.id,
@@ -435,6 +477,8 @@ def _recorded_image_task(
         result = action()
     except ValueError as exc:
         redacted_error = _redact_sensitive_text(str(exc), sensitive_values)
+        if usage_reservation_id is not None:
+            UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
         task.status = "failed"
         task.progress = 100
         task.payload = {**(task.payload or {}), "error": redacted_error}
@@ -442,12 +486,16 @@ def _recorded_image_task(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
     except Exception as exc:
         redacted_error = _redact_sensitive_text(str(exc), sensitive_values)
+        if usage_reservation_id is not None:
+            UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
         task.status = "failed"
         task.progress = 100
         task.payload = {**(task.payload or {}), "error": redacted_error}
         db.commit()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI image generation failed: {redacted_error}") from exc
 
+    if usage_reservation_id is not None:
+        UsageQuotaService(db).commit(usage_reservation_id)
     task.status = "completed"
     task.progress = 100
     return task, result
@@ -467,6 +515,7 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
         db.commit()
 
         payload = task.payload or {}
+        usage_reservation_id = payload.get("usage_reservation_id")
         reference_images = payload.get("reference_images")
         refs = reference_images if isinstance(reference_images, list) else []
         image_client = _image_client_for_model(model_config, fallback_client or OpenAICompatibleImageClient())
@@ -493,6 +542,8 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
                 )
         except ValueError as exc:
             redacted_error = _redact_sensitive_text(str(exc), [api_key])
+            if isinstance(usage_reservation_id, int):
+                UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
             task.status = "failed"
             task.progress = 100
             task.finished_at = shanghai_now()
@@ -501,6 +552,8 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
             return
         except Exception as exc:
             redacted_error = _redact_sensitive_text(str(exc), [api_key])
+            if isinstance(usage_reservation_id, int):
+                UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
             task.status = "failed"
             task.progress = 100
             task.finished_at = shanghai_now()
@@ -537,6 +590,8 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
             task.payload = {**(task.payload or {}), "result": response_data, "asset_id": asset.id}
         else:
             task.payload = {**(task.payload or {}), "result": response_data}
+        if isinstance(usage_reservation_id, int):
+            UsageQuotaService(db).commit(usage_reservation_id)
         task.status = "completed"
         task.progress = 100
         task.finished_at = shanghai_now()
@@ -548,6 +603,7 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
 @router.post("/rewrite-note")
 def rewrite_note(
     payload: RewriteNoteRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     text_ai_client: TextAiClient = Depends(get_text_ai_client),
@@ -557,6 +613,17 @@ def rewrite_note(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
 
     model_config, api_key = _text_model_context(db, current_user)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.rewrite_note",
+        bucket="ai_rewrite",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.rewrite_note:{current_user.id}:{draft.id}:{payload.instruction}"),
+        request_summary={"draft_id": draft.id, "instruction_length": len(payload.instruction), "body_length": len(draft.body)},
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     task, rewritten_body = _recorded_text_task(
         db=db,
         current_user=current_user,
@@ -570,6 +637,7 @@ def rewrite_note(
             body=draft.body,
             instruction=payload.instruction,
         ),
+        usage_reservation_id=usage_reservation.id,
     )
     normalized = normalize_xhs_generated_content(draft.title, rewritten_body, draft.tags or [])
     candidate = {
@@ -597,11 +665,27 @@ def rewrite_note(
 @router.post("/generate-note")
 def generate_note(
     payload: GenerateNoteRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     text_ai_client: TextAiClient = Depends(get_text_ai_client),
 ):
     model_config, api_key = _text_model_context(db, current_user)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.generate_note",
+        bucket="text_action",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.generate_note:{current_user.id}:{payload.platform}:{payload.topic}:{payload.instruction}"),
+        request_summary={
+            "topic_length": len(payload.topic),
+            "reference_length": len(payload.reference),
+            "instruction_length": len(payload.instruction),
+        },
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     task, result = _recorded_text_task(
         db=db,
         current_user=current_user,
@@ -615,6 +699,7 @@ def generate_note(
             reference=payload.reference,
             instruction=payload.instruction,
         ),
+        usage_reservation_id=usage_reservation.id,
     )
     draft = AiDraft(
         user_id=current_user.id,
@@ -633,11 +718,23 @@ def generate_note(
 @router.post("/generate-title")
 def generate_title(
     payload: GenerateTitleRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     text_ai_client: TextAiClient = Depends(get_text_ai_client),
 ):
     model_config, api_key = _text_model_context(db, current_user)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.generate_title",
+        bucket="text_action",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.generate_title:{current_user.id}:{payload.title}:{payload.body}:{payload.count}"),
+        request_summary={"title_length": len(payload.title), "body_length": len(payload.body), "count": payload.count},
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     task, items = _recorded_text_task(
         db=db,
         current_user=current_user,
@@ -651,6 +748,7 @@ def generate_title(
             body=payload.body,
             count=payload.count,
         ),
+        usage_reservation_id=usage_reservation.id,
     )
     task.payload = {**(task.payload or {}), "result_count": len(items)}
     db.commit()
@@ -660,11 +758,23 @@ def generate_title(
 @router.post("/generate-tags")
 def generate_tags(
     payload: GenerateTagsRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     text_ai_client: TextAiClient = Depends(get_text_ai_client),
 ):
     model_config, api_key = _text_model_context(db, current_user)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.generate_tags",
+        bucket="text_action",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.generate_tags:{current_user.id}:{payload.title}:{payload.body}:{payload.count}"),
+        request_summary={"title_length": len(payload.title), "body_length": len(payload.body), "count": payload.count},
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     task, items = _recorded_text_task(
         db=db,
         current_user=current_user,
@@ -678,6 +788,7 @@ def generate_tags(
             body=payload.body,
             count=payload.count,
         ),
+        usage_reservation_id=usage_reservation.id,
     )
     task.payload = {**(task.payload or {}), "result_count": len(items)}
     db.commit()
@@ -687,11 +798,23 @@ def generate_tags(
 @router.post("/polish-text")
 def polish_text(
     payload: PolishTextRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     text_ai_client: TextAiClient = Depends(get_text_ai_client),
 ):
     model_config, api_key = _text_model_context(db, current_user)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.polish_text",
+        bucket="ai_rewrite",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.polish_text:{current_user.id}:{payload.text}:{payload.instruction}"),
+        request_summary={"text_length": len(payload.text), "instruction_length": len(payload.instruction)},
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     task, text = _recorded_text_task(
         db=db,
         current_user=current_user,
@@ -704,6 +827,7 @@ def polish_text(
             text=payload.text,
             instruction=payload.instruction,
         ),
+        usage_reservation_id=usage_reservation.id,
     )
     task.payload = {**(task.payload or {}), "result_length": len(text)}
     db.commit()
@@ -742,6 +866,7 @@ def delete_generated_image_asset(
 @router.post("/images/generate-cover")
 def generate_cover(
     payload: GenerateCoverRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
@@ -753,6 +878,17 @@ def generate_cover(
 
     model_config, api_key = _image_model_context(db, current_user)
     image_client = _image_client_for_model(model_config, image_ai_client)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.image_generate_cover",
+        bucket="image_generation",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.image_generate_cover:{current_user.id}:{payload.draft_id}:{payload.prompt}:{payload.size}:{payload.style}"),
+        request_summary={"prompt_length": len(payload.prompt), "size": payload.size, "style": payload.style, "draft_id": payload.draft_id},
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     task, result = _recorded_image_task(
         db=db,
         current_user=current_user,
@@ -766,6 +902,7 @@ def generate_cover(
             style=payload.style,
         ),
         sensitive_values=[api_key],
+        usage_reservation_id=usage_reservation.id,
     )
     try:
         asset = _create_generated_image_asset(
@@ -799,12 +936,29 @@ def generate_cover(
 @router.post("/images/generate")
 def generate_image(
     payload: GenerateImageRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
 ):
     model_config, api_key = _image_model_context(db, current_user)
     image_client = _image_client_for_model(model_config, image_ai_client)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.image_generate",
+        bucket="image_generation",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.image_generate:{current_user.id}:{payload.prompt}:{payload.reference_images}:{payload.aspect_ratio}"),
+        request_summary={
+            "prompt_length": len(payload.prompt),
+            "reference_image_count": len(payload.reference_images or []),
+            "aspect_ratio": payload.aspect_ratio,
+            "save_to_assets": payload.save_to_assets,
+        },
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
 
     def run_generate_image():
         reference_images = payload.reference_images or None
@@ -836,6 +990,7 @@ def generate_image(
         payload={"model_config_id": model_config.id, "prompt": payload.prompt, "reference_images": payload.reference_images, "aspect_ratio": payload.aspect_ratio},
         action=run_generate_image,
         sensitive_values=[api_key],
+        usage_reservation_id=usage_reservation.id,
     )
     response_data: dict = {"url": result.get("url") or "", "raw": result.get("raw")}
     if payload.save_to_assets:
@@ -873,6 +1028,7 @@ def generate_image(
 @router.post("/images/generate-async")
 def generate_image_async(
     payload: GenerateImageRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -883,6 +1039,23 @@ def generate_image_async(
     if model_config.provider == "runninghub-ai-app":
         for image_ref in reference_images:
             RunningHubImageClient._resolve_local_image_path(image_ref, owner_user_id=current_user.id)
+
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.image_generate_async",
+        bucket="image_generation",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.image_generate_async:{current_user.id}:{payload.prompt}:{reference_images}:{payload.aspect_ratio}"),
+        request_summary={
+            "prompt_length": len(payload.prompt),
+            "reference_image_count": len(reference_images),
+            "aspect_ratio": payload.aspect_ratio,
+            "save_to_assets": payload.save_to_assets,
+        },
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
 
     task = Task(
         user_id=current_user.id,
@@ -896,6 +1069,10 @@ def generate_image_async(
             "reference_images": reference_images,
             "save_to_assets": payload.save_to_assets,
             "aspect_ratio": payload.aspect_ratio,
+            "usage_reservation_id": usage_reservation.id,
+            "feature_key": "ai.image_generate_async",
+            "usage_bucket": "image_generation",
+            "idempotency_key": usage_reservation.idempotency_key,
         },
     )
     db.add(task)
@@ -909,12 +1086,24 @@ def generate_image_async(
 @router.post("/images/describe")
 def describe_image(
     payload: DescribeImageRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
 ):
     model_config, api_key = _image_model_context(db, current_user)
     image_client = _image_client_for_model(model_config, image_ai_client)
+    usage_reservation = _reserve_usage(
+        db=db,
+        current_user=current_user,
+        feature_key="ai.describe_image",
+        bucket="text_action",
+        amount=1,
+        idempotency_key=_quota_idempotency_key(request, f"ai.describe_image:{current_user.id}:{payload.image_url}:{payload.instruction}"),
+        request_summary={"image_url_length": len(payload.image_url), "instruction_length": len(payload.instruction)},
+        model_config_id=model_config.id,
+        provider=model_config.provider,
+    )
     task, text = _recorded_image_task(
         db=db,
         current_user=current_user,
@@ -927,6 +1116,7 @@ def describe_image(
             instruction=payload.instruction,
         ),
         sensitive_values=[api_key],
+        usage_reservation_id=usage_reservation.id,
     )
     task.payload = {**(task.payload or {}), "result_length": len(text)}
     db.commit()

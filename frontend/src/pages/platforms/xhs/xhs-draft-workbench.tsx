@@ -4,15 +4,18 @@ import { Alert, Button, Card, Collapse, Empty, Input, Modal, Progress, Select, S
 import { DeleteOutlined, EditOutlined, LinkOutlined, PictureOutlined, ReloadOutlined, SaveOutlined, TrophyOutlined, UploadOutlined } from "@ant-design/icons";
 
 import { DraftWorkbenchShell, useDraftWorkbench } from "../../../components/draft-workbench";
+import { useUsageBalance } from "../../../hooks/use-usage-balance";
 import {
   addDraftAsset,
   deleteDraftAsset,
   fetchDraftAssets,
   fetchLatestDraftAiScore,
   fetchSavedNote,
+  apiErrorMessage,
   fetchTask,
   generateTagOptions,
   generateTitleOptions,
+  getUsageLimitError,
   localizeDraftAsset,
   rewriteDraftWithAi,
   scoreDraftWithAi,
@@ -324,6 +327,10 @@ export function XhsDraftsPage() {
   const [draftAiScore, setDraftAiScore] = useState<DraftAiScoreResult | null>(null);
   const [isLoadingDraftAiScore, setIsLoadingDraftAiScore] = useState(false);
   const [isScoringDraft, setIsScoringDraft] = useState(false);
+  const usage = useUsageBalance();
+  const aiRewriteRemaining = usage.bucketRemaining("ai_rewrite");
+  const textActionRemaining = usage.bucketRemaining("text_action");
+  const draftScoreRemaining = usage.bucketRemaining("draft_score");
 
   const selectedDraft = controller.selectedDraft;
   const selectedSourceNoteId = selectedDraft?.source_note_id ?? null;
@@ -523,8 +530,11 @@ export function XhsDraftsPage() {
       const candidate = toRewriteCandidate(rewritten, Date.now());
       setRewriteCandidates((current) => setRewriteCandidate(current, rewriteTemplate, candidate));
       antMessage.success("AI 改写候选已生成，点击采纳后才会覆盖中间草稿。");
+      void usage.refresh();
     } catch (error) {
-      antMessage.error(error instanceof Error ? error.message : "AI 改写失败");
+      const limitError = getUsageLimitError(error);
+      antMessage.error(limitError?.message || apiErrorMessage(error, error instanceof Error ? error.message : "AI 改写失败"));
+      void usage.refresh();
     } finally {
       setIsRewriting(false);
     }
@@ -562,8 +572,11 @@ export function XhsDraftsPage() {
       const result = await generateTitleOptions({ title: controller.title, body: controller.body, count: 5 });
       setTitleOptions(result.items);
       antMessage.success("标题候选已生成。");
+      void usage.refresh();
     } catch (error) {
-      antMessage.error(error instanceof Error ? error.message : "标题生成失败");
+      const limitError = getUsageLimitError(error);
+      antMessage.error(limitError?.message || apiErrorMessage(error, error instanceof Error ? error.message : "标题生成失败"));
+      void usage.refresh();
     }
   }
 
@@ -576,8 +589,11 @@ export function XhsDraftsPage() {
       const result = await generateTagOptions({ title: controller.title, body: controller.body, count: 8 });
       setTagOptions(result.items);
       antMessage.success("标签候选已生成。");
+      void usage.refresh();
     } catch (error) {
-      antMessage.error(error instanceof Error ? error.message : "标签生成失败");
+      const limitError = getUsageLimitError(error);
+      antMessage.error(limitError?.message || apiErrorMessage(error, error instanceof Error ? error.message : "标签生成失败"));
+      void usage.refresh();
     }
   }
 
@@ -594,8 +610,11 @@ export function XhsDraftsPage() {
       const score = await scoreDraftWithAi(saved.id);
       setDraftAiScore(score);
       antMessage.success("系统打分完成：结果用于发前诊断，不代表实际流量预测。");
+      void usage.refresh();
     } catch (error) {
-      antMessage.error(error instanceof Error ? error.message : "系统打分失败");
+      const limitError = getUsageLimitError(error);
+      antMessage.error(limitError?.message || apiErrorMessage(error, error instanceof Error ? error.message : "系统打分失败"));
+      void usage.refresh();
     } finally {
       setIsScoringDraft(false);
     }
@@ -749,9 +768,16 @@ export function XhsDraftsPage() {
           </Space>
         )}
         renderAssistantExtras={() => (
-          <Tabs
-            defaultActiveKey="score"
-            items={[
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Alert
+              type="info"
+              showIcon
+              message={`AI 改写额度：${aiRewriteRemaining ?? "加载中"} 次；文本 AI 额度：${textActionRemaining ?? "加载中"} 次；草稿评分额度：${draftScoreRemaining ?? "加载中"} 次`}
+              description="AI 改写、标题/标签生成、系统打分每次各消耗 1 次；失败会由后端自动退回。"
+            />
+            <Tabs
+              defaultActiveKey="score"
+              items={[
               {
                 key: "score",
                 label: "系统评分",
@@ -761,8 +787,8 @@ export function XhsDraftsPage() {
                     title={<Space><TrophyOutlined />系统打分</Space>}
                     loading={isLoadingDraftAiScore}
                     extra={(
-                      <Button size="small" type="primary" loading={isScoringDraft} disabled={!selectedDraft} onClick={() => void handleScoreDraft()}>
-                        保存并打分
+                      <Button size="small" type="primary" loading={isScoringDraft} disabled={!selectedDraft || draftScoreRemaining === 0} onClick={() => void handleScoreDraft()}>
+                        保存并打分（消耗 1 次）
                       </Button>
                     )}
                   >
@@ -806,11 +832,11 @@ export function XhsDraftsPage() {
                     </div>
 
                     <Space wrap>
-                      <Button onClick={() => void handleRewrite()} loading={isRewriting} icon={<ReloadOutlined />}>
-                        {activeRewriteTemplate.buttonLabel}
+                      <Button onClick={() => void handleRewrite()} loading={isRewriting} disabled={aiRewriteRemaining === 0} icon={<ReloadOutlined />}>
+                        {activeRewriteTemplate.buttonLabel}（消耗 1 次）
                       </Button>
-                      <Button onClick={() => void handleGenerateTitles()}>生成标题</Button>
-                      <Button onClick={() => void handleGenerateTags()}>生成标签</Button>
+                      <Button onClick={() => void handleGenerateTitles()} disabled={textActionRemaining === 0}>生成标题（消耗 1 次）</Button>
+                      <Button onClick={() => void handleGenerateTags()} disabled={textActionRemaining === 0}>生成标签（消耗 1 次）</Button>
                     </Space>
 
                     {titleOptions.length > 0 ? (
@@ -888,6 +914,7 @@ export function XhsDraftsPage() {
               },
             ]}
           />
+          </Space>
         )}
     />
       <Modal

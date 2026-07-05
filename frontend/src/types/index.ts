@@ -1054,6 +1054,40 @@ export type AnalyticsReportResponse = {
   };
 };
 
+export type UsageBucketKey = "image_generation" | "ai_rewrite" | "text_action" | "draft_score" | "analysis_report" | string;
+
+export type UsageBucketBalance = {
+  total: number;
+  remaining: number;
+  status: string;
+};
+
+export type UsageBalance = {
+  tenant: {
+    id: number;
+    name: string;
+    slug: string;
+    kind: string;
+    status: string;
+  };
+  membership: {
+    role: string;
+    status: string;
+  };
+  buckets: Record<UsageBucketKey, UsageBucketBalance>;
+};
+
+export type UsageLimitError = {
+  code: "usage_quota_insufficient" | "model_test_daily_limit_exceeded" | string;
+  message: string;
+  feature_key?: string;
+  bucket?: UsageBucketKey;
+  required?: number;
+  remaining?: number;
+  limit?: number;
+  used?: number;
+};
+
 export type AnalysisReportStatus = "pending" | "running" | "completed" | "failed";
 
 export type AnalysisDataHealth = {

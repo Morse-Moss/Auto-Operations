@@ -11,6 +11,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
 from backend.app.models import User
+from backend.app.services.usage_quota_service import get_or_create_default_tenant_context
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -58,7 +59,8 @@ def register(credentials: AuthCredentials, db: Session = Depends(get_db)):
 
     user = User(username=username, password_hash=hash_password(credentials.password))
     db.add(user)
-    db.commit()
+    db.flush()
+    get_or_create_default_tenant_context(db, user.id)
     db.refresh(user)
     return _token_response(user)
 

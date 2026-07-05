@@ -14,6 +14,8 @@ from backend.app.models.notification import Notification
 from backend.app.models.platform_account import AccountCookieVersion, PlatformAccount
 from backend.app.models.publish import PublishAsset, PublishJob
 from backend.app.models.task import Task
+from backend.app.models.tenant import Tenant, TenantMember
+from backend.app.models.usage_quota import BetaCreditAccount, UsageLedger
 from backend.app.models.user import User
 from backend.app.models.wechat_official import (
     WechatOfficialArticle,
@@ -39,6 +41,7 @@ __all__ = [
     "AnalysisReport",
     "ApiLog",
     "AutoTask",
+    "BetaCreditAccount",
     "CrawlDiagnostic",
     "DEFAULT_TEXT_MODEL_NAME",
     "DraftAiScoreResult",
@@ -62,6 +65,9 @@ __all__ = [
     "PublishJob",
     "Tag",
     "Task",
+    "Tenant",
+    "TenantMember",
+    "UsageLedger",
     "User",
     "WechatOfficialArticle",
     "WechatOfficialArticleComment",
