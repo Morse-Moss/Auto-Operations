@@ -14,6 +14,7 @@ from backend.app.api.platforms.wechat_official import router as wechat_official_
 from backend.app.api.platforms.xhs import analysis_center, analytics, crawl, creator, data_acquisition, monitoring, pc
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
+from backend.app.services.beta_concurrency_service import BetaConcurrencyLimitExceeded
 from backend.app.services.scheduler_service import run_due_auto_tasks, shutdown_due_publish_scheduler, start_due_publish_scheduler
 from backend.app.services.usage_quota_service import UsageQuotaInsufficientError
 
@@ -47,6 +48,10 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(UsageQuotaInsufficientError)
     async def _usage_quota_insufficient_handler(_request, exc: UsageQuotaInsufficientError):
+        return JSONResponse(status_code=exc.status_code, content=exc.payload)
+
+    @app.exception_handler(BetaConcurrencyLimitExceeded)
+    async def _beta_concurrency_limit_handler(_request, exc: BetaConcurrencyLimitExceeded):
         return JSONResponse(status_code=exc.status_code, content=exc.payload)
 
     @app.get("/api/health", tags=["health"])

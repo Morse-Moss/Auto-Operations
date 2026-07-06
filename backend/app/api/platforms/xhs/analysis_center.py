@@ -13,6 +13,7 @@ from backend.app.core.deps import get_current_tenant_context, get_current_user
 from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.user import User
 from backend.app.services.ai_service import TextAiClient
+from backend.app.services.beta_concurrency_service import acquire_analysis_report_lease
 from backend.app.services.usage_quota_service import UsageQuotaService
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
 
@@ -114,6 +115,24 @@ def _reserve_analysis_report_usage(
     )
 
 
+def _acquire_analysis_report_guard(
+    *,
+    request: Request,
+    db: Session,
+    current_user: User,
+    feature_key: str,
+    payload: CreateAnalysisReportPayload,
+):
+    context = get_current_tenant_context(current_user=current_user, db=db)
+    return acquire_analysis_report_lease(
+        db=db,
+        tenant_id=context.tenant.id,
+        user_id=current_user.id,
+        feature_key=feature_key,
+        idempotency_key=_quota_idempotency_key(request, f"{feature_key}:{current_user.id}:{payload.keyword_group_id}:{payload.title}"),
+    )
+
+
 @router.post("/health")
 def check_analysis_health(
     payload: AnalysisHealthPayload,
@@ -189,34 +208,48 @@ def create_report(
     text_ai_client: TextAiClient = Depends(get_text_ai_client),
 ):
     model_config, api_key = _text_model_context_or_none(db, current_user)
-    usage_reservation = _reserve_analysis_report_usage(
+    concurrency_guard = _acquire_analysis_report_guard(
         request=request,
         db=db,
         current_user=current_user,
         feature_key="analysis.report_create",
         payload=payload,
-        model_config=model_config,
     )
     try:
-        report = XhsAnalysisCenterService(db).create_report(
-            user_id=current_user.id,
-            payload=_report_payload(payload),
+        usage_reservation = _reserve_analysis_report_usage(
+            request=request,
+            db=db,
+            current_user=current_user,
+            feature_key="analysis.report_create",
+            payload=payload,
             model_config=model_config,
-            api_key=api_key,
-            ai_client=text_ai_client,
         )
-    except AnalysisValidationError as exc:
-        UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except Exception as exc:
-        UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
+    except Exception:
+        concurrency_guard.release(reason="analysis report quota reservation failed")
         raise
+    try:
+        try:
+            report = XhsAnalysisCenterService(db).create_report(
+                user_id=current_user.id,
+                payload=_report_payload(payload),
+                model_config=model_config,
+                api_key=api_key,
+                ai_client=text_ai_client,
+            )
+        except AnalysisValidationError as exc:
+            UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except Exception as exc:
+            UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
+            raise
 
-    if report.status == "completed":
-        UsageQuotaService(db).commit(usage_reservation.id)
-    else:
-        UsageQuotaService(db).refund(usage_reservation.id, failure_reason=report.error_message or "analysis report failed")
-    return _serialize_report(report)
+        if report.status == "completed":
+            UsageQuotaService(db).commit(usage_reservation.id)
+        else:
+            UsageQuotaService(db).refund(usage_reservation.id, failure_reason=report.error_message or "analysis report failed")
+        return _serialize_report(report)
+    finally:
+        concurrency_guard.release(reason="analysis report finished")
 
 
 @router.post("/reports/{report_id}/topic-cards/{card_id}/drafts")
@@ -266,35 +299,49 @@ def rerun_report(
     raw_payload["title"] = f"{original.title} - 重跑"
     payload = CreateAnalysisReportPayload.model_validate(raw_payload)
     model_config, api_key = _text_model_context_or_none(db, current_user)
-    usage_reservation = _reserve_analysis_report_usage(
+    concurrency_guard = _acquire_analysis_report_guard(
         request=request,
         db=db,
         current_user=current_user,
         feature_key="analysis.report_rerun",
         payload=payload,
-        model_config=model_config,
     )
     try:
-        report = XhsAnalysisCenterService(db).create_report(
-            user_id=current_user.id,
-            payload=_report_payload(payload),
+        usage_reservation = _reserve_analysis_report_usage(
+            request=request,
+            db=db,
+            current_user=current_user,
+            feature_key="analysis.report_rerun",
+            payload=payload,
             model_config=model_config,
-            api_key=api_key,
-            ai_client=text_ai_client,
         )
-    except AnalysisValidationError as exc:
-        UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except Exception as exc:
-        UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
+    except Exception:
+        concurrency_guard.release(reason="analysis rerun quota reservation failed")
         raise
+    try:
+        try:
+            report = XhsAnalysisCenterService(db).create_report(
+                user_id=current_user.id,
+                payload=_report_payload(payload),
+                model_config=model_config,
+                api_key=api_key,
+                ai_client=text_ai_client,
+            )
+        except AnalysisValidationError as exc:
+            UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except Exception as exc:
+            UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
+            raise
 
-    report.rerun_from_report_id = original.id
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    if report.status == "completed":
-        UsageQuotaService(db).commit(usage_reservation.id)
-    else:
-        UsageQuotaService(db).refund(usage_reservation.id, failure_reason=report.error_message or "analysis report failed")
-    return _serialize_report(report)
+        report.rerun_from_report_id = original.id
+        db.add(report)
+        db.commit()
+        db.refresh(report)
+        if report.status == "completed":
+            UsageQuotaService(db).commit(usage_reservation.id)
+        else:
+            UsageQuotaService(db).refund(usage_reservation.id, failure_reason=report.error_message or "analysis report failed")
+        return _serialize_report(report)
+    finally:
+        concurrency_guard.release(reason="analysis rerun finished")

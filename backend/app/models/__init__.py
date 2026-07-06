@@ -2,6 +2,7 @@ from backend.app.models.ai import DEFAULT_TEXT_MODEL_NAME, AiDraft, AiGeneratedA
 from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.api_log import ApiLog
 from backend.app.models.auto_task import AutoTask
+from backend.app.models.concurrency import BetaConcurrencyLease
 from backend.app.models.crawl_diagnostic import CrawlDiagnostic
 from backend.app.models.data_acquisition import DataAcquisitionCandidate, DataAcquisitionRun, NoteSourceSnapshot
 from backend.app.models.keyword_discovery import KeywordDiscoveryItem, KeywordDiscoveryRun
@@ -43,6 +44,7 @@ __all__ = [
     "AnalysisReport",
     "ApiLog",
     "AutoTask",
+    "BetaConcurrencyLease",
     "BetaCreditAccount",
     "CrawlDiagnostic",
     "DataAcquisitionCandidate",
