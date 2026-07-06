@@ -362,6 +362,11 @@ def import_candidates(
     candidate_ids: list[int],
 ) -> list[Note]:
     candidates = get_owned_candidates(db, current_user, candidate_ids)
+    if any(candidate.status == "excluded" for candidate in candidates):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="请先恢复已排除候选，再执行入库。",
+        )
     imported: list[Note] = []
     for candidate in candidates:
         if candidate.status == "imported" and candidate.imported_note_id:
@@ -369,7 +374,7 @@ def import_candidates(
             if note is not None and note.user_id == current_user.id:
                 imported.append(note)
                 continue
-        if candidate.status not in {"pending", "excluded"}:
+        if candidate.status != "pending":
             continue
         note = _find_existing_note(db, current_user, candidate)
         run = db.get(DataAcquisitionRun, candidate.run_id)

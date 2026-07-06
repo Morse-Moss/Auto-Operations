@@ -10,7 +10,9 @@ from backend.app.api.publish import get_creator_publish_adapter_factory
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
+from backend.app.core.time import shanghai_now
 from backend.app.models import Task, User
+from backend.app.models.data_acquisition import DataAcquisitionRun
 from backend.app.schemas.common import paginated
 from backend.app.services.scheduler_service import run_due_publish_jobs
 
@@ -52,6 +54,38 @@ def _is_scheduler_task(task: Task) -> bool:
     if task.task_type == "monitoring_refresh":
         return bool((task.payload or {}).get("scheduler"))
     return False
+
+
+def _data_acquisition_run_for_task(db: Session, current_user: User, task: Task) -> DataAcquisitionRun | None:
+    if task.task_type != "data_acquisition_note_search":
+        return None
+    payload = task.payload or {}
+    run_id = payload.get("data_acquisition_run_id")
+    if not isinstance(run_id, int):
+        return None
+    run = db.get(DataAcquisitionRun, run_id)
+    if run is None or run.user_id != current_user.id or run.task_id != task.id:
+        return None
+    return run
+
+
+def _cancel_data_acquisition_task(db: Session, current_user: User, task: Task) -> bool:
+    run = _data_acquisition_run_for_task(db, current_user, task)
+    if run is None or task.status not in {"pending", "running"}:
+        return False
+    now = shanghai_now()
+    if run.status == "pending":
+        run.status = "cancelled"
+        run.finished_at = now
+        task.status = "cancelled"
+        task.finished_at = now
+    elif run.status == "running":
+        run.cancellation_requested = True
+    else:
+        return False
+    db.commit()
+    db.refresh(task)
+    return True
 
 
 @router.get("")
@@ -148,8 +182,11 @@ def cancel_task(
     db: Session = Depends(get_db),
 ):
     task = _get_owned_task(db, current_user, task_id)
+    if _cancel_data_acquisition_task(db, current_user, task):
+        return serialize_task(task)
     if task.status in {"pending", "running"}:
         task.status = "cancelled"
+        task.finished_at = shanghai_now()
         db.commit()
         db.refresh(task)
     return serialize_task(task)
