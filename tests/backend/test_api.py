@@ -1440,7 +1440,10 @@ def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
         assert polled["status"] == "confirmed"
         assert polled["account"]["platform"] == "huitun"
         assert polled["account"]["sub_type"] == "main"
-        assert polled["account"]["nickname"] == "灰豚运营号"
+        assert polled["account"]["nickname"] == "数据账号运营号"
+        assert polled["account"]["external_user_id"].startswith("数据账号 ")
+        assert "灰豚" not in polled["account"]["nickname"]
+        assert "huitun" not in polled["account"]["external_user_id"].lower()
         assert "final-token" not in str(polled)
 
         accounts_response = client.get(
@@ -1450,7 +1453,10 @@ def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
         assert accounts_response.status_code == 200
         accounts_payload = accounts_response.json()
         assert accounts_payload["total"] == 1
-        assert accounts_payload["items"][0]["nickname"] == "灰豚运营号"
+        assert accounts_payload["items"][0]["nickname"] == "数据账号运营号"
+        assert accounts_payload["items"][0]["external_user_id"].startswith("数据账号 ")
+        assert "灰豚" not in accounts_payload["items"][0]["nickname"]
+        assert "huitun" not in accounts_payload["items"][0]["external_user_id"].lower()
         assert accounts_payload["items"][0]["sub_type"] == "main"
 
         db = next(app.dependency_overrides[get_db]())

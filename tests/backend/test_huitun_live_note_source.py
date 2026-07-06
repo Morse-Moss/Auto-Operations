@@ -1,6 +1,56 @@
 from __future__ import annotations
 
-from backend.app.services.huitun_live_note_source import _rows_from_response
+from datetime import datetime
+
+import pytest
+
+from backend.app.services import huitun_live_note_source as source
+from backend.app.services import huitun_account_service as account_source
+from backend.app.services.huitun_live_note_source import _rows_from_response, search_notes
+
+
+class FakeResponse:
+    status_code = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class FakeSession:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+        self.cookies = FakeCookieJar()
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append({"url": url, "params": dict(params or {}), "timeout": timeout})
+        return FakeResponse(self.payload)
+
+
+class FakeCookieJar:
+    def __init__(self):
+        self.values = {}
+
+    def set(self, key, value, domain=None, path=None):
+        self.values[str(key)] = str(value)
+
+    def __iter__(self):
+        for name, value in self.values.items():
+            yield type("Cookie", (), {"name": name, "value": value})()
+
+
+class FakeQrSession:
+    def __init__(self):
+        self.cookies = FakeCookieJar()
+
+    def get(self, url, params=None, timeout=None):
+        return FakeResponse({"status": 0, "extData": {"userId": "from-check-only"}})
 
 
 def test_note_search_rows_map_verified_fields_to_candidates():
@@ -71,3 +121,95 @@ def test_note_search_rows_map_verified_fields_to_candidates():
             },
         }
     ]
+
+
+def test_search_notes_uses_verified_browser_query_shape(monkeypatch):
+    fake_session = FakeSession(
+        {
+            "status": 0,
+            "extData": {
+                "list": [
+                    {
+                        "noteId": "note-1",
+                        "title": "bathtub storage",
+                        "desc": "small bathroom idea",
+                    }
+                ]
+            },
+        }
+    )
+    monkeypatch.setattr(source, "_session_from_cookie_text", lambda _cookie_text: fake_session)
+    monkeypatch.setattr(source, "shanghai_now", lambda: datetime(2026, 7, 6, 12, 0, 0), raising=False)
+    monkeypatch.setattr(source, "_now_ms", lambda: 1234567890)
+
+    rows = search_notes("session=ok", " 浴缸 ", 3, sort="interaction", note_type="all")
+
+    assert [row["platform_note_id"] for row in rows] == ["note-1"]
+    assert fake_session.calls == [
+        {
+            "url": source.HUITUN_NOTE_SEARCH_URL,
+            "params": {
+                "_t": 1234567890,
+                "vs": "16101520.52.102",
+                "Source": "web",
+                "keyword": "浴缸",
+                "page": 1,
+                "pageSize": 3,
+                "sort": 5,
+                "rangeList": "1,2,3,5",
+                "dateStart": "2026-06-07",
+                "dateEnd": "2026-07-06",
+                "days": 30,
+                "del": True,
+            },
+            "timeout": 20,
+        }
+    ]
+
+
+def test_search_notes_treats_expired_token_status_as_login_expired(monkeypatch):
+    fake_session = FakeSession({"status": 1000, "message": "login expired"})
+    monkeypatch.setattr(source, "_session_from_cookie_text", lambda _cookie_text: fake_session)
+
+    with pytest.raises(RuntimeError, match=source.NOTE_SEARCH_LOGIN_EXPIRED_MESSAGE):
+        search_notes("session=expired", "浴缸", 3)
+
+
+def test_account_login_validation_rejects_expired_status_even_with_ext_data(monkeypatch):
+    fake_session = FakeSession({"status": 1000, "extData": {"userId": "stale-user"}})
+    monkeypatch.setattr(account_source, "_session_from_cookie_text", lambda _cookie_text: fake_session)
+
+    with pytest.raises(RuntimeError, match=account_source.HUITUN_INVALID_LOGIN_MESSAGE):
+        account_source.validate_huitun_login_state('{"xhsapiToken":"expired"}')
+
+
+def test_data_account_user_facing_messages_do_not_expose_internal_provider_name():
+    from backend.app.api import huitun_login_sessions
+
+    messages = [
+        account_source.HUITUN_INVALID_LOGIN_MESSAGE,
+        account_source.HUITUN_QR_FAILED_MESSAGE,
+        huitun_login_sessions.HUITUN_LOGIN_STATUS_CHECK_FAILED_MESSAGE,
+        huitun_login_sessions.HUITUN_ACCOUNT_INFO_FAILED_MESSAGE,
+    ]
+
+    for message in messages:
+        assert "数据账号" in message
+        assert "灰豚" not in message
+        assert "huitun" not in message.lower()
+
+
+def test_qrcode_status_does_not_confirm_when_current_user_validation_fails(monkeypatch):
+    monkeypatch.setattr(account_source.requests, "Session", FakeQrSession)
+    monkeypatch.setattr(
+        account_source,
+        "validate_huitun_login_state",
+        lambda _cookies_text: (_ for _ in ()).throw(RuntimeError("invalid login")),
+    )
+
+    result = account_source.check_huitun_qrcode_status(
+        {"ticket": "ticket-1", "cookies": {"xhsapiToken": "temp-token"}}
+    )
+
+    assert result["status"] == "pending"
+    assert result["user_info"] is None

@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import requests
 
+from backend.app.core.time import shanghai_now
 from backend.app.services.huitun_crypto import HUITUN_EXT_DATA_DECRYPT_FAILED_MESSAGE, decrypt_huitun_ext_data
 from backend.app.services.huitun_live_keyword_source import _now_ms, _session_from_cookie_text
 
 HUITUN_NOTE_SEARCH_URL = "https://xhsapi.huitun.com/note/searchV2"
+HUITUN_WEB_VERSION = "16101520.52.102"
 NOTE_SEARCH_MAX_LIMIT = 100
+NOTE_SEARCH_DEFAULT_DAYS = 30
+NOTE_SEARCH_DEFAULT_RANGE_LIST = "1,2,3,5"
+NOTE_SEARCH_SORT_MAP = {
+    "time": 0,
+    "latest": 0,
+    "publish_time": 0,
+    "like": 1,
+    "collect": 2,
+    "collection": 2,
+    "comment": 3,
+    "share": 4,
+    "interaction": 5,
+    "stat": 5,
+    "read": 6,
+}
 
 NOTE_SEARCH_FAILED_MESSAGE = "本次数据获取失败，任务已停止。"
 NOTE_SEARCH_STRUCTURE_CHANGED_MESSAGE = "笔记数据返回结构已变化，任务已停止。"
@@ -64,6 +82,50 @@ def _dedupe_texts(values: list[str]) -> list[str]:
             result.append(cleaned)
             seen.add(cleaned)
     return result
+
+
+def _normalize_sort(sort: Any) -> int:
+    if isinstance(sort, bool) or sort is None:
+        return NOTE_SEARCH_SORT_MAP["interaction"]
+    try:
+        return int(sort)
+    except (TypeError, ValueError):
+        pass
+    return NOTE_SEARCH_SORT_MAP.get(str(sort).strip().lower(), NOTE_SEARCH_SORT_MAP["interaction"])
+
+
+def _note_type_param(note_type: Any) -> str:
+    value = _text(note_type)
+    return "" if value.lower() == "all" else value
+
+
+def _date_range_params(days: int = NOTE_SEARCH_DEFAULT_DAYS) -> dict[str, Any]:
+    end_date = shanghai_now().date()
+    start_date = end_date - timedelta(days=days - 1)
+    return {
+        "dateStart": start_date.isoformat(),
+        "dateEnd": end_date.isoformat(),
+        "days": days,
+    }
+
+
+def _search_params(keyword: str, limit: int, *, sort: Any, note_type: Any) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "_t": _now_ms(),
+        "vs": HUITUN_WEB_VERSION,
+        "Source": "web",
+        "keyword": keyword,
+        "page": 1,
+        "pageSize": limit,
+        "sort": _normalize_sort(sort),
+        "rangeList": NOTE_SEARCH_DEFAULT_RANGE_LIST,
+        **_date_range_params(),
+        "del": True,
+    }
+    normalized_note_type = _note_type_param(note_type)
+    if normalized_note_type:
+        params["noteType"] = normalized_note_type
+    return params
 
 
 def _tags_from_item(item: dict[str, Any]) -> list[str]:
@@ -164,14 +226,7 @@ def search_notes(
     try:
         response = session.get(
             HUITUN_NOTE_SEARCH_URL,
-            params={
-                "_t": _now_ms(),
-                "keyword": keyword,
-                "page": 1,
-                "pageSize": effective_limit,
-                "sort": sort,
-                "noteType": note_type,
-            },
+            params=_search_params(keyword, effective_limit, sort=sort, note_type=note_type),
             timeout=20,
         )
     except requests.Timeout as exc:
@@ -192,7 +247,7 @@ def search_notes(
     if not isinstance(payload, dict):
         raise RuntimeError(NOTE_SEARCH_STRUCTURE_CHANGED_MESSAGE)
     status_code = payload.get("status") or payload.get("code")
-    if status_code in {1001, 401, 403}:
+    if status_code in {1000, 1001, 401, 403}:
         raise RuntimeError(NOTE_SEARCH_LOGIN_EXPIRED_MESSAGE)
     if status_code not in {0, 200, None}:
         message = _text(payload.get("message") or payload.get("msg"))

@@ -36,6 +36,8 @@ def _latest_cookie_text(db: Session, current_user: User, account_id: int | None)
     account = db.get(PlatformAccount, account_id)
     if account is None or account.user_id != current_user.id or account.platform != "huitun" or account.sub_type != "main":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据账号不存在。")
+    if account.status != "active":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数据账号登录状态已过期，请重新登录。")
     cookie_version = db.scalars(
         select(AccountCookieVersion)
         .where(AccountCookieVersion.platform_account_id == account.id)

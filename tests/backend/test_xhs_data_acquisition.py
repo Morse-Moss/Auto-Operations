@@ -481,6 +481,48 @@ def test_note_search_failure_records_failed_run_without_fallback_candidates(tmp_
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_note_search_does_not_call_source_when_data_account_is_expired(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    fake = FakeNoteSource([sample_note_row()])
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        db = SessionLocal()
+        try:
+            account = db.get(PlatformAccount, account_id)
+            account.status = "expired"
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "account_id": account_id,
+                "params": {"keyword": "浴缸", "limit": 3, "sort": "interaction", "note_type": "all"},
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "failed"
+        assert payload["candidate_count"] == 0
+        assert fake.calls == []
+        assert payload["user_message"] == "本次数据获取失败，任务已停止。"
+
+        db = SessionLocal()
+        try:
+            run = db.scalars(select(DataAcquisitionRun)).one()
+            assert "数据账号登录状态已过期" in run.error_message
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_unverified_acquisition_types_are_rejected_without_creating_task(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:

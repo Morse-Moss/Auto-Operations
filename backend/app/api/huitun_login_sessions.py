@@ -15,6 +15,9 @@ from backend.app.services.account_service import serialize_account, upsert_platf
 
 router = APIRouter(prefix="/huitun/login-sessions", tags=["huitun-login-sessions"])
 
+HUITUN_LOGIN_STATUS_CHECK_FAILED_MESSAGE = "数据账号登录状态检查失败，请稍后重试。"
+HUITUN_ACCOUNT_INFO_FAILED_MESSAGE = "数据账号信息获取失败，请刷新二维码重试。"
+
 
 def _dump_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -85,7 +88,7 @@ def huitun_login_session(
         state = _load_json(decrypt_text(session.encrypted_temp_cookies))
         result = client.check_huitun_qrcode_status(state)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="灰豚登录状态检查失败，请稍后重试。") from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=HUITUN_LOGIN_STATUS_CHECK_FAILED_MESSAGE) from exc
 
     session.status = result.get("status") or "pending"
     if result.get("cookies_text"):
@@ -100,7 +103,7 @@ def huitun_login_session(
         cookies_text = result.get("cookies_text") or _dump_json(state.get("cookies") or {})
         user_info = result.get("user_info")
         if not isinstance(user_info, dict):
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="灰豚账号信息获取失败，请刷新二维码重试。")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=HUITUN_ACCOUNT_INFO_FAILED_MESSAGE)
         account, action = upsert_platform_account_from_login(
             db=db,
             user_id=current_user.id,

@@ -11,6 +11,20 @@ from backend.app.core.time import shanghai_now
 from backend.app.models import AccountCookieVersion, PlatformAccount
 from xhs_utils.cookie_util import trans_cookies
 
+DATA_ACCOUNT_DISPLAY_NAME = "数据账号"
+DATA_ACCOUNT_INTERNAL_TEXT_REPLACEMENTS = (
+    ("第三方数据源", DATA_ACCOUNT_DISPLAY_NAME),
+    ("灰豚", DATA_ACCOUNT_DISPLAY_NAME),
+    ("Huitun", DATA_ACCOUNT_DISPLAY_NAME),
+    ("huitun", DATA_ACCOUNT_DISPLAY_NAME),
+    ("extData", ""),
+    ("connector", ""),
+    ("supplier", ""),
+    ("internal API", ""),
+    ("Cookie", "登录凭证"),
+    ("cookie", "登录凭证"),
+)
+
 
 def account_profile_from_user_info(user_info: dict[str, Any]) -> dict[str, Any]:
     profile = user_info.get("profile")
@@ -84,6 +98,28 @@ def enrich_user_info_with_xhs_self_profile(user_info: dict[str, Any], response: 
     }
 
 
+def _public_data_account_text(value: Any, fallback: str = DATA_ACCOUNT_DISPLAY_NAME) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    for source, replacement in DATA_ACCOUNT_INTERNAL_TEXT_REPLACEMENTS:
+        text = text.replace(source, replacement)
+    text = text.replace(f"{DATA_ACCOUNT_DISPLAY_NAME}账号", DATA_ACCOUNT_DISPLAY_NAME)
+    text = text.replace(f"{DATA_ACCOUNT_DISPLAY_NAME}帐号", DATA_ACCOUNT_DISPLAY_NAME)
+    while f"{DATA_ACCOUNT_DISPLAY_NAME}{DATA_ACCOUNT_DISPLAY_NAME}" in text:
+        text = text.replace(f"{DATA_ACCOUNT_DISPLAY_NAME}{DATA_ACCOUNT_DISPLAY_NAME}", DATA_ACCOUNT_DISPLAY_NAME)
+    text = " ".join(text.split())
+    return text or fallback
+
+
+def _public_data_account_external_id(value: Any, account_id: int | None) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if not text or "huitun" in lowered or "灰豚" in text:
+        return f"{DATA_ACCOUNT_DISPLAY_NAME} {account_id}" if account_id else DATA_ACCOUNT_DISPLAY_NAME
+    return _public_data_account_text(text, fallback=f"{DATA_ACCOUNT_DISPLAY_NAME} {account_id}" if account_id else DATA_ACCOUNT_DISPLAY_NAME)
+
+
 def serialize_account(account: PlatformAccount, action: str | None = None) -> dict[str, Any]:
     try:
         profile = json.loads(account.profile_json or "{}")
@@ -92,15 +128,23 @@ def serialize_account(account: PlatformAccount, action: str | None = None) -> di
     except json.JSONDecodeError:
         profile = {}
 
+    nickname = account.nickname
+    external_user_id = account.external_user_id
+    status_message = account.status_message
+    if account.platform == "huitun":
+        nickname = _public_data_account_text(account.nickname)
+        external_user_id = _public_data_account_external_id(account.external_user_id, account.id)
+        status_message = _public_data_account_text(account.status_message, fallback="")
+
     payload = {
         "id": account.id,
         "platform": account.platform,
         "sub_type": account.sub_type,
-        "external_user_id": account.external_user_id,
-        "nickname": account.nickname,
+        "external_user_id": external_user_id,
+        "nickname": nickname,
         "avatar_url": account.avatar_url,
         "status": account.status,
-        "status_message": account.status_message,
+        "status_message": status_message,
         "profile": profile,
         "created_at": account.created_at.isoformat() if account.created_at else None,
         "updated_at": (account.updated_at or account.created_at).isoformat() if (account.updated_at or account.created_at) else None,

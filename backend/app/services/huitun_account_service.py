@@ -16,8 +16,8 @@ HUITUN_QR_TICKET_URL = "https://login.huitun.com/weChat/getTicket"
 HUITUN_QR_CHECK_URL = "https://xhsapi.huitun.com/user/checkHuiTunLogin"
 HUITUN_CURRENT_USER_URL = "https://xhsapi.huitun.com/user/currentUser"
 HUITUN_QR_TAG = "XiaoHongShu"
-HUITUN_INVALID_LOGIN_MESSAGE = "灰豚登录态无效或已过期。"
-HUITUN_QR_FAILED_MESSAGE = "灰豚二维码生成失败，请稍后重试。"
+HUITUN_INVALID_LOGIN_MESSAGE = "数据账号登录态无效或已过期。"
+HUITUN_QR_FAILED_MESSAGE = "数据账号二维码生成失败，请稍后重试。"
 
 
 def _now_ms() -> int:
@@ -76,7 +76,7 @@ def _normalize_user_info(payload: dict[str, Any], cookies_text: str) -> dict[str
         or data.get("name")
         or data.get("userName")
         or data.get("companyName")
-        or "灰豚账号"
+        or "数据账号"
     )
     avatar_url = data.get("avatar") or data.get("avatarUrl") or data.get("headImgUrl") or ""
     external_user_id = str(user_id or "").strip()
@@ -85,7 +85,7 @@ def _normalize_user_info(payload: dict[str, Any], cookies_text: str) -> dict[str
 
     return {
         "external_user_id": external_user_id,
-        "nickname": str(nickname or "灰豚账号"),
+        "nickname": str(nickname or "数据账号"),
         "avatar_url": str(avatar_url or ""),
         "profile": {
             "source": "huitun",
@@ -162,10 +162,7 @@ def check_huitun_qrcode_status(state: dict[str, Any]) -> dict[str, Any]:
         try:
             user_info = validate_huitun_login_state(cookies_text)
         except Exception:
-            if isinstance(ext_data, dict):
-                user_info = _normalize_user_info({"extData": ext_data}, cookies_text)
-            else:
-                return {"status": "pending", "cookies_text": cookies_text, "user_info": None}
+            return {"status": "pending", "cookies_text": cookies_text, "user_info": None}
         return {"status": "confirmed", "cookies_text": cookies_text, "user_info": user_info}
 
     return {"status": "pending", "cookies_text": cookies_text, "user_info": None}
@@ -181,7 +178,7 @@ def validate_huitun_login_state(cookie_text: str) -> dict[str, Any]:
         raise RuntimeError(HUITUN_INVALID_LOGIN_MESSAGE) from exc
 
     status_code = payload.get("status")
-    if status_code in {1001, 401, 403}:
+    if status_code in {1000, 1001, 401, 403}:
         raise RuntimeError(HUITUN_INVALID_LOGIN_MESSAGE)
     if status_code not in {0, 200} and not payload.get("extData"):
         raise RuntimeError(HUITUN_INVALID_LOGIN_MESSAGE)
