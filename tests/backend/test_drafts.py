@@ -49,6 +49,11 @@ def set_draft_media_storage(monkeypatch, tmp_path):
     return media_dir
 
 
+def assert_signed_media_url(url: str, file_name: str) -> None:
+    assert url.startswith(f"/api/files/media/{file_name}?")
+    assert "token=" in url
+
+
 def create_original_draft_with_assets(db, user: User) -> AiDraft:
     account = PlatformAccount(
         user_id=user.id,
@@ -265,7 +270,7 @@ def test_localize_draft_asset_returns_existing_local_path(tmp_path, monkeypatch)
         payload = response.json()
         assert payload["id"] == asset_id
         assert payload["local_path"] == expected_local_path
-        assert payload["url"] == f"/api/files/media/{expected_local_path}"
+        assert_signed_media_url(payload["url"], expected_local_path)
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -345,7 +350,7 @@ def test_localize_draft_asset_downloads_external_url(tmp_path, monkeypatch):
         payload = response.json()
         assert payload["id"] == asset_id
         assert payload["local_path"] == file_name
-        assert payload["url"] == f"/api/files/media/{file_name}"
+        assert_signed_media_url(payload["url"], file_name)
         assert download_calls == [("https://cdn.example.test/a.jpg", owner.id, "image", "xhs")]
 
         db = SessionLocal()
@@ -510,7 +515,7 @@ def test_localize_draft_asset_deletes_download_when_conditional_update_loses_rac
         assert response.status_code == 200
         payload = response.json()
         assert payload["local_path"] == existing_file_name
-        assert payload["url"] == f"/api/files/media/{existing_file_name}"
+        assert_signed_media_url(payload["url"], existing_file_name)
         assert not media_dir.joinpath(downloaded_file_name).exists()
 
         db = SessionLocal()
@@ -869,7 +874,7 @@ def test_add_draft_asset_accepts_current_user_upload_file_name(tmp_path, monkeyp
         assert response.status_code == 200
         payload = response.json()
         assert payload["local_path"] == file_name
-        assert payload["url"] == f"/api/files/media/{file_name}"
+        assert_signed_media_url(payload["url"], file_name)
     finally:
         app.dependency_overrides.pop(get_db, None)
 
