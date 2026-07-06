@@ -13,7 +13,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_tenant_context, get_current_user
 from backend.app.api.ai import _recorded_text_task, _text_model_context, get_text_ai_client
 from backend.app.models import AiDraft, DraftAiScoreResult, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User, WechatOfficialDraftSource
 from backend.app.schemas.common import paginated
@@ -21,7 +21,7 @@ from backend.app.services.ai_service import TextAiClient
 from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.asset_storage_policy import create_signed_media_url, valid_media_owner_prefixes
 from backend.app.services.draft_ai_scoring_service import DraftAiScoringService
-from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
+from backend.app.services.usage_quota_service import UsageQuotaService
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
@@ -601,7 +601,7 @@ def score_draft_with_ai(
         select(DraftAsset).where(DraftAsset.draft_id == draft.id).order_by(DraftAsset.sort_order.asc(), DraftAsset.id.asc())
     ).all()
     model_config, api_key = _text_model_context(db, current_user)
-    tenant_context = get_or_create_default_tenant_context(db, current_user.id)
+    tenant_context = get_current_tenant_context(current_user=current_user, db=db)
     usage_reservation = UsageQuotaService(db).reserve(
         tenant_id=tenant_context.tenant.id,
         user_id=current_user.id,

@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.core.security import decrypt_text
 from backend.app.main import app
+from test_support.beta_invites import create_test_invite_code
 from backend.app.models import WechatOfficialBackendSession
 from backend.app.services.wechat_official_backend_session_service import get_valid_session
 
@@ -36,7 +37,7 @@ def _override_database(tmp_path):
 
 
 def _register(username: str) -> dict:
-    response = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    response = client.post("/api/auth/register", json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()})
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}

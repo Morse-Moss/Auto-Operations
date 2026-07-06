@@ -4,16 +4,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
-from backend.app.models import User
-from backend.app.services.usage_quota_service import get_or_create_default_tenant_context, UsageQuotaService
+from backend.app.core.deps import get_current_tenant_context
+from backend.app.services.usage_quota_service import TenantContext, UsageQuotaService
 
 router = APIRouter(prefix="/usage", tags=["usage"])
 
 
 @router.get("/balance")
-def usage_balance(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    context = get_or_create_default_tenant_context(db, current_user.id)
+def usage_balance(context: TenantContext = Depends(get_current_tenant_context), db: Session = Depends(get_db)):
     buckets = UsageQuotaService(db).get_balance(context.tenant.id)
     return {
         "tenant": {

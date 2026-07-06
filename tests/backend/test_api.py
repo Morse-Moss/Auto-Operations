@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.database import get_db
 from backend.app.main import app
 from backend.app.models import Note, NoteAnalysisResult
+from test_support.beta_invites import create_test_invite_code
 
 
 client = TestClient(app)
@@ -1190,7 +1191,7 @@ def test_auth_register_login_me_and_refresh_use_real_tokens(tmp_path):
     try:
         register_response = client.post(
             "/api/auth/register",
-            json={"username": "operator", "password": "secret123"},
+            json={"username": "operator", "password": "secret123", "invite_code": create_test_invite_code()},
         )
         assert register_response.status_code == 200
         registered = register_response.json()
@@ -1232,13 +1233,13 @@ def test_auth_rejects_duplicate_user_and_bad_credentials(tmp_path):
     try:
         response = client.post(
             "/api/auth/register",
-            json={"username": "operator", "password": "secret123"},
+            json={"username": "operator", "password": "secret123", "invite_code": create_test_invite_code()},
         )
         assert response.status_code == 200
 
         duplicate_response = client.post(
             "/api/auth/register",
-            json={"username": "operator", "password": "different123"},
+            json={"username": "operator", "password": "different123", "invite_code": create_test_invite_code()},
         )
         assert duplicate_response.status_code == 400
 
@@ -1392,7 +1393,7 @@ class FakePhoneLoginAdapter:
 def _register_and_get_access_token(username: str = "operator") -> str:
     response = client.post(
         "/api/auth/register",
-        json={"username": username, "password": "secret123"},
+        json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()},
     )
     assert response.status_code == 200
     return response.json()["access_token"]

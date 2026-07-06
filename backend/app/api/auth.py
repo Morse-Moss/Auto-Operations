@@ -19,6 +19,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class AuthCredentials(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=6, max_length=128)
+    invite_code: Optional[str] = Field(default=None, max_length=80)
 
 
 class RefreshRequest(BaseModel):
@@ -28,6 +29,8 @@ class RefreshRequest(BaseModel):
 class UserResponse(BaseModel):
     id: int
     username: str
+    role: str
+    status: str
 
 
 class TokenResponse(BaseModel):
@@ -38,7 +41,7 @@ class TokenResponse(BaseModel):
 
 
 def _serialize_user(user: User) -> dict:
-    return {"id": user.id, "username": user.username}
+    return {"id": user.id, "username": user.username, "role": user.role, "status": user.status}
 
 
 def _token_response(user: User) -> dict:
@@ -52,17 +55,28 @@ def _token_response(user: User) -> dict:
 
 @router.post("/register")
 def register(credentials: AuthCredentials, db: Session = Depends(get_db)):
+    from backend.app.services.invite_service import consume_invite_code
+
+    if not credentials.invite_code or not credentials.invite_code.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invitation code is required")
+
     username = credentials.username.strip()
     existing_user = db.scalar(select(User).where(User.username == username))
     if existing_user is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
 
-    user = User(username=username, password_hash=hash_password(credentials.password))
-    db.add(user)
-    db.flush()
-    get_or_create_default_tenant_context(db, user.id)
-    db.refresh(user)
-    return _token_response(user)
+    try:
+        user = User(username=username, password_hash=hash_password(credentials.password), role="user", status="active")
+        db.add(user)
+        db.flush()
+        get_or_create_default_tenant_context(db, user.id, commit=False)
+        consume_invite_code(db, code=credentials.invite_code, user_id=user.id)
+        db.commit()
+        db.refresh(user)
+        return _token_response(user)
+    except HTTPException:
+        db.rollback()
+        raise
 
 
 @router.post("/login")
@@ -71,6 +85,8 @@ def login(credentials: AuthCredentials, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.username == username))
     if user is None or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+    if user.status == "disabled":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
     return _token_response(user)
 
 
@@ -83,6 +99,8 @@ def refresh_token(payload: RefreshRequest, db: Session = Depends(get_db)):
     user = db.get(User, decoded["user_id"])
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if user.status == "disabled":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
     return {"access_token": create_access_token(user.id), "token_type": "bearer"}
 
 

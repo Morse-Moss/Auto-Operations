@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from backend.app.core.database import get_db
 from backend.app.core.security import decode_token
 from backend.app.models import User
+from backend.app.services.usage_quota_service import TenantContext, get_or_create_default_tenant_context
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
@@ -27,4 +28,22 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if user.status == "disabled":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
     return user
+
+
+def get_current_tenant_context(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TenantContext:
+    context = get_or_create_default_tenant_context(db, current_user.id)
+    if context.tenant.status == "suspended":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is suspended")
+    return context
+
+
+def require_admin_user(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+    return current_user

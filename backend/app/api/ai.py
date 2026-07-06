@@ -21,14 +21,14 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import SessionLocal, get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_tenant_context, get_current_user
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import AiDraft, AiGeneratedAsset, ModelConfig, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 from backend.app.services.asset_storage_policy import asset_owner_prefix
-from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
+from backend.app.services.usage_quota_service import UsageQuotaService
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -439,7 +439,7 @@ def _reserve_usage(
     model_config_id: int | None = None,
     provider: str = "",
 ):
-    context = get_or_create_default_tenant_context(db, current_user.id)
+    context = get_current_tenant_context(current_user=current_user, db=db)
     return UsageQuotaService(db).reserve(
         tenant_id=context.tenant.id,
         user_id=current_user.id,

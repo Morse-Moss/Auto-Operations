@@ -60,3 +60,29 @@ export function PublicOnlyRoute({ children }: RouteGuardProps) {
 
   return <>{children}</>;
 }
+
+export function AdminRoute({ children }: RouteGuardProps) {
+  const auth = useAuth();
+
+  if (auth.isChecking) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "100vh",
+          background: "#0a0a0a",
+        }}
+      >
+        <Spin size="large" tip="正在验证登录状态..." />
+      </div>
+    );
+  }
+
+  if (!auth.isAuthenticated || auth.user?.role !== "admin") {
+    return <Navigate to="/platform-select" replace />;
+  }
+
+  return <>{children}</>;
+}
