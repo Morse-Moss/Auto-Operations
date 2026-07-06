@@ -4,7 +4,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.app.api.notes import _serialize_note_with_tags
@@ -61,6 +61,17 @@ def _run_candidates(db: Session, current_user: User, run_id: int) -> list[DataAc
     ).all()
 
 
+def _candidate_counts_by_run(db: Session, current_user: User, run_ids: list[int]) -> dict[int, int]:
+    if not run_ids:
+        return {}
+    rows = db.execute(
+        select(DataAcquisitionCandidate.run_id, func.count(DataAcquisitionCandidate.id))
+        .where(DataAcquisitionCandidate.run_id.in_(run_ids), DataAcquisitionCandidate.user_id == current_user.id)
+        .group_by(DataAcquisitionCandidate.run_id)
+    ).all()
+    return {int(run_id): int(count) for run_id, count in rows}
+
+
 @router.post("/runs")
 def create_data_acquisition_run(
     payload: DataAcquisitionRunRequest,
@@ -95,7 +106,15 @@ def list_data_acquisition_runs(
     if status_filter:
         statement = statement.where(DataAcquisitionRun.status == status_filter)
     runs = db.scalars(statement.order_by(DataAcquisitionRun.created_at.desc(), DataAcquisitionRun.id.desc())).all()
-    return paginated([serialize_run(run, include_admin_debug=False) for run in runs], page, page_size)
+    candidate_counts = _candidate_counts_by_run(db, current_user, [run.id for run in runs])
+    return paginated(
+        [
+            serialize_run(run, candidate_count=candidate_counts.get(run.id, 0), include_admin_debug=False)
+            for run in runs
+        ],
+        page,
+        page_size,
+    )
 
 
 @router.get("/runs/{run_id}")
@@ -139,12 +158,13 @@ def cancel_data_acquisition_run(
     run = _owned_run(db, current_user, run_id)
     if run.status == "pending":
         run.status = "cancelled"
+        run.finished_at = shanghai_now()
     elif run.status == "running":
         run.cancellation_requested = True
     task = db.get(Task, run.task_id) if run.task_id else None
     if task is not None and task.status in {"pending", "running"}:
         task.status = "cancelled" if run.status == "cancelled" else task.status
-        task.finished_at = shanghai_now() if task.status == "cancelled" else task.finished_at
+        task.finished_at = run.finished_at if task.status == "cancelled" else task.finished_at
     db.commit()
     db.refresh(run)
     return serialize_run(run, _run_candidates(db, current_user, run.id))

@@ -38,6 +38,21 @@ class FakeNoteSource:
         return self.rows[:limit]
 
 
+def sample_note_row(note_id: str = "note-1", title: str = "浴缸收纳") -> dict[str, Any]:
+    return {
+        "platform_note_id": note_id,
+        "external_id": note_id,
+        "original_url": f"https://www.xiaohongshu.com/explore/{note_id}",
+        "title": title,
+        "content_excerpt": f"{title}方案",
+        "author_name": "家居作者",
+        "cover_url": f"https://sns-img-hw.xhscdn.com/{note_id}.jpg",
+        "asset_urls": [f"https://sns-img-hw.xhscdn.com/{note_id}.jpg"],
+        "metrics": {"like_count": 10, "collect_count": 5, "comment_count": 2, "share_count": 1},
+        "raw": {"noteId": note_id, "title": title},
+    }
+
+
 def override_database(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'xhs-data-acquisition-test.db'}", connect_args={"check_same_thread": False})
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -75,6 +90,30 @@ def create_user_account_and_headers(SessionLocal):
         return user.id, account.id, {"Authorization": f"Bearer {create_access_token(user.id)}"}
     finally:
         db.close()
+
+
+def create_successful_run(
+    *,
+    SessionLocal,
+    headers: dict[str, str],
+    account_id: int,
+    rows: list[dict[str, Any]] | None = None,
+    keyword: str = "浴缸",
+    limit: int = 10,
+):
+    fake = FakeNoteSource(rows or [sample_note_row()])
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    response = client.post(
+        "/api/xhs/data-acquisition/runs",
+        headers=headers,
+        json={
+            "acquisition_type": "note_search",
+            "account_id": account_id,
+            "params": {"keyword": keyword, "limit": limit, "sort": "interaction", "note_type": "all"},
+        },
+    )
+    assert response.status_code == 200
+    return response.json(), fake
 
 
 def test_note_search_run_creates_candidates_without_exposing_internal_source(tmp_path):
@@ -129,6 +168,225 @@ def test_note_search_run_creates_candidates_without_exposing_internal_source(tmp
         assert candidates[0]["metrics"]["like_count"] == 10
         assert "source" not in candidates[0]
         assert "raw_json" not in candidates[0]
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_rerun_creates_new_run_without_overwriting_failed_original(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    failing = FakeNoteSource(error="temporary upstream failure")
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: failing
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        failed_response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "account_id": account_id,
+                "params": {"keyword": "浴缸", "limit": 10, "sort": "interaction", "note_type": "all"},
+            },
+        )
+        failed_payload = failed_response.json()
+        assert failed_payload["status"] == "failed"
+
+        succeeding = FakeNoteSource([sample_note_row("note-rerun", "重跑结果")])
+        app.dependency_overrides[get_data_acquisition_note_source] = lambda: succeeding
+        rerun_response = client.post(
+            f"/api/xhs/data-acquisition/runs/{failed_payload['id']}/rerun",
+            headers=headers,
+        )
+
+        assert rerun_response.status_code == 200
+        rerun_payload = rerun_response.json()
+        assert rerun_payload["id"] != failed_payload["id"]
+        assert rerun_payload["status"] == "completed"
+        assert rerun_payload["params"] == failed_payload["params"]
+        assert rerun_payload["candidate_count"] == 1
+        assert "huitun" not in str(rerun_payload).lower()
+
+        db = SessionLocal()
+        try:
+            original = db.get(DataAcquisitionRun, failed_payload["id"])
+            new_run = db.get(DataAcquisitionRun, rerun_payload["id"])
+            assert original is not None
+            assert original.status == "failed"
+            assert original.error_code == "note_search_failed"
+            assert new_run is not None
+            assert new_run.rerun_of_run_id == original.id
+            assert new_run.params_json == original.params_json
+            assert new_run.account_id == original.account_id
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_cancel_pending_and_running_runs_keep_task_state_consistent(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        db = SessionLocal()
+        try:
+            pending_task = Task(user_id=user_id, platform="xhs", task_type="data_acquisition_note_search", status="pending", progress=0)
+            running_task = Task(user_id=user_id, platform="xhs", task_type="data_acquisition_note_search", status="running", progress=25)
+            db.add_all([pending_task, running_task])
+            db.flush()
+            pending_run = DataAcquisitionRun(
+                task_id=pending_task.id,
+                user_id=user_id,
+                account_id=account_id,
+                platform="xhs",
+                acquisition_type="note_search",
+                source="huitun",
+                source_mode="live_account",
+                status="pending",
+                requested_limit=10,
+                effective_limit=10,
+                params_json={"keyword": "浴缸", "limit": 10},
+            )
+            running_run = DataAcquisitionRun(
+                task_id=running_task.id,
+                user_id=user_id,
+                account_id=account_id,
+                platform="xhs",
+                acquisition_type="note_search",
+                source="huitun",
+                source_mode="live_account",
+                status="running",
+                requested_limit=10,
+                effective_limit=10,
+                params_json={"keyword": "浴缸", "limit": 10},
+            )
+            db.add_all([pending_run, running_run])
+            db.commit()
+            pending_run_id = pending_run.id
+            running_run_id = running_run.id
+            pending_task_id = pending_task.id
+            running_task_id = running_task.id
+        finally:
+            db.close()
+
+        pending_response = client.post(f"/api/xhs/data-acquisition/runs/{pending_run_id}/cancel", headers=headers)
+        running_response = client.post(f"/api/xhs/data-acquisition/runs/{running_run_id}/cancel", headers=headers)
+
+        assert pending_response.status_code == 200
+        assert running_response.status_code == 200
+        assert pending_response.json()["status"] == "cancelled"
+        assert running_response.json()["status"] == "running"
+        assert running_response.json()["cancellation_requested"] is True
+
+        db = SessionLocal()
+        try:
+            pending_run_after = db.get(DataAcquisitionRun, pending_run_id)
+            running_run_after = db.get(DataAcquisitionRun, running_run_id)
+            pending_task_after = db.get(Task, pending_task_id)
+            running_task_after = db.get(Task, running_task_id)
+            assert pending_run_after is not None
+            assert pending_run_after.status == "cancelled"
+            assert pending_run_after.finished_at is not None
+            assert pending_task_after is not None
+            assert pending_task_after.status == "cancelled"
+            assert pending_task_after.finished_at is not None
+            assert running_run_after is not None
+            assert running_run_after.status == "running"
+            assert running_run_after.cancellation_requested is True
+            assert running_task_after is not None
+            assert running_task_after.status == "running"
+            assert running_task_after.finished_at is None
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_exclude_and_restore_candidates_update_filters_and_decision_reason(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        run_payload, _fake = create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=[sample_note_row("note-a", "A"), sample_note_row("note-b", "B")],
+        )
+        first_id = run_payload["candidates"][0]["id"]
+        second_id = run_payload["candidates"][1]["id"]
+
+        exclude_response = client.post(
+            "/api/xhs/data-acquisition/candidates/exclude",
+            headers=headers,
+            json={"candidate_ids": [first_id], "reason_code": "irrelevant", "reason_text": "不相关"},
+        )
+        pending_after_exclude = client.get(
+            f"/api/xhs/data-acquisition/candidates?run_id={run_payload['id']}&status=pending",
+            headers=headers,
+        )
+        excluded_after_exclude = client.get(
+            f"/api/xhs/data-acquisition/candidates?run_id={run_payload['id']}&status=excluded",
+            headers=headers,
+        )
+
+        assert exclude_response.status_code == 200
+        excluded_item = exclude_response.json()["items"][0]
+        assert excluded_item["id"] == first_id
+        assert excluded_item["status"] == "excluded"
+        assert excluded_item["decision_reason_code"] == "irrelevant"
+        assert [item["id"] for item in pending_after_exclude.json()["items"]] == [second_id]
+        assert [item["id"] for item in excluded_after_exclude.json()["items"]] == [first_id]
+
+        restore_response = client.post(
+            "/api/xhs/data-acquisition/candidates/restore",
+            headers=headers,
+            json={"candidate_ids": [first_id]},
+        )
+        pending_after_restore = client.get(
+            f"/api/xhs/data-acquisition/candidates?run_id={run_payload['id']}&status=pending",
+            headers=headers,
+        )
+
+        assert restore_response.status_code == 200
+        restored_item = restore_response.json()["items"][0]
+        assert restored_item["status"] == "pending"
+        assert restored_item["decision_reason_code"] == ""
+        assert {item["id"] for item in pending_after_restore.json()["items"]} == {first_id, second_id}
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_list_runs_reports_candidate_count_and_task_center_links_to_run(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        run_payload, _fake = create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=[sample_note_row("note-a", "A"), sample_note_row("note-b", "B")],
+        )
+
+        runs_response = client.get("/api/xhs/data-acquisition/runs", headers=headers)
+        tasks_response = client.get("/api/tasks?platform=xhs", headers=headers)
+        task_response = client.get(f"/api/tasks/{run_payload['task_id']}", headers=headers)
+
+        assert runs_response.status_code == 200
+        listed_run = runs_response.json()["items"][0]
+        assert listed_run["id"] == run_payload["id"]
+        assert listed_run["candidate_count"] == 2
+        assert "huitun" not in str(listed_run).lower()
+
+        assert tasks_response.status_code == 200
+        listed_task = tasks_response.json()["items"][0]
+        assert listed_task["id"] == run_payload["task_id"]
+        assert listed_task["payload"]["data_acquisition_run_id"] == run_payload["id"]
+        assert listed_task["payload"]["data_acquisition_url"] == f"/platforms/xhs/crawler?run_id={run_payload['id']}"
+        assert "huitun" not in str(listed_task).lower()
+
+        assert task_response.status_code == 200
+        assert task_response.json()["payload"]["data_acquisition_run_id"] == run_payload["id"]
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
         app.dependency_overrides.pop(get_db, None)
