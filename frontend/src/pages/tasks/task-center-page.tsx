@@ -2,6 +2,7 @@ import {
   ClockCircleOutlined,
   CloseCircleOutlined,
   DashboardOutlined,
+  EyeOutlined,
   ReloadOutlined,
   SyncOutlined,
   ThunderboltOutlined,
@@ -24,12 +25,14 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { PageHeader } from "../../components/layout/app-shell";
 import {
   cancelTask,
   fetchSchedulerStatus,
   fetchTasks,
+  retryDataAcquisitionRun,
   retryTask,
   runDueTasks,
 } from "../../lib/api";
@@ -45,6 +48,7 @@ const taskTypeLabels: Record<string, string> = {
   export: "导出任务",
   creator_publish_scheduler: "定时发布",
   monitoring_refresh: "监控刷新",
+  data_acquisition_note_search: "数据获取",
 };
 
 function formatTaskTime(value: string): string {
@@ -67,6 +71,18 @@ function statusColor(status: string): string {
     default:
       return "default";
   }
+}
+
+function dataAcquisitionRunId(task: TaskRecord): number | null {
+  if (task.task_type !== "data_acquisition_note_search") return null;
+  const runId = task.payload.data_acquisition_run_id;
+  return typeof runId === "number" ? runId : null;
+}
+
+function dataAcquisitionUrl(task: TaskRecord): string | null {
+  if (task.task_type !== "data_acquisition_note_search") return null;
+  const url = task.payload.data_acquisition_url;
+  return typeof url === "string" && url.startsWith("/platforms/xhs/crawler") ? url : null;
 }
 
 export function TaskCenterPage() {
@@ -111,8 +127,13 @@ export function TaskCenterPage() {
     setIsActionLoading(true);
     setMessage(null);
     try {
-      replaceTask(await cancelTask(taskId));
-      setMessage(`任务 #${taskId} 已取消。`);
+      const updatedTask = await cancelTask(taskId);
+      replaceTask(updatedTask);
+      if (updatedTask.task_type === "data_acquisition_note_search" && updatedTask.status === "running") {
+        setMessage(`任务 #${taskId} 已请求取消，当前执行会在安全点停止。`);
+      } else {
+        setMessage(`任务 #${taskId} 已取消。`);
+      }
     } catch {
       setMessage(`任务 #${taskId} 取消失败。`);
     } finally {
@@ -128,6 +149,22 @@ export function TaskCenterPage() {
       setMessage(`任务 #${taskId} 已重新入队。`);
     } catch {
       setMessage(`任务 #${taskId} 重试失败。`);
+    } finally {
+      setIsActionLoading(false);
+    }
+  }
+
+  async function retryDataAcquisitionTask(task: TaskRecord) {
+    const runId = dataAcquisitionRunId(task);
+    if (!runId) return;
+    setIsActionLoading(true);
+    setMessage(null);
+    try {
+      const run = await retryDataAcquisitionRun(runId);
+      setMessage(`任务 #${task.id} 已重新获取，生成 ${run.candidate_count} 条候选。`);
+      await loadTasks();
+    } catch {
+      setMessage(`任务 #${task.id} 重新获取失败。`);
     } finally {
       setIsActionLoading(false);
     }
@@ -185,30 +222,41 @@ export function TaskCenterPage() {
     {
       title: "操作",
       key: "actions",
-      width: 180,
-      render: (_: unknown, record: TaskRecord) => (
-        <Space>
-          <Button
-            size="small"
-            icon={<CloseCircleOutlined />}
-            disabled={
-              isActionLoading ||
-              !["pending", "running"].includes(record.status)
-            }
-            onClick={() => cancelSelectedTask(record.id)}
-          >
-            取消
-          </Button>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            disabled={isActionLoading || record.status !== "failed"}
-            onClick={() => retrySelectedTask(record.id)}
-          >
-            重试
-          </Button>
-        </Space>
-      ),
+      width: 280,
+      render: (_: unknown, record: TaskRecord) => {
+        const acquisitionUrl = dataAcquisitionUrl(record);
+        const isDataAcquisition = record.task_type === "data_acquisition_note_search";
+        return (
+          <Space wrap>
+            {acquisitionUrl ? (
+              <Link to={acquisitionUrl}>
+                <Button size="small" icon={<EyeOutlined />}>
+                  查看候选
+                </Button>
+              </Link>
+            ) : null}
+            <Button
+              size="small"
+              icon={<CloseCircleOutlined />}
+              disabled={
+                isActionLoading ||
+                !["pending", "running"].includes(record.status)
+              }
+              onClick={() => cancelSelectedTask(record.id)}
+            >
+              取消
+            </Button>
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              disabled={isActionLoading || (isDataAcquisition ? record.status === "running" : record.status !== "failed")}
+              onClick={() => (isDataAcquisition ? retryDataAcquisitionTask(record) : retrySelectedTask(record.id))}
+            >
+              {isDataAcquisition ? "重新获取" : "重试"}
+            </Button>
+          </Space>
+        );
+      },
     },
   ];
 

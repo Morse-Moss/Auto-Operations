@@ -134,6 +134,20 @@ def test_xhs_data_acquisition_page_hides_internal_source_terms_and_keeps_high_ri
         assert forbidden not in source
 
 
+def test_task_center_links_data_acquisition_tasks_back_to_candidate_workbench():
+    source = open("frontend/src/pages/tasks/task-center-page.tsx", encoding="utf-8").read()
+
+    assert "data_acquisition_note_search" in source
+    assert "数据获取" in source
+    assert "data_acquisition_url" in source
+    assert "查看候选" in source
+    assert "重新获取" in source
+    assert "安全点停止" in source
+    assert "retryDataAcquisitionRun" in source
+    for forbidden in ("灰豚", "huitun", "extData", "connector", "第三方数据源"):
+        assert forbidden not in source
+
+
 def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()

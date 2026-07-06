@@ -904,6 +904,16 @@ export async function fetchDataAcquisitionRuns(params?: {
   return response.data;
 }
 
+export async function retryDataAcquisitionRun(runId: number): Promise<DataAcquisitionRun> {
+  const response = await http.post<DataAcquisitionRun>(`/xhs/data-acquisition/runs/${runId}/rerun`);
+  return response.data;
+}
+
+export async function cancelDataAcquisitionRun(runId: number): Promise<DataAcquisitionRun> {
+  const response = await http.post<DataAcquisitionRun>(`/xhs/data-acquisition/runs/${runId}/cancel`);
+  return response.data;
+}
+
 export async function fetchDataAcquisitionCandidates(params?: {
   run_id?: number;
   status?: string;

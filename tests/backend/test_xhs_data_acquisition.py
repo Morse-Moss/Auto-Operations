@@ -600,3 +600,142 @@ def test_import_candidates_reuses_existing_note_and_creates_snapshot_without_dow
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_excluded_candidate_requires_restore_first(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        run_payload, _fake = create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=[sample_note_row("note-excluded", "Excluded")],
+        )
+        candidate_id = run_payload["candidates"][0]["id"]
+
+        exclude_response = client.post(
+            "/api/xhs/data-acquisition/candidates/exclude",
+            headers=headers,
+            json={"candidate_ids": [candidate_id], "reason_code": "manual_exclude"},
+        )
+        import_response = client.post(
+            "/api/xhs/data-acquisition/candidates/import",
+            headers=headers,
+            json={"candidate_ids": [candidate_id]},
+        )
+
+        assert exclude_response.status_code == 200
+        assert import_response.status_code == 422
+        assert import_response.json()["detail"] == "请先恢复已排除候选，再执行入库。"
+
+        db = SessionLocal()
+        try:
+            candidate = db.get(DataAcquisitionCandidate, candidate_id)
+            assert candidate is not None
+            assert candidate.status == "excluded"
+            assert db.scalars(select(Note)).all() == []
+            assert db.scalars(select(NoteSourceSnapshot)).all() == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_task_center_cancel_coordinates_with_data_acquisition_runs(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        db = SessionLocal()
+        try:
+            pending_task = Task(
+                user_id=user_id,
+                platform="xhs",
+                task_type="data_acquisition_note_search",
+                status="pending",
+                progress=0,
+                payload={},
+            )
+            running_task = Task(
+                user_id=user_id,
+                platform="xhs",
+                task_type="data_acquisition_note_search",
+                status="running",
+                progress=20,
+                payload={},
+            )
+            db.add_all([pending_task, running_task])
+            db.flush()
+            pending_run = DataAcquisitionRun(
+                task_id=pending_task.id,
+                user_id=user_id,
+                account_id=account_id,
+                platform="xhs",
+                acquisition_type="note_search",
+                source="huitun",
+                source_mode="live_account",
+                status="pending",
+                requested_limit=10,
+                effective_limit=10,
+                params_json={"keyword": "pending"},
+            )
+            running_run = DataAcquisitionRun(
+                task_id=running_task.id,
+                user_id=user_id,
+                account_id=account_id,
+                platform="xhs",
+                acquisition_type="note_search",
+                source="huitun",
+                source_mode="live_account",
+                status="running",
+                requested_limit=10,
+                effective_limit=10,
+                params_json={"keyword": "running"},
+            )
+            db.add_all([pending_run, running_run])
+            db.flush()
+            pending_task.payload = {
+                "data_acquisition_run_id": pending_run.id,
+                "data_acquisition_url": f"/platforms/xhs/crawler?run_id={pending_run.id}",
+            }
+            running_task.payload = {
+                "data_acquisition_run_id": running_run.id,
+                "data_acquisition_url": f"/platforms/xhs/crawler?run_id={running_run.id}",
+            }
+            db.commit()
+            pending_task_id = pending_task.id
+            running_task_id = running_task.id
+            pending_run_id = pending_run.id
+            running_run_id = running_run.id
+        finally:
+            db.close()
+
+        pending_response = client.post(f"/api/tasks/{pending_task_id}/cancel", headers=headers)
+        running_response = client.post(f"/api/tasks/{running_task_id}/cancel", headers=headers)
+
+        assert pending_response.status_code == 200
+        assert running_response.status_code == 200
+
+        db = SessionLocal()
+        try:
+            pending_task_after = db.get(Task, pending_task_id)
+            running_task_after = db.get(Task, running_task_id)
+            pending_run_after = db.get(DataAcquisitionRun, pending_run_id)
+            running_run_after = db.get(DataAcquisitionRun, running_run_id)
+            assert pending_task_after is not None
+            assert pending_task_after.status == "cancelled"
+            assert pending_task_after.finished_at is not None
+            assert pending_run_after is not None
+            assert pending_run_after.status == "cancelled"
+            assert pending_run_after.finished_at is not None
+            assert running_task_after is not None
+            assert running_task_after.status == "running"
+            assert running_task_after.finished_at is None
+            assert running_run_after is not None
+            assert running_run_after.status == "running"
+            assert running_run_after.cancellation_requested is True
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
