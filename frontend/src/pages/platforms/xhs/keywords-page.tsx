@@ -244,7 +244,7 @@ export function XhsKeywordsPage() {
       return;
     }
     if (!selectedHuitunAccountId) {
-      setMessage("请先到账号矩阵绑定灰豚账号。");
+      setMessage("请先到账号矩阵绑定数据账号。");
       return;
     }
     setIsHuitunWorking(true);
@@ -260,15 +260,15 @@ export function XhsKeywordsPage() {
       setHuitunRun(run);
       setHuitunRuns((currentRuns) => [run, ...currentRuns.filter((item) => item.id !== run.id)].slice(0, 5));
       setSelectedCandidateIds(run.items.map((item) => item.id));
-      setTargetGroupName(seeds.length === 1 ? `${seeds[0]} 热词` : "灰豚批量热词");
+      setTargetGroupName(seeds.length === 1 ? `${seeds[0]} 热词` : "批量热词");
       const failedSeeds = (run.seed_results ?? []).filter((result) => result.status === "failed");
       if (run.items.length && failedSeeds.length) {
         setMessage(`已获取 ${run.items.length} 个候选词，${failedSeeds.length} 个种子词失败，成功结果仍可导入。`);
       } else {
-        setMessage(run.items.length ? "已获取灰豚候选词，请选择要导入的关键词。" : "没有获取到候选词，可展开手工导入灰豚热词临时处理。");
+        setMessage(run.items.length ? "已获取候选词，请选择要导入的关键词。" : "没有获取到候选词，可展开手工导入热词临时处理。");
       }
     } catch {
-      setMessage("灰豚候选词获取失败，请检查账号登录态，或使用手工导入灰豚热词。");
+      setMessage("候选词获取失败，请检查账号登录态，或使用手工导入热词。");
     } finally {
       setIsHuitunWorking(false);
     }
@@ -278,7 +278,7 @@ export function XhsKeywordsPage() {
     const seed = huitunSeed.trim();
     const tableRows = parseHuitunTableRows(huitunRows);
     if (!seed || tableRows.length === 0) {
-      setMessage("请粘贴灰豚热词表格或 JSON 导出。");
+      setMessage("请粘贴热词表格或 JSON 导出。");
       return;
     }
     setIsHuitunWorking(true);
@@ -292,10 +292,10 @@ export function XhsKeywordsPage() {
       });
       setHuitunRun(run);
       setSelectedCandidateIds(run.items.map((item) => item.id));
-      setTargetGroupName(seed ? `${seed} 热词` : "灰豚热词");
-      setMessage(run.items.length ? "灰豚热词已解析，请选择要导入的候选词。" : "没有解析到候选词，请粘贴灰豚热词表格或 JSON 导出。");
+      setTargetGroupName(seed ? `${seed} 热词` : "热词");
+      setMessage(run.items.length ? "热词已解析，请选择要导入的候选词。" : "没有解析到候选词，请粘贴热词表格或 JSON 导出。");
     } catch {
-      setMessage("解析失败。请粘贴灰豚热词表格或 JSON 导出。");
+      setMessage("解析失败。请粘贴热词表格或 JSON 导出。");
     } finally {
       setIsHuitunWorking(false);
     }
@@ -303,7 +303,7 @@ export function XhsKeywordsPage() {
 
   async function importSelectedCandidates() {
     if (!selectedCandidateIds.length) {
-      setMessage("请先选择要导入的灰豚热词候选词。");
+      setMessage("请先选择要导入的热词候选词。");
       return;
     }
     if (targetGroupId === "create" && !targetGroupName.trim()) {
@@ -366,25 +366,25 @@ export function XhsKeywordsPage() {
       />
 
       <Card
-        title="灰豚候选词"
+        title="热词候选"
         extra={<Tag color="gold">账号登录后自动获取</Tag>}
         style={{ background: "#1f1f1f", borderColor: "#303030", marginBottom: 24 }}
       >
         <Alert
           type="info"
           showIcon
-          message={`输入多个种子关键词，系统会用已绑定的灰豚账号低频逐个获取候选词；每个种子最多获取 ${HUITUN_LIVE_CANDIDATE_LIMIT} 个，单个种子失败不会隐藏其他成功结果。`}
-          description="为什么最多 20 个：灰豚当前热词接口单页 pageSize 超过 20 会返回“分页参数异常”。系统先稳定获取第一页候选词；多页翻页需要单独验证去重、重复页、失败保留和风控频率后再开放。"
+          message={`输入多个种子关键词，系统会用已绑定的数据账号低频逐个获取候选词；每个种子最多获取 ${HUITUN_LIVE_CANDIDATE_LIMIT} 个，单个种子失败不会隐藏其他成功结果。`}
+          description="为什么最多 20 个：当前热词获取一次最多稳定返回 20 个候选词；多页翻页需要单独验证去重、重复页、失败保留和风控频率后再开放。"
           style={{ marginBottom: 16 }}
         />
         <Row gutter={16}>
           <Col xs={24} md={8}>
-            <Form.Item label="灰豚账号">
+            <Form.Item label="数据账号">
               <Select
                 value={selectedHuitunAccountId ?? undefined}
                 onChange={setSelectedHuitunAccountId}
-                placeholder="请选择灰豚账号"
-                options={huitunAccounts.map((account) => ({ value: account.id, label: account.nickname || account.external_user_id || `灰豚账号 ${account.id}` }))}
+                placeholder="请选择数据账号"
+                options={huitunAccounts.map((account) => ({ value: account.id, label: `数据账号 ${account.id} · ${account.status}` }))}
               />
             </Form.Item>
           </Col>
@@ -401,7 +401,7 @@ export function XhsKeywordsPage() {
           <Col xs={24} md={6}>
             <Form.Item label=" ">
               <Button type="primary" block onClick={() => void fetchHuitunHotwordsFromAccount()} loading={isHuitunWorking}>
-                获取灰豚候选词
+                获取候选词
               </Button>
             </Form.Item>
           </Col>
@@ -412,25 +412,25 @@ export function XhsKeywordsPage() {
           items={[
             {
               key: "manual",
-              label: "手工导入灰豚热词",
+              label: "手工导入热词",
               children: (
                 <>
                   <Alert
                     type="warning"
                     showIcon
-                    message="自动获取失败时，把灰豚热词表格复制到这里作为临时兜底。"
+                    message="自动获取失败时，可以把热词表格复制到这里手工导入。"
                     style={{ marginBottom: 16 }}
                   />
-                  <Form.Item label="灰豚热词表格">
+                  <Form.Item label="热词表格">
                     <Input.TextArea
                       value={huitunRows}
                       onChange={(e) => setHuitunRows(e.target.value)}
-                      placeholder="每行一个热词，按灰豚表格复制：关键词、热度、笔记数、互动、分类"
+                      placeholder="每行一个热词，按表格复制：关键词、热度、笔记数、互动、分类"
                       autoSize={{ minRows: 3, maxRows: 6 }}
                     />
                   </Form.Item>
                   <Button onClick={() => void parseHuitunHotwords()} loading={isHuitunWorking}>
-                    解析灰豚热词
+                    解析热词
                   </Button>
                 </>
               ),
@@ -498,7 +498,7 @@ export function XhsKeywordsPage() {
 
         {huitunRuns.length ? (
           <div style={{ marginTop: 16 }}>
-            <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>最近灰豚发现记录</Text>
+            <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>最近热词发现记录</Text>
             <List
               size="small"
               dataSource={huitunRuns}

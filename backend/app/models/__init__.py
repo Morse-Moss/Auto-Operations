@@ -3,6 +3,7 @@ from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.api_log import ApiLog
 from backend.app.models.auto_task import AutoTask
 from backend.app.models.crawl_diagnostic import CrawlDiagnostic
+from backend.app.models.data_acquisition import DataAcquisitionCandidate, DataAcquisitionRun, NoteSourceSnapshot
 from backend.app.models.keyword_discovery import KeywordDiscoveryItem, KeywordDiscoveryRun
 from backend.app.models.feishu import FeishuIntegrationConfig, NoteAnalysisResult
 from backend.app.models.keyword_group import KeywordGroup
@@ -43,6 +44,8 @@ __all__ = [
     "AutoTask",
     "BetaCreditAccount",
     "CrawlDiagnostic",
+    "DataAcquisitionCandidate",
+    "DataAcquisitionRun",
     "DEFAULT_TEXT_MODEL_NAME",
     "DraftAiScoreResult",
     "DraftAsset",
@@ -59,6 +62,7 @@ __all__ = [
     "NoteComment",
     "NoteExclusion",
     "NoteAnalysisResult",
+    "NoteSourceSnapshot",
     "Notification",
     "PlatformAccount",
     "PublishAsset",

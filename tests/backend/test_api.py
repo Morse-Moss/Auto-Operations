@@ -115,6 +115,25 @@ def test_crawler_page_uses_antd_table():
     assert "Table" in source
 
 
+def test_xhs_data_acquisition_page_hides_internal_source_terms_and_keeps_high_risk_direct_area():
+    source = open("frontend/src/pages/platforms/xhs/data-acquisition-page.tsx", encoding="utf-8").read()
+    crawler_source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
+    router_source = open("frontend/src/app/router.tsx", encoding="utf-8").read()
+    registry_source = open("frontend/src/platform-core/registry/platform-sections.tsx", encoding="utf-8").read()
+
+    assert 'path="/platforms/xhs/crawler" element={<XhsDataAcquisitionPage />}' in router_source
+    assert "小红书数据获取" in registry_source
+    assert "获取笔记数据" in source
+    assert "待确认候选" in source
+    assert "小红书账号直连" in source
+    assert "高风险" in source
+    assert '<XhsCrawlerPage visibleSource="xhs" />' in source
+    assert 'visibleSource?: "all" | "xhs"' in crawler_source
+    assert "account.nickname" not in source
+    for forbidden in ("灰豚", "huitun", "extData", "connector", "第三方数据源"):
+        assert forbidden not in source
+
+
 def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
     api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
     types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
@@ -143,9 +162,10 @@ def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
     assert "XhsKeywordGroupCrawlPayload" in types_source
     assert "quality_status" in types_source
     assert "diagnostic_kind" in types_source
-    assert "灰豚热词" in keywords_page_source
-    assert "获取灰豚候选词" in keywords_page_source
-    assert "手工导入灰豚热词" in keywords_page_source
+    assert "热词候选" in keywords_page_source
+    assert "获取候选词" in keywords_page_source
+    assert "手工导入热词" in keywords_page_source
+    assert "灰豚" not in keywords_page_source
     assert "live_account" in keywords_page_source
     assert "fetchHuitunHotwordsFromAccount" in keywords_page_source
     assert "parseHuitunHotwords" in keywords_page_source
@@ -482,9 +502,10 @@ def test_draft_workbench_labels_are_platform_adapter_owned():
 def test_crawler_page_groups_sources_by_huitun_and_xhs_tabs():
     source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
 
-    assert "灰豚热词采集" in source
+    assert "热词候选获取" in source
     assert "小红书站内采集" in source
-    assert "灰豚用于发现热词和候选关键词" in source
+    assert "用于发现热词和候选关键词" in source
+    assert "灰豚" not in source
     assert "不直接进入内容库" in source
     assert "按关键词组采集" in source
     assert "临时关键词搜索" in source

@@ -25,6 +25,11 @@ import type {
   BatchTagNotesResponse,
   ComposeImagePayload,
   CreateAnalysisReportPayload,
+  DataAcquisitionCandidate,
+  DataAcquisitionCandidateDecisionPayload,
+  DataAcquisitionImportResponse,
+  DataAcquisitionRun,
+  DataAcquisitionRunPayload,
   CreateDraftFromTopicCardsPayload,
   CreateDraftPayload,
   DashboardOverview,
@@ -882,6 +887,51 @@ export async function batchCreateDraftsFromNotes(
 
 export async function exportSavedNotes(payload: NotesExportPayload): Promise<NotesExportResponse> {
   const response = await http.post<NotesExportResponse>("/notes/export", payload);
+  return response.data;
+}
+
+export async function createDataAcquisitionRun(payload: DataAcquisitionRunPayload): Promise<DataAcquisitionRun> {
+  const response = await http.post<DataAcquisitionRun>("/xhs/data-acquisition/runs", payload);
+  return response.data;
+}
+
+export async function fetchDataAcquisitionRuns(params?: {
+  status?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<Paginated<DataAcquisitionRun>> {
+  const response = await http.get<Paginated<DataAcquisitionRun>>("/xhs/data-acquisition/runs", { params });
+  return response.data;
+}
+
+export async function fetchDataAcquisitionCandidates(params?: {
+  run_id?: number;
+  status?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<Paginated<DataAcquisitionCandidate>> {
+  const response = await http.get<Paginated<DataAcquisitionCandidate>>("/xhs/data-acquisition/candidates", { params });
+  return response.data;
+}
+
+export async function importDataAcquisitionCandidates(
+  payload: Pick<DataAcquisitionCandidateDecisionPayload, "candidate_ids">
+): Promise<DataAcquisitionImportResponse> {
+  const response = await http.post<DataAcquisitionImportResponse>("/xhs/data-acquisition/candidates/import", payload);
+  return response.data;
+}
+
+export async function excludeDataAcquisitionCandidates(
+  payload: DataAcquisitionCandidateDecisionPayload
+): Promise<{ items: DataAcquisitionCandidate[] }> {
+  const response = await http.post<{ items: DataAcquisitionCandidate[] }>("/xhs/data-acquisition/candidates/exclude", payload);
+  return response.data;
+}
+
+export async function restoreDataAcquisitionCandidates(
+  payload: DataAcquisitionCandidateDecisionPayload
+): Promise<{ items: DataAcquisitionCandidate[] }> {
+  const response = await http.post<{ items: DataAcquisitionCandidate[] }>("/xhs/data-acquisition/candidates/restore", payload);
   return response.data;
 }
 

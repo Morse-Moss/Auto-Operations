@@ -107,7 +107,7 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
       }
       setStatusText(
         platform === "huitun"
-          ? "请使用灰豚支持的扫码方式完成登录"
+          ? "请使用数据账号支持的扫码方式完成登录"
           : accountType === "pc"
             ? "请使用小红书 App 扫描二维码"
             : "请使用小红书 App 扫描 Creator 二维码"
@@ -150,7 +150,7 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
             clearPendingCreatorLoginSession(polled.session_id);
           }
           confirmedRef.current = true;
-          setStatusText(platform === "huitun" ? "灰豚账号绑定成功" : "账号绑定成功，已登录");
+          setStatusText(platform === "huitun" ? "数据账号绑定成功" : "账号绑定成功，已登录");
           if (confirmedAccount) {
             onConfirmed(confirmedAccount);
           }
@@ -181,7 +181,7 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
         {session?.qr_image_data_url ? (
           <img
             src={session.qr_image_data_url}
-            alt={platform === "huitun" ? "灰豚登录二维码" : "小红书登录二维码"}
+            alt={platform === "huitun" ? "数据账号登录二维码" : "小红书登录二维码"}
             style={{ width: 180, height: 180, borderRadius: 8, background: "#fff", padding: 8 }}
           />
         ) : (

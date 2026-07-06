@@ -1032,6 +1032,91 @@ export type NotesExportResponse = {
   download_url: string;
 };
 
+export type DataAcquisitionStatus = "pending" | "running" | "completed" | "partial_failed" | "failed" | "cancelled" | "expired";
+
+export type DataAcquisitionType =
+  | "trend_keywords"
+  | "note_search"
+  | "note_rank"
+  | "note_detail_enrichment"
+  | "keyword_analysis"
+  | "file_import";
+
+export type DataAcquisitionCandidate = {
+  id: number;
+  run_id: number;
+  platform: "xhs" | string;
+  candidate_type: "note" | "keyword" | "note_detail" | "keyword_analysis" | string;
+  platform_note_id: string;
+  original_url: string;
+  title: string;
+  content_excerpt: string;
+  author_name: string;
+  cover_url: string;
+  asset_urls: string[];
+  publish_time?: string | null;
+  update_time?: string | null;
+  rank_index: number;
+  category: string;
+  tags: string[];
+  metrics: {
+    like_count?: number;
+    collect_count?: number;
+    comment_count?: number;
+    share_count?: number;
+    estimated_read_count?: number;
+    interaction_count?: number;
+  };
+  status: "pending" | "imported" | "excluded" | "expired" | string;
+  imported_note_id?: number | null;
+  decision_reason_code?: string;
+  decision_reason_text?: string;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+};
+
+export type DataAcquisitionRun = {
+  id: number;
+  task_id?: number | null;
+  platform: "xhs" | string;
+  acquisition_type: DataAcquisitionType | string;
+  status: DataAcquisitionStatus | string;
+  requested_limit: number;
+  effective_limit: number;
+  params: Record<string, unknown>;
+  candidate_count: number;
+  user_message?: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  cancellation_requested: boolean;
+  candidates?: DataAcquisitionCandidate[];
+};
+
+export type DataAcquisitionRunPayload = {
+  acquisition_type: "note_search";
+  account_id?: number | null;
+  params: {
+    keyword: string;
+    limit?: number;
+    sort?: string;
+    note_type?: string;
+  };
+};
+
+export type DataAcquisitionCandidateDecisionPayload = {
+  candidate_ids: number[];
+  reason_code?: string;
+  reason_text?: string;
+};
+
+export type DataAcquisitionImportResponse = {
+  imported_count: number;
+  message: string;
+  items: SavedNote[];
+};
+
 export type AnalyticsReportPayload = {
   note_ids?: number[];
   format?: "json";
