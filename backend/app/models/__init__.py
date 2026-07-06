@@ -6,6 +6,7 @@ from backend.app.models.crawl_diagnostic import CrawlDiagnostic
 from backend.app.models.data_acquisition import DataAcquisitionCandidate, DataAcquisitionRun, NoteSourceSnapshot
 from backend.app.models.keyword_discovery import KeywordDiscoveryItem, KeywordDiscoveryRun
 from backend.app.models.feishu import FeishuIntegrationConfig, NoteAnalysisResult
+from backend.app.models.invite import InviteCode, InviteCodeUse
 from backend.app.models.keyword_group import KeywordGroup
 from backend.app.models.login_session import LoginSession
 from backend.app.models.monitoring import MonitoringSnapshot, MonitoringTarget
@@ -50,6 +51,8 @@ __all__ = [
     "DraftAiScoreResult",
     "DraftAsset",
     "FeishuIntegrationConfig",
+    "InviteCode",
+    "InviteCodeUse",
     "KeywordDiscoveryItem",
     "KeywordDiscoveryRun",
     "KeywordGroup",

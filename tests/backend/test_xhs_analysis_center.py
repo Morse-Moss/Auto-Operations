@@ -20,6 +20,7 @@ from backend.app.models.usage_quota import UsageLedger
 from backend.app.models.user import User
 from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
+from test_support.beta_invites import create_test_invite_code
 
 
 @pytest.fixture
@@ -84,7 +85,7 @@ def _create_keyword_group(db: Session, user_id: int, keywords: list[str]):
 def _register_and_get_access_token(client: TestClient, username: str = "operator") -> str:
     response = client.post(
         "/api/auth/register",
-        json={"username": username, "password": "secret123"},
+        json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()},
     )
     assert response.status_code == 200
     return response.json()["access_token"]

@@ -4,6 +4,7 @@ import {
   LockOutlined,
   RadarChartOutlined,
   RobotOutlined,
+  SafetyCertificateOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import {
@@ -53,6 +54,7 @@ export function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -76,7 +78,11 @@ export function LoginPage() {
       if (mode === "login") {
         await auth.login(parsed.data);
       } else {
-        await auth.register(parsed.data);
+        if (!inviteCode.trim()) {
+          setError("请输入体验官邀请码。");
+          return;
+        }
+        await auth.register({ ...parsed.data, invite_code: inviteCode.trim() });
       }
       const from = (
         location.state as { from?: { pathname?: string } } | null
@@ -276,16 +282,27 @@ export function LoginPage() {
                 </Form.Item>
 
                 {mode === "register" && (
-                  <Form.Item label="确认密码" style={{ marginBottom: 16 }}>
-                    <Input.Password
-                      prefix={<LockOutlined />}
-                      placeholder="请再次输入密码"
-                      autoComplete="new-password"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      size="large"
-                    />
-                  </Form.Item>
+                  <>
+                    <Form.Item label="确认密码" style={{ marginBottom: 16 }}>
+                      <Input.Password
+                        prefix={<LockOutlined />}
+                        placeholder="请再次输入密码"
+                        autoComplete="new-password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        size="large"
+                      />
+                    </Form.Item>
+                    <Form.Item label="邀请码" style={{ marginBottom: 16 }}>
+                      <Input
+                        prefix={<SafetyCertificateOutlined />}
+                        placeholder="请输入体验官邀请码"
+                        value={inviteCode}
+                        onChange={(e) => setInviteCode(e.target.value)}
+                        size="large"
+                      />
+                    </Form.Item>
+                  </>
                 )}
 
                 {error && (

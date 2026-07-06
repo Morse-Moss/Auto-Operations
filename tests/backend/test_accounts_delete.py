@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.database import Base, get_db
 from backend.app.main import app
 from backend.app.models import AccountCookieVersion, CrawlDiagnostic, Note, PlatformAccount
+from test_support.beta_invites import create_test_invite_code
 
 client = TestClient(app)
 
@@ -26,7 +27,10 @@ def _override_database(tmp_path):
 
 
 def _register_token(username: str = "account-delete-owner") -> str:
-    response = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    response = client.post(
+        "/api/auth/register",
+        json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()},
+    )
     assert response.status_code == 200
     return response.json()["access_token"]
 

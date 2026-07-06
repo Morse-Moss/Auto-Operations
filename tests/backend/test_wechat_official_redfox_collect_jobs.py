@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
+from test_support.beta_invites import create_test_invite_code
 from backend.app.models import WechatOfficialCrawlJob
 from backend.app.services import wechat_official_redfox_service as redfox_service
 
@@ -78,7 +79,7 @@ def _override_database(tmp_path):
 
 
 def _register(username: str) -> dict:
-    response = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    response = client.post("/api/auth/register", json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()})
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 

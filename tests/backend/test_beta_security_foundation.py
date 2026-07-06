@@ -20,6 +20,7 @@ from backend.app.models import (
     UsageLedger,
 )
 from backend.app.services.asset_storage_policy import asset_owner_prefix
+from test_support.beta_invites import create_test_invite_code
 
 client = TestClient(app)
 
@@ -42,7 +43,10 @@ def _override_database(tmp_path):
 
 
 def _register(username: str) -> dict:
-    response = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    response = client.post(
+        "/api/auth/register",
+        json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()},
+    )
     assert response.status_code == 200
     return response.json()
 

@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from backend.app.api.ai import _text_model_context, get_text_ai_client
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_tenant_context, get_current_user
 from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.user import User
 from backend.app.services.ai_service import TextAiClient
-from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
+from backend.app.services.usage_quota_service import UsageQuotaService
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
 
 router = APIRouter(prefix="/xhs/analytics/analysis", tags=["xhs-analysis-center"])
@@ -100,7 +100,7 @@ def _reserve_analysis_report_usage(
     payload: CreateAnalysisReportPayload,
     model_config: Any | None,
 ):
-    context = get_or_create_default_tenant_context(db, current_user.id)
+    context = get_current_tenant_context(current_user=current_user, db=db)
     return UsageQuotaService(db).reserve(
         tenant_id=context.tenant.id,
         user_id=current_user.id,

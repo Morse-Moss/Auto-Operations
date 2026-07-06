@@ -11,6 +11,7 @@ from backend.app.core.database import Base, get_db
 from backend.app.core.security import encrypt_text
 from backend.app.main import app
 from backend.app.models import AiDraft, ApiLog, ModelConfig, Task, UsageLedger
+from test_support.beta_invites import create_test_invite_code
 
 client = TestClient(app)
 
@@ -33,7 +34,10 @@ def _override_database(tmp_path):
 
 
 def _register(username: str = "quota-owner") -> dict:
-    response = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    response = client.post(
+        "/api/auth/register",
+        json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()},
+    )
     assert response.status_code == 200
     return response.json()
 

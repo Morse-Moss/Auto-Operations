@@ -78,7 +78,7 @@ def _safe_idempotency_key(value: str) -> str:
     return f"{prefix}:sha256:{digest}"
 
 
-def get_or_create_default_tenant_context(db: Session, user_id: int) -> TenantContext:
+def get_or_create_default_tenant_context(db: Session, user_id: int, *, commit: bool = True) -> TenantContext:
     membership = db.scalar(
         select(TenantMember)
         .where(TenantMember.user_id == user_id, TenantMember.status == "active")
@@ -103,9 +103,10 @@ def get_or_create_default_tenant_context(db: Session, user_id: int) -> TenantCon
     db.add(membership)
     db.flush()
     _ensure_beta_credit_accounts(db, tenant.id)
-    db.commit()
-    db.refresh(tenant)
-    db.refresh(membership)
+    if commit:
+        db.commit()
+        db.refresh(tenant)
+        db.refresh(membership)
     return TenantContext(tenant=tenant, membership=membership)
 
 
