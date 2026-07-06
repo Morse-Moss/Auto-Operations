@@ -179,6 +179,11 @@ def create_note_search_run(
     )
     db.add(run)
     db.flush()
+    task.payload = {
+        **(task.payload or {}),
+        "data_acquisition_run_id": run.id,
+        "data_acquisition_url": f"/platforms/xhs/crawler?run_id={run.id}",
+    }
 
     candidates: list[DataAcquisitionCandidate] = []
     try:
@@ -220,8 +225,14 @@ def create_note_search_run(
     return run, candidates
 
 
-def serialize_run(run: DataAcquisitionRun, candidates: list[DataAcquisitionCandidate] | None = None, *, include_admin_debug: bool = False) -> dict[str, Any]:
-    candidate_count = len(candidates) if candidates is not None else 0
+def serialize_run(
+    run: DataAcquisitionRun,
+    candidates: list[DataAcquisitionCandidate] | None = None,
+    *,
+    candidate_count: int | None = None,
+    include_admin_debug: bool = False,
+) -> dict[str, Any]:
+    resolved_candidate_count = len(candidates) if candidates is not None else (candidate_count or 0)
     result: dict[str, Any] = {
         "id": run.id,
         "task_id": run.task_id,
@@ -231,7 +242,7 @@ def serialize_run(run: DataAcquisitionRun, candidates: list[DataAcquisitionCandi
         "requested_limit": run.requested_limit,
         "effective_limit": run.effective_limit,
         "params": run.params_json or {},
-        "candidate_count": candidate_count,
+        "candidate_count": resolved_candidate_count,
         "user_message": FAILURE_USER_MESSAGE if run.status == "failed" else "",
         "created_at": run.created_at.isoformat(),
         "started_at": run.started_at.isoformat() if run.started_at else None,
