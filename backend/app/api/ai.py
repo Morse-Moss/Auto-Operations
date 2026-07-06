@@ -28,6 +28,7 @@ from backend.app.models import AiDraft, AiGeneratedAsset, ModelConfig, Task, Use
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 from backend.app.services.asset_storage_policy import asset_owner_prefix
+from backend.app.services.beta_concurrency_service import BetaConcurrencyLeaseGuard, BetaConcurrencyService, acquire_image_generation_leases
 from backend.app.services.usage_quota_service import UsageQuotaService
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
@@ -453,6 +454,23 @@ def _reserve_usage(
     )
 
 
+def _acquire_image_generation_guard(
+    *,
+    db: Session,
+    current_user: User,
+    feature_key: str,
+    idempotency_key: str,
+) -> BetaConcurrencyLeaseGuard:
+    context = get_current_tenant_context(current_user=current_user, db=db)
+    return acquire_image_generation_leases(
+        db=db,
+        tenant_id=context.tenant.id,
+        user_id=current_user.id,
+        feature_key=feature_key,
+        idempotency_key=idempotency_key,
+    )
+
+
 def _recorded_image_task(
     *,
     db: Session,
@@ -599,7 +617,16 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
         task.finished_at = shanghai_now()
         db.commit()
     finally:
-        db.close()
+        try:
+            task = db.get(Task, task_id)
+            payload = task.payload if task is not None and isinstance(task.payload, dict) else {}
+            lease_ids = payload.get("concurrency_lease_ids") if isinstance(payload, dict) else None
+            if isinstance(lease_ids, list):
+                for lease_id in lease_ids:
+                    if isinstance(lease_id, int):
+                        BetaConcurrencyService(db).release(lease_id, reason="async image task finished")
+        finally:
+            db.close()
 
 
 @router.post("/rewrite-note")
@@ -880,59 +907,74 @@ def generate_cover(
 
     model_config, api_key = _image_model_context(db, current_user)
     image_client = _image_client_for_model(model_config, image_ai_client)
-    usage_reservation = _reserve_usage(
+    feature_key = "ai.image_generate_cover"
+    idempotency_key = _quota_idempotency_key(request, f"ai.image_generate_cover:{current_user.id}:{payload.draft_id}:{payload.prompt}:{payload.size}:{payload.style}")
+    concurrency_guard = _acquire_image_generation_guard(
         db=db,
         current_user=current_user,
-        feature_key="ai.image_generate_cover",
-        bucket="image_generation",
-        amount=1,
-        idempotency_key=_quota_idempotency_key(request, f"ai.image_generate_cover:{current_user.id}:{payload.draft_id}:{payload.prompt}:{payload.size}:{payload.style}"),
-        request_summary={"prompt_length": len(payload.prompt), "size": payload.size, "style": payload.style, "draft_id": payload.draft_id},
-        model_config_id=model_config.id,
-        provider=model_config.provider,
-    )
-    task, result = _recorded_image_task(
-        db=db,
-        current_user=current_user,
-        task_type="ai_image_generate_cover",
-        payload={"model_config_id": model_config.id, "prompt": payload.prompt, "size": payload.size, "style": payload.style},
-        action=lambda: image_client.generate_cover(
-            model_config=model_config,
-            api_key=api_key,
-            prompt=payload.prompt,
-            size=payload.size,
-            style=payload.style,
-        ),
-        sensitive_values=[api_key],
-        usage_reservation_id=usage_reservation.id,
+        feature_key=feature_key,
+        idempotency_key=idempotency_key,
     )
     try:
-        asset = _create_generated_image_asset(
+        usage_reservation = _reserve_usage(
             db=db,
-            user_id=current_user.id,
-            draft_id=payload.draft_id,
-            prompt=payload.prompt,
-            model_config=model_config,
-            params={
-                "provider": model_config.provider,
-                "size": payload.size,
-                "style": payload.style,
-                "raw": result.get("raw"),
-                "source_url": result.get("url"),
-            },
-            source_url=result.get("url") or "",
+            current_user=current_user,
+            feature_key=feature_key,
+            bucket="image_generation",
+            amount=1,
+            idempotency_key=idempotency_key,
+            request_summary={"prompt_length": len(payload.prompt), "size": payload.size, "style": payload.style, "draft_id": payload.draft_id},
+            model_config_id=model_config.id,
+            provider=model_config.provider,
         )
-    except ValueError as exc:
-        redacted_error = _redact_sensitive_text(str(exc), [api_key])
-        task.status = "failed"
-        task.progress = 100
-        task.payload = {**(task.payload or {}), "error": redacted_error}
+    except Exception:
+        concurrency_guard.release(reason="image cover quota reservation failed")
+        raise
+    try:
+        task, result = _recorded_image_task(
+            db=db,
+            current_user=current_user,
+            task_type="ai_image_generate_cover",
+            payload={"model_config_id": model_config.id, "prompt": payload.prompt, "size": payload.size, "style": payload.style},
+            action=lambda: image_client.generate_cover(
+                model_config=model_config,
+                api_key=api_key,
+                prompt=payload.prompt,
+                size=payload.size,
+                style=payload.style,
+            ),
+            sensitive_values=[api_key],
+            usage_reservation_id=usage_reservation.id,
+        )
+        try:
+            asset = _create_generated_image_asset(
+                db=db,
+                user_id=current_user.id,
+                draft_id=payload.draft_id,
+                prompt=payload.prompt,
+                model_config=model_config,
+                params={
+                    "provider": model_config.provider,
+                    "size": payload.size,
+                    "style": payload.style,
+                    "raw": result.get("raw"),
+                    "source_url": result.get("url"),
+                },
+                source_url=result.get("url") or "",
+            )
+        except ValueError as exc:
+            redacted_error = _redact_sensitive_text(str(exc), [api_key])
+            task.status = "failed"
+            task.progress = 100
+            task.payload = {**(task.payload or {}), "error": redacted_error}
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
+        task.payload = {**(task.payload or {}), "asset_id": asset.id}
         db.commit()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
-    task.payload = {**(task.payload or {}), "asset_id": asset.id}
-    db.commit()
-    db.refresh(asset)
-    return _serialize_generated_asset(asset)
+        db.refresh(asset)
+        return _serialize_generated_asset(asset)
+    finally:
+        concurrency_guard.release(reason="image cover finished")
 
 
 @router.post("/images/generate")
@@ -945,22 +987,34 @@ def generate_image(
 ):
     model_config, api_key = _image_model_context(db, current_user)
     image_client = _image_client_for_model(model_config, image_ai_client)
-    usage_reservation = _reserve_usage(
+    feature_key = "ai.image_generate"
+    idempotency_key = _quota_idempotency_key(request, f"ai.image_generate:{current_user.id}:{payload.prompt}:{payload.reference_images}:{payload.aspect_ratio}")
+    concurrency_guard = _acquire_image_generation_guard(
         db=db,
         current_user=current_user,
-        feature_key="ai.image_generate",
-        bucket="image_generation",
-        amount=1,
-        idempotency_key=_quota_idempotency_key(request, f"ai.image_generate:{current_user.id}:{payload.prompt}:{payload.reference_images}:{payload.aspect_ratio}"),
-        request_summary={
-            "prompt_length": len(payload.prompt),
-            "reference_image_count": len(payload.reference_images or []),
-            "aspect_ratio": payload.aspect_ratio,
-            "save_to_assets": payload.save_to_assets,
-        },
-        model_config_id=model_config.id,
-        provider=model_config.provider,
+        feature_key=feature_key,
+        idempotency_key=idempotency_key,
     )
+    try:
+        usage_reservation = _reserve_usage(
+            db=db,
+            current_user=current_user,
+            feature_key=feature_key,
+            bucket="image_generation",
+            amount=1,
+            idempotency_key=idempotency_key,
+            request_summary={
+                "prompt_length": len(payload.prompt),
+                "reference_image_count": len(payload.reference_images or []),
+                "aspect_ratio": payload.aspect_ratio,
+                "save_to_assets": payload.save_to_assets,
+            },
+            model_config_id=model_config.id,
+            provider=model_config.provider,
+        )
+    except Exception:
+        concurrency_guard.release(reason="image generation quota reservation failed")
+        raise
 
     def run_generate_image():
         reference_images = payload.reference_images or None
@@ -985,46 +1039,49 @@ def generate_image(
             aspect_ratio=payload.aspect_ratio,
         )
 
-    task, result = _recorded_image_task(
-        db=db,
-        current_user=current_user,
-        task_type="ai_image_generate",
-        payload={"model_config_id": model_config.id, "prompt": payload.prompt, "reference_images": payload.reference_images, "aspect_ratio": payload.aspect_ratio},
-        action=run_generate_image,
-        sensitive_values=[api_key],
-        usage_reservation_id=usage_reservation.id,
-    )
-    response_data: dict = {"url": result.get("url") or "", "raw": result.get("raw")}
-    if payload.save_to_assets:
-        try:
-            asset = _create_generated_image_asset(
-                db=db,
-                user_id=current_user.id,
-                prompt=payload.prompt,
-                model_config=model_config,
-                params={
-                    "provider": model_config.provider,
-                    "reference_images": payload.reference_images,
-                    "aspect_ratio": payload.aspect_ratio,
-                    "raw": result.get("raw"),
-                    "source_url": result.get("url"),
-                },
-                source_url=result.get("url") or "",
-            )
-        except ValueError as exc:
-            redacted_error = _redact_sensitive_text(str(exc), [api_key])
-            task.status = "failed"
-            task.progress = 100
-            task.payload = {**(task.payload or {}), "error": redacted_error}
+    try:
+        task, result = _recorded_image_task(
+            db=db,
+            current_user=current_user,
+            task_type="ai_image_generate",
+            payload={"model_config_id": model_config.id, "prompt": payload.prompt, "reference_images": payload.reference_images, "aspect_ratio": payload.aspect_ratio},
+            action=run_generate_image,
+            sensitive_values=[api_key],
+            usage_reservation_id=usage_reservation.id,
+        )
+        response_data: dict = {"url": result.get("url") or "", "raw": result.get("raw")}
+        if payload.save_to_assets:
+            try:
+                asset = _create_generated_image_asset(
+                    db=db,
+                    user_id=current_user.id,
+                    prompt=payload.prompt,
+                    model_config=model_config,
+                    params={
+                        "provider": model_config.provider,
+                        "reference_images": payload.reference_images,
+                        "aspect_ratio": payload.aspect_ratio,
+                        "raw": result.get("raw"),
+                        "source_url": result.get("url"),
+                    },
+                    source_url=result.get("url") or "",
+                )
+            except ValueError as exc:
+                redacted_error = _redact_sensitive_text(str(exc), [api_key])
+                task.status = "failed"
+                task.progress = 100
+                task.payload = {**(task.payload or {}), "error": redacted_error}
+                db.commit()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
+            task.payload = {**(task.payload or {}), "asset_id": asset.id}
             db.commit()
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
-        task.payload = {**(task.payload or {}), "asset_id": asset.id}
-        db.commit()
-        db.refresh(asset)
-        response_data["asset"] = _serialize_generated_asset(asset)
-    else:
-        db.commit()
-    return response_data
+            db.refresh(asset)
+            response_data["asset"] = _serialize_generated_asset(asset)
+        else:
+            db.commit()
+        return response_data
+    finally:
+        concurrency_guard.release(reason="image generation finished")
 
 
 @router.post("/images/generate-async")
@@ -1042,44 +1099,61 @@ def generate_image_async(
         for image_ref in reference_images:
             RunningHubImageClient._resolve_local_image_path(image_ref, owner_user_id=current_user.id)
 
-    usage_reservation = _reserve_usage(
+    feature_key = "ai.image_generate_async"
+    idempotency_key = _quota_idempotency_key(request, f"ai.image_generate_async:{current_user.id}:{payload.prompt}:{reference_images}:{payload.aspect_ratio}")
+    concurrency_guard = _acquire_image_generation_guard(
         db=db,
         current_user=current_user,
-        feature_key="ai.image_generate_async",
-        bucket="image_generation",
-        amount=1,
-        idempotency_key=_quota_idempotency_key(request, f"ai.image_generate_async:{current_user.id}:{payload.prompt}:{reference_images}:{payload.aspect_ratio}"),
-        request_summary={
-            "prompt_length": len(payload.prompt),
-            "reference_image_count": len(reference_images),
-            "aspect_ratio": payload.aspect_ratio,
-            "save_to_assets": payload.save_to_assets,
-        },
-        model_config_id=model_config.id,
-        provider=model_config.provider,
+        feature_key=feature_key,
+        idempotency_key=idempotency_key,
     )
+    try:
+        usage_reservation = _reserve_usage(
+            db=db,
+            current_user=current_user,
+            feature_key=feature_key,
+            bucket="image_generation",
+            amount=1,
+            idempotency_key=idempotency_key,
+            request_summary={
+                "prompt_length": len(payload.prompt),
+                "reference_image_count": len(reference_images),
+                "aspect_ratio": payload.aspect_ratio,
+                "save_to_assets": payload.save_to_assets,
+            },
+            model_config_id=model_config.id,
+            provider=model_config.provider,
+        )
+    except Exception:
+        concurrency_guard.release(reason="async image quota reservation failed")
+        raise
 
-    task = Task(
-        user_id=current_user.id,
-        platform="xhs",
-        task_type="ai_image_generate",
-        status="pending",
-        progress=0,
-        payload={
-            "model_config_id": model_config.id,
-            "prompt": payload.prompt,
-            "reference_images": reference_images,
-            "save_to_assets": payload.save_to_assets,
-            "aspect_ratio": payload.aspect_ratio,
-            "usage_reservation_id": usage_reservation.id,
-            "feature_key": "ai.image_generate_async",
-            "usage_bucket": "image_generation",
-            "idempotency_key": usage_reservation.idempotency_key,
-        },
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
+    try:
+        task = Task(
+            user_id=current_user.id,
+            platform="xhs",
+            task_type="ai_image_generate",
+            status="pending",
+            progress=0,
+            payload={
+                "model_config_id": model_config.id,
+                "prompt": payload.prompt,
+                "reference_images": reference_images,
+                "save_to_assets": payload.save_to_assets,
+                "aspect_ratio": payload.aspect_ratio,
+                "usage_reservation_id": usage_reservation.id,
+                "feature_key": feature_key,
+                "usage_bucket": "image_generation",
+                "idempotency_key": usage_reservation.idempotency_key,
+                "concurrency_lease_ids": concurrency_guard.lease_ids,
+            },
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+    except Exception:
+        concurrency_guard.release(reason="async image task creation failed")
+        raise
     fallback_client = image_ai_client if model_config.provider != "runninghub-ai-app" else None
     background_tasks.add_task(_run_async_image_generate_task, task.id, current_user.id, model_config.id, api_key, fallback_client)
     return {"task_id": task.id, "status": task.status, "progress": task.progress, "payload": task.payload or {}}
