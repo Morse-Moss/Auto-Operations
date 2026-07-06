@@ -231,7 +231,14 @@ def check_account(
 
 
 @router.patch("/{account_id}")
-def update_account(account_id: int):
+def update_account(
+    account_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    account = db.get(PlatformAccount, account_id)
+    if account is None or account.user_id != current_user.id or account.status == "deleted":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     return {"id": account_id, "status": "updated"}
 
 
