@@ -7,14 +7,16 @@ Create Date: 2026-06-22
 
 from __future__ import annotations
 
+from typing import Sequence, Union
+
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260622_feishu_loop"
-down_revision = "20260618woclt"
-branch_labels = None
-depends_on = None
+revision: str = "20260622_feishu_loop"
+down_revision: Union[str, None] = "20260618woclt"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:

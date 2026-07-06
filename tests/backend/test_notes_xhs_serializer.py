@@ -47,6 +47,11 @@ def _note(*, platform: str = "xhs", raw_json: dict | None = None) -> Note:
     return note
 
 
+def _assert_signed_media_url(url: str, file_name: str) -> None:
+    assert url.startswith(f"/api/files/media/{file_name}?")
+    assert "token=" in url
+
+
 def test_xhs_note_engagement_metrics_use_mapper_for_nested_note_card_shape():
     note = _note(raw_json={
         "data": {
@@ -137,13 +142,10 @@ def test_xhs_note_serializer_preserves_db_asset_priority_over_mapper_fallback():
 
     payload = _serialize_note(_FakeAssetDb([image, video]), note)
 
-    assert payload["cover_url"] == "/api/files/media/xhs-asset-u1-local-image.jpg"
-    assert payload["video_url"] == "/api/files/media/xhs-asset-u1-local-video.mp4"
-    assert payload["video_addr"] == "/api/files/media/xhs-asset-u1-local-video.mp4"
-    assert payload["asset_urls"] == [
-        "/api/files/media/xhs-asset-u1-local-image.jpg",
-        "/api/files/media/xhs-asset-u1-local-video.mp4",
-    ]
+    _assert_signed_media_url(payload["cover_url"], "xhs-asset-u1-local-image.jpg")
+    _assert_signed_media_url(payload["video_url"], "xhs-asset-u1-local-video.mp4")
+    assert payload["video_addr"] == payload["video_url"]
+    assert payload["asset_urls"] == [payload["cover_url"], payload["video_url"]]
 
 
 def test_non_xhs_note_serializer_does_not_require_xhs_raw_shape():
