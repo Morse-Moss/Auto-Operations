@@ -62,8 +62,8 @@ export const accountAuthSchemas = [
   },
   {
     platform: "huitun",
-    label: "灰豚",
-    drawerTitle: "添加灰豚账号",
+    label: "数据账号",
+    drawerTitle: "添加数据账号",
     defaultAccountType: "main",
     accountTypes: huitunAccountTypes,
     loginMethods: huitunLoginMethods,

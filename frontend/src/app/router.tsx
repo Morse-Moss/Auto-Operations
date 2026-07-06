@@ -20,7 +20,7 @@ import { XhsAccountsPage } from "../pages/platforms/xhs/accounts-page";
 import { XhsAnalyticsPage } from "../pages/platforms/xhs/analytics-page";
 import { XhsBenchmarksPage } from "../pages/platforms/xhs/benchmarks-page";
 import { XhsDashboard } from "../pages/platforms/xhs/xhs-dashboard";
-import { XhsCrawlerPage } from "../pages/platforms/xhs/crawler-page";
+import { XhsDataAcquisitionPage } from "../pages/platforms/xhs/data-acquisition-page";
 import { XhsDiscoveryPage } from "../pages/platforms/xhs/discovery-page";
 import { XhsDraftsPage } from "../pages/platforms/xhs/rewrite-page";
 import { XhsKeywordsPage } from "../pages/platforms/xhs/keywords-page";
@@ -79,7 +79,7 @@ export function AppRouter() {
           <Route path="/platforms/xhs/accounts" element={<XhsAccountsPage />} />
           <Route path="/platforms/xhs/analytics" element={<XhsAnalyticsPage />} />
           <Route path="/platforms/xhs/discovery" element={<XhsDiscoveryPage />} />
-          <Route path="/platforms/xhs/crawler" element={<XhsCrawlerPage />} />
+          <Route path="/platforms/xhs/crawler" element={<XhsDataAcquisitionPage />} />
           <Route path="/platforms/xhs/keywords" element={<XhsKeywordsPage />} />
           <Route path="/platforms/xhs/library" element={<XhsLibraryPage />} />
           <Route path="/platforms/xhs/drafts" element={<XhsDraftsPage />} />

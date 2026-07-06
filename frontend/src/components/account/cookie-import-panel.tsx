@@ -49,7 +49,7 @@ export function CookieImportPanel({ platform = "xhs", accountType, onImported }:
           <Input.TextArea
             value={cookieString}
             onChange={(e) => setCookieString(e.target.value)}
-            placeholder={platform === "huitun" ? "xhsapiToken=...;" : "a1=...; web_session=...;"}
+            placeholder={platform === "huitun" ? "key=value; ..." : "a1=...; web_session=...;"}
             rows={6}
             style={{ background: "#1f1f1f", borderColor: "#303030", color: "rgba(255,255,255,0.88)" }}
           />

@@ -51,7 +51,7 @@ type XhsAccountCardItem = PlatformAccountCardItem & {
 
 function accountTypeBadge(account: PlatformAccount): NonNullable<PlatformAccountCardItem["badge"]> {
   if (account.platform === "huitun") {
-    return { key: "type", label: "灰豚", color: "gold" };
+    return { key: "type", label: "数据账号", color: "gold" };
   }
   if (account.sub_type === "creator") {
     return { key: "type", label: "Creator", color: "purple" };
@@ -62,8 +62,8 @@ function accountTypeBadge(account: PlatformAccount): NonNullable<PlatformAccount
 function accountMetrics(account: PlatformAccount): NonNullable<PlatformAccountCardItem["metrics"]> {
   if (account.platform === "huitun") {
     return [
-      { key: "type", title: "类型", value: "灰豚" },
-      { key: "usage", title: "用途", value: "关键词获取" },
+      { key: "type", title: "类型", value: "数据账号" },
+      { key: "usage", title: "用途", value: "热词与数据获取" },
     ];
   }
 
@@ -245,25 +245,25 @@ export function XhsAccountsPage() {
           账号矩阵
         </Title>
         <Text style={{ color: "rgba(255,255,255,0.45)", marginTop: 4, display: "block" }}>
-          管理小红书与灰豚账号、登录态、健康检查和账号作用域。
+          管理小红书账号与数据账号、登录态、健康检查和账号作用域。
         </Text>
       </div>
 
       <PlatformAccountsShell
         title="已绑定账号"
-        description="管理小红书与灰豚账号、登录态、健康检查和账号作用域。"
+        description="管理小红书账号与数据账号、登录态、健康检查和账号作用域。"
         items={accountItems}
         loading={isLoading}
         error={error}
-        emptyTitle="还没有绑定小红书或灰豚账号"
+        emptyTitle="还没有绑定小红书账号或数据账号"
         emptyDescription={(
           <Space direction="vertical" size={8}>
             <SafetyCertificateOutlined style={{ fontSize: 48, color: "rgba(255,255,255,0.25)" }} />
             <Text strong style={{ color: "rgba(255,255,255,0.65)" }}>
-              还没有绑定小红书或灰豚账号
+              还没有绑定小红书账号或数据账号
             </Text>
             <Text style={{ color: "rgba(255,255,255,0.35)", fontSize: 13 }}>
-              绑定小红书 PC 账号用于搜索和抓取；绑定灰豚账号用于自动获取关键词候选词。
+              绑定小红书 PC 账号用于搜索和抓取；绑定数据账号用于自动获取关键词候选词。
             </Text>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
               添加账号

@@ -277,7 +277,11 @@ function exportRowsToExcel(items: XhsDataCrawlItem[]) {
   window.URL.revokeObjectURL(url);
 }
 
-export function XhsCrawlerPage() {
+type XhsCrawlerPageProps = {
+  visibleSource?: "all" | "xhs";
+};
+
+export function XhsCrawlerPage({ visibleSource = "all" }: XhsCrawlerPageProps = {}) {
   const [searchParams] = useSearchParams();
   const parsedKeywordGroupId = Number(searchParams.get("keyword_group_id") || 0);
   const queryKeywordGroupId = Number.isFinite(parsedKeywordGroupId) && parsedKeywordGroupId > 0 ? parsedKeywordGroupId : null;
@@ -513,19 +517,19 @@ export function XhsCrawlerPage() {
         items={[
           {
             key: "huitun",
-            label: "灰豚热词采集",
+            label: "热词候选获取",
             children: (
               <Card>
                 <Alert
                   type="info"
                   showIcon
-                  message="灰豚热词采集"
-                  description="灰豚用于发现热词和候选关键词，结果会导入关键词组，不直接进入内容库。"
+                  message="热词候选获取"
+                  description="用于发现热词和候选关键词，结果会导入关键词组，不直接进入内容库。"
                   style={{ marginBottom: 16 }}
                 />
                 <Space wrap>
-                  <Link to="/platforms/xhs/keywords"><Button type="primary">去导入灰豚热词</Button></Link>
-                  <Text type="secondary">获取灰豚候选词、手工导入灰豚热词和关键词组管理统一在热词页完成。</Text>
+                  <Link to="/platforms/xhs/keywords"><Button type="primary">去导入热词候选</Button></Link>
+                  <Text type="secondary">自动获取候选词、手工导入热词和关键词组管理统一在热词页完成。</Text>
                 </Space>
               </Card>
             ),
@@ -828,7 +832,7 @@ export function XhsCrawlerPage() {
               </>
             ),
           },
-        ]}
+        ].filter((tab) => visibleSource === "all" || tab.key === "xhs")}
       />
     </div>
   );
