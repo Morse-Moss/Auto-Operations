@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = "dev-only-change-me"
     fernet_key: str = ""
+    beta_admin_bootstrap_token: str = ""
 
     # Server
     server_host: str = "0.0.0.0"

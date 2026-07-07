@@ -4,8 +4,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from backend.app.core.config import get_settings
 from backend.app.core.database import Base, get_db
-from backend.app.core.security import create_access_token, hash_password
+from backend.app.core.security import create_access_token, create_refresh_token, hash_password
 from backend.app.main import app
 from backend.app.models import (
     InviteCode,
@@ -169,6 +170,100 @@ def test_disabled_user_and_suspended_tenant_are_rejected(tmp_path):
         assert suspended.status_code == 403
         assert suspended.json()["detail"] == "Tenant is suspended"
     finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_suspended_tenant_is_rejected_by_all_authenticated_routes(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            user = _create_user(db, "suspended-global-user")
+            token = create_access_token(user.id)
+            context = get_or_create_default_tenant_context(db, user.id)
+            context.tenant.status = "suspended"
+            db.commit()
+        finally:
+            db.close()
+
+        tasks = client.get("/api/tasks", headers=_auth_headers(token))
+        assert tasks.status_code == 403
+        assert tasks.json()["detail"] == "Tenant is suspended"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_suspended_tenant_cannot_login_or_refresh_token(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            user = _create_user(db, "suspended-auth-user")
+            context = get_or_create_default_tenant_context(db, user.id)
+            context.tenant.status = "suspended"
+            refresh_token = create_refresh_token(user.id)
+            db.commit()
+        finally:
+            db.close()
+
+        login = client.post("/api/auth/login", json={"username": "suspended-auth-user", "password": "secret123"})
+        assert login.status_code == 403
+        assert login.json()["detail"] == "Tenant is suspended"
+
+        refresh = client.post("/api/auth/refresh", json={"refresh_token": refresh_token})
+        assert refresh.status_code == 403
+        assert refresh.json()["detail"] == "Tenant is suspended"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_first_admin_bootstrap_requires_configured_token_and_creates_admin(tmp_path, monkeypatch):
+    db_dependency = _override_database(tmp_path)
+    monkeypatch.setenv("BETA_ADMIN_BOOTSTRAP_TOKEN", "bootstrap-secret")
+    get_settings.cache_clear()
+    try:
+        wrong = client.post(
+            "/api/admin/bootstrap",
+            json={"username": "first-admin", "password": "secret123", "bootstrap_token": "wrong"},
+        )
+        assert wrong.status_code == 403
+
+        created = client.post(
+            "/api/admin/bootstrap",
+            json={"username": "first-admin", "password": "secret123", "bootstrap_token": "bootstrap-secret"},
+        )
+        assert created.status_code == 200
+        assert created.json()["username"] == "first-admin"
+        assert created.json()["role"] == "admin"
+        assert created.json()["status"] == "active"
+
+        login = client.post("/api/auth/login", json={"username": "first-admin", "password": "secret123"})
+        assert login.status_code == 200
+        assert login.json()["user"]["role"] == "admin"
+    finally:
+        get_settings.cache_clear()
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_first_admin_bootstrap_refuses_after_admin_exists(tmp_path, monkeypatch):
+    db_dependency = _override_database(tmp_path)
+    monkeypatch.setenv("BETA_ADMIN_BOOTSTRAP_TOKEN", "bootstrap-secret")
+    get_settings.cache_clear()
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            _create_user(db, "existing-admin", role="admin")
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/admin/bootstrap",
+            json={"username": "late-admin", "password": "secret123", "bootstrap_token": "bootstrap-secret"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Admin bootstrap is already completed"
+    finally:
+        get_settings.cache_clear()
         app.dependency_overrides.pop(db_dependency, None)
 
 
