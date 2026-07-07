@@ -7,6 +7,7 @@ import {
   LinkOutlined,
   MessageOutlined,
   PictureOutlined,
+  SaveOutlined,
   CloudSyncOutlined,
   PlayCircleOutlined,
   ShareAltOutlined,
@@ -32,6 +33,7 @@ import {
   fetchSavedNoteFilterOptions,
   fetchSavedNotes,
   fetchTags,
+  localizeSavedNoteImages,
   pullXhsNotesFromFeishu,
   pushAllXhsNotesToFeishu,
   pushXhsNotesToFeishu,
@@ -43,6 +45,7 @@ const { Text, Paragraph } = Typography;
 const h = React.createElement;
 
 type XhsNavigate = (path: string) => void;
+const localizingImageNoteIds = new Set<number>();
 
 function formatSavedTime(value: string): string {
   return formatShanghaiTime(value);
@@ -356,6 +359,45 @@ function getActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "未知错误";
 }
 
+function renderSaveImagesButton(controller: ContentLibraryRenderContext<SavedNote>["controller"], selectedNote: SavedNote) {
+  const imageAssets = controller.selectedAssets.filter((asset) => asset.asset_type === "image");
+  if (!imageAssets.length) return null;
+  const missingCount = imageAssets.filter((asset) => !asset.local_path).length;
+  const isLoading = localizingImageNoteIds.has(selectedNote.id);
+
+  async function saveImages() {
+    localizingImageNoteIds.add(selectedNote.id);
+    controller.setDetailActionMessage("正在保存图片到本地...");
+    try {
+      const result = await localizeSavedNoteImages(selectedNote.id);
+      await controller.refreshSelectedItem();
+      const summary = `图片保存完成：新增 ${result.downloaded_count} 张，已存在 ${result.skipped_count} 张，失败 ${result.failed_count} 张。`;
+      localizingImageNoteIds.delete(selectedNote.id);
+      controller.setDetailActionMessage(summary);
+      if (result.failed_count > 0) {
+        message.warning(summary);
+      } else {
+        message.success(summary);
+      }
+    } catch (error) {
+      const errorMessage = `图片保存失败：${getActionErrorMessage(error)}`;
+      localizingImageNoteIds.delete(selectedNote.id);
+      controller.setDetailError(errorMessage);
+      message.error(errorMessage);
+    } finally {
+      localizingImageNoteIds.delete(selectedNote.id);
+    }
+  }
+
+  return h(Button, {
+    icon: h(SaveOutlined),
+    loading: isLoading,
+    disabled: isLoading || missingCount === 0,
+    onClick: () => void saveImages(),
+    size: "small",
+  }, missingCount ? `保存图片 (${missingCount})` : "图片已保存");
+}
+
 function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
   async function syncSelectedToFeishu() {
     const selectedIds = [...context.controller.selectedItemIds];
@@ -489,7 +531,10 @@ function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibr
       h(Popconfirm, { title: "确定删除？", onConfirm: () => void controller.deleteItem(selectedNote) }, h(Button, { danger: true, icon: h(DeleteOutlined), size: "small" }, "删除")),
     ),
     controller.selectedAssets.length > 0 ? h("div", { style: { marginBottom: 16 } },
-      h(Text, { strong: true, style: { display: "block", marginBottom: 6 } }, `素材 (${controller.selectedAssets.length})`),
+      h(Space, { style: { display: "flex", justifyContent: "space-between", marginBottom: 6 }, wrap: true },
+        h(Text, { strong: true }, `素材 (${controller.selectedAssets.length})`),
+        renderSaveImagesButton(controller, selectedNote),
+      ),
       h(Image.PreviewGroup, null,
         h(Space, { size: 8, wrap: true }, controller.selectedAssets.map((asset) => asset.asset_type === "video"
           ? h("div", { key: asset.id, style: { width: 80, height: 80, background: "#262626", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" } }, h(Button, { type: "link", icon: h(PlayCircleOutlined), href: asset.url, target: "_blank", rel: "noreferrer" }, "视频"))

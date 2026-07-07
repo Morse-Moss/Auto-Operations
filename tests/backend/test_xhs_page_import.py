@@ -92,12 +92,25 @@ def sample_payload() -> dict:
     }
 
 
-def test_current_note_import_saves_six_images_and_visible_comments_without_downloads(tmp_path):
+def patch_page_import_downloader(monkeypatch):
+    calls: list[tuple[str, int, str]] = []
+
+    def fake_download(url: str, user_id: int, asset_type: str) -> str | None:
+        calls.append((url, user_id, asset_type))
+        return f"xhs-asset-u{user_id}-{len(calls)}.jpg"
+
+    monkeypatch.setattr("backend.app.api.platforms.xhs.page_import._download_asset", fake_download, raising=False)
+    return calls
+
+
+def test_current_note_import_saves_six_images_and_visible_comments_with_local_images(tmp_path, monkeypatch):
     SessionLocal = override_database(tmp_path)
     try:
         user_id, headers = create_user_headers(SessionLocal)
+        download_calls = patch_page_import_downloader(monkeypatch)
+        payload = sample_payload()
 
-        response = client.post("/api/xhs/page-import/current-note", headers=headers, json=sample_payload())
+        response = client.post("/api/xhs/page-import/current-note", headers=headers, json=payload)
 
         assert response.status_code == 200
         body = response.json()
@@ -119,8 +132,9 @@ def test_current_note_import_saves_six_images_and_visible_comments_without_downl
             assets = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note.id).order_by(NoteAsset.sort_order)).all()
             assert [asset.asset_type for asset in assets] == ["image"] * 6
             assert [asset.sort_order for asset in assets] == list(range(6))
-            assert all(asset.local_path == "" for asset in assets)
+            assert [asset.local_path for asset in assets] == [f"xhs-asset-u{user_id}-{index}.jpg" for index in range(1, 7)]
             assert "1040g3k03223tv026na2g5nv0648g80tctrfrc9o" in assets[0].url
+            assert download_calls == [(url, user_id, "image") for url in payload["image_urls"]]
 
             comments = db.scalars(select(NoteComment).where(NoteComment.note_id == note.id)).all()
             assert len(comments) == 1
@@ -132,10 +146,11 @@ def test_current_note_import_saves_six_images_and_visible_comments_without_downl
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_current_note_import_replaces_assets_on_repeat_import(tmp_path):
+def test_current_note_import_replaces_assets_on_repeat_import(tmp_path, monkeypatch):
     SessionLocal = override_database(tmp_path)
     try:
         _user_id, headers = create_user_headers(SessionLocal)
+        patch_page_import_downloader(monkeypatch)
         first = sample_payload()
         second = sample_payload()
         second["title"] = "updated title"
@@ -182,10 +197,11 @@ def test_current_note_import_rejects_empty_media_payload(tmp_path):
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_current_note_import_sanitizes_note_url_and_comment_user_ids(tmp_path):
+def test_current_note_import_sanitizes_note_url_and_comment_user_ids(tmp_path, monkeypatch):
     SessionLocal = override_database(tmp_path)
     try:
         user_id, headers = create_user_headers(SessionLocal)
+        patch_page_import_downloader(monkeypatch)
         payload = sample_payload()
         payload["visible_comments"] = [
             {

@@ -1017,6 +1017,19 @@ export type NoteAsset = {
   sort_order?: number;
 };
 
+export type NoteImageLocalizationResult = {
+  total_image_count: number;
+  downloaded_count: number;
+  skipped_count: number;
+  failed_count: number;
+  items: Array<{
+    asset_id: number;
+    status: "downloaded" | "skipped" | "failed" | string;
+    local_path: string;
+    error: string;
+  }>;
+};
+
 export type NoteComment = {
   id: number;
   note_id: number;

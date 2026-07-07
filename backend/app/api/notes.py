@@ -805,6 +805,75 @@ def add_note_asset(
     return _serialize_asset(asset, current_user.id)
 
 
+@router.post("/{note_id}/assets/localize-images")
+def localize_note_image_assets(
+    note_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    note = _get_owned_note(db, current_user, note_id)
+    assets = db.scalars(
+        select(NoteAsset)
+        .where(NoteAsset.note_id == note.id, NoteAsset.asset_type == "image")
+        .order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())
+    ).all()
+    items: list[dict[str, Any]] = []
+    downloaded_count = 0
+    skipped_count = 0
+    failed_count = 0
+
+    for asset in assets:
+        if asset.local_path:
+            skipped_count += 1
+            items.append({
+                "asset_id": asset.id,
+                "status": "skipped",
+                "local_path": asset.local_path,
+                "error": "",
+            })
+            continue
+        if not asset.url.startswith(("http://", "https://")):
+            failed_count += 1
+            items.append({
+                "asset_id": asset.id,
+                "status": "failed",
+                "local_path": "",
+                "error": "invalid_url",
+            })
+            continue
+
+        local_name = _download_asset(asset.url, current_user.id, "image")
+        if not local_name:
+            failed_count += 1
+            items.append({
+                "asset_id": asset.id,
+                "status": "failed",
+                "local_path": "",
+                "error": "download_failed",
+            })
+            continue
+
+        asset.local_path = local_name
+        downloaded_count += 1
+        items.append({
+            "asset_id": asset.id,
+            "status": "downloaded",
+            "local_path": local_name,
+            "error": "",
+        })
+
+    if downloaded_count:
+        db.commit()
+
+    return {
+        "total_image_count": len(assets),
+        "downloaded_count": downloaded_count,
+        "skipped_count": skipped_count,
+        "failed_count": failed_count,
+        "items": items,
+    }
+
+
 @router.delete("/{note_id}/assets/{asset_id}")
 def delete_note_asset(
     note_id: int,

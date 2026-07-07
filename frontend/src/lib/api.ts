@@ -79,6 +79,7 @@ import type {
   MonitoringTargetPayload,
   NoteAsset,
   NoteComment,
+  NoteImageLocalizationResult,
   NotesExportPayload,
   NotesExportResponse,
   Paginated,
@@ -893,6 +894,11 @@ export async function fetchSavedNoteAssets(noteId: number): Promise<Paginated<No
 
 export async function addNoteAsset(noteId: number, payload: { asset_type: string; url?: string; local_path?: string }): Promise<NoteAsset> {
   const response = await http.post<NoteAsset>(`/notes/${noteId}/assets`, payload);
+  return response.data;
+}
+
+export async function localizeSavedNoteImages(noteId: number): Promise<NoteImageLocalizationResult> {
+  const response = await http.post<NoteImageLocalizationResult>(`/notes/${noteId}/assets/localize-images`, null, { _silent: true } as never);
   return response.data;
 }
 

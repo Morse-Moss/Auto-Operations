@@ -170,7 +170,8 @@ def _upsert_current_page_note(
 
     db.execute(delete(NoteAsset).where(NoteAsset.note_id == note.id))
     for index, image_url in enumerate(image_urls):
-        db.add(NoteAsset(note_id=note.id, asset_type="image", url=image_url, local_path="", sort_order=index))
+        local_name = _download_asset(image_url, current_user.id, "image")
+        db.add(NoteAsset(note_id=note.id, asset_type="image", url=image_url, local_path=local_name or "", sort_order=index))
     if video_url:
         db.add(
             NoteAsset(
@@ -227,3 +228,8 @@ def import_current_note(
         "comment_count": comment_count,
         "item": _serialize_note_with_tags(db, note),
     }
+
+
+def _download_asset(url: str, user_id: int, asset_type: str) -> str | None:
+    from backend.app.services.asset_downloader import download_asset_to_local
+    return download_asset_to_local(url, user_id, asset_type)
