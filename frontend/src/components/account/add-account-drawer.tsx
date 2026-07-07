@@ -1,6 +1,7 @@
 import { Alert, Drawer, Segmented, message } from "antd";
 import { useEffect, useState } from "react";
 
+import { useAuth } from "../../hooks/use-auth";
 import { fetchPlatforms } from "../../lib/api";
 import type { PlatformAccount } from "../../types";
 import {
@@ -32,7 +33,11 @@ type AddAccountDrawerProps = {
 };
 
 export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = "pc", schemas }: AddAccountDrawerProps) {
-  const [registrySchemas, setRegistrySchemas] = useState<readonly AccountAuthSchema[]>(() => mapPlatformRegistryToAccountAuthSchemas([]));
+  const auth = useAuth();
+  const includePrivateDataAccount = auth.user?.role === "admin";
+  const [registrySchemas, setRegistrySchemas] = useState<readonly AccountAuthSchema[]>(() =>
+    mapPlatformRegistryToAccountAuthSchemas([], includePrivateDataAccount)
+  );
   const availableSchemas = schemas ?? registrySchemas;
   const defaultSchema = getAccountAuthSchema("xhs", availableSchemas);
   const initialAccountType = getDefaultAccountType(defaultSchema, defaultAccountType);
@@ -54,18 +59,18 @@ export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = 
     fetchPlatforms()
       .then((platforms) => {
         if (!ignore) {
-          setRegistrySchemas(mapPlatformRegistryToAccountAuthSchemas(platforms));
+          setRegistrySchemas(mapPlatformRegistryToAccountAuthSchemas(platforms, includePrivateDataAccount));
         }
       })
       .catch(() => {
         if (!ignore) {
-          setRegistrySchemas(mapPlatformRegistryToAccountAuthSchemas([]));
+          setRegistrySchemas(mapPlatformRegistryToAccountAuthSchemas([], includePrivateDataAccount));
         }
       });
     return () => {
       ignore = true;
     };
-  }, [open, schemas]);
+  }, [includePrivateDataAccount, open, schemas]);
 
   useEffect(() => {
     if (!open) return;

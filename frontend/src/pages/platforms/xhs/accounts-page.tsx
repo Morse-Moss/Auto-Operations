@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { AddAccountDrawer } from "../../../components/account/add-account-drawer";
+import { useAuth } from "../../../hooks/use-auth";
 import { checkAccount, deleteAccount, fetchAccounts } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { PlatformAccount } from "../../../types";
@@ -150,6 +151,7 @@ function toXhsAccountCardItems(
 }
 
 export function XhsAccountsPage() {
+  const auth = useAuth();
   const [searchParams] = useSearchParams();
   const defaultAccountType = searchParams.get("bind") === "creator" ? "creator" : "pc";
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
@@ -210,7 +212,10 @@ export function XhsAccountsPage() {
     });
   }
 
-  const accountItems = toXhsAccountCardItems(accounts, {
+  const visibleAccounts = auth.user?.role === "admin"
+    ? accounts
+    : accounts.filter((account) => account.platform !== "huitun");
+  const accountItems = toXhsAccountCardItems(visibleAccounts, {
     isChecking: (accountId) => checkingAccountIds.has(accountId),
     onCheck: (accountId) => void handleCheck(accountId),
     onDelete: (account) => void handleDelete(account),

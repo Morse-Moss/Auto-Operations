@@ -148,10 +148,12 @@ def create_user_account_and_headers(SessionLocal):
     db = SessionLocal()
     try:
         user = User(username="operator", password_hash=hash_password("secret123"))
+        admin = User(username="data-admin", password_hash=hash_password("secret123"), role="admin")
         db.add(user)
+        db.add(admin)
         db.flush()
         account = PlatformAccount(
-            user_id=user.id,
+            user_id=admin.id,
             platform="huitun",
             sub_type="main",
             external_user_id="huitun-1",
@@ -170,7 +172,7 @@ def create_user_account_and_headers(SessionLocal):
 def test_live_huitun_batch_discovery_keeps_successful_seed_items_when_one_seed_fails(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:
-        account_id, headers = create_user_account_and_headers(SessionLocal)
+        _account_id, headers = create_user_account_and_headers(SessionLocal)
         fake = FakeHuitunClient(
             results={
                 "低卡早餐": [
@@ -196,7 +198,6 @@ def test_live_huitun_batch_discovery_keeps_successful_seed_items_when_one_seed_f
             headers=headers,
             json={
                 "source_mode": "live_account",
-                "account_id": account_id,
                 "limit_per_seed": 50,
                 "inputs": [
                     {"source_keyword": "低卡早餐"},
@@ -250,7 +251,7 @@ def test_live_huitun_batch_discovery_keeps_successful_seed_items_when_one_seed_f
 def test_live_huitun_batch_discovery_returns_failed_run_instead_of_http_400_when_all_seeds_fail(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:
-        account_id, headers = create_user_account_and_headers(SessionLocal)
+        _account_id, headers = create_user_account_and_headers(SessionLocal)
         fake = FakeHuitunClient(results={}, failures={"低卡早餐": "灰豚登录态已过期，请到账号矩阵重新登录。"})
         app.dependency_overrides[get_huitun_live_keyword_client] = lambda: fake
 
@@ -259,7 +260,6 @@ def test_live_huitun_batch_discovery_returns_failed_run_instead_of_http_400_when
             headers=headers,
             json={
                 "source_mode": "live_account",
-                "account_id": account_id,
                 "limit_per_seed": 50,
                 "inputs": [{"source_keyword": "低卡早餐"}],
             },
@@ -292,7 +292,7 @@ def test_live_huitun_batch_discovery_returns_failed_run_instead_of_http_400_when
 def test_huitun_discovery_run_history_lists_current_user_runs_without_items(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:
-        account_id, headers = create_user_account_and_headers(SessionLocal)
+        _account_id, headers = create_user_account_and_headers(SessionLocal)
         fake = FakeHuitunClient(
             results={
                 "低卡早餐": [
@@ -307,7 +307,6 @@ def test_huitun_discovery_run_history_lists_current_user_runs_without_items(tmp_
             headers=headers,
             json={
                 "source_mode": "live_account",
-                "account_id": account_id,
                 "limit_per_seed": 20,
                 "inputs": [{"source_keyword": "低卡早餐"}],
             },
@@ -330,7 +329,7 @@ def test_huitun_discovery_run_history_lists_current_user_runs_without_items(tmp_
 def test_successful_huitun_candidates_can_still_import_to_new_keyword_group(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:
-        account_id, headers = create_user_account_and_headers(SessionLocal)
+        _account_id, headers = create_user_account_and_headers(SessionLocal)
         fake = FakeHuitunClient(
             results={
                 "低卡早餐": [
@@ -346,7 +345,6 @@ def test_successful_huitun_candidates_can_still_import_to_new_keyword_group(tmp_
             headers=headers,
             json={
                 "source_mode": "live_account",
-                "account_id": account_id,
                 "limit_per_seed": 20,
                 "inputs": [{"source_keyword": "低卡早餐"}],
             },

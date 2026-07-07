@@ -22,6 +22,7 @@ from backend.app.services.data_acquisition_service import (
     serialize_candidate,
     serialize_run,
 )
+from backend.app.services.platform_data_account_service import enforce_note_search_daily_limit
 
 router = APIRouter(prefix="/xhs/data-acquisition", tags=["xhs-data-acquisition"])
 
@@ -84,6 +85,7 @@ def create_data_acquisition_run(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="该获取方式仍在验证中，暂不可创建任务。",
         )
+    enforce_note_search_daily_limit(db, user_id=current_user.id)
     run, candidates = create_note_search_run(
         db=db,
         current_user=current_user,

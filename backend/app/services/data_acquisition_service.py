@@ -21,6 +21,11 @@ from backend.app.models import (
     User,
 )
 from backend.app.services import huitun_live_note_source
+from backend.app.services.platform_data_account_service import (
+    get_platform_data_account_cookie_text,
+    record_note_search_usage,
+)
+from backend.app.services.usage_quota_service import get_or_create_default_tenant_context
 
 ACQUISITION_SOURCE = "huitun"
 SOURCE_MODE = "live_account"
@@ -189,7 +194,8 @@ def create_note_search_run(
 
     candidates: list[DataAcquisitionCandidate] = []
     try:
-        cookie_text = _latest_cookie_text(db, current_user, account_id)
+        platform_account, cookie_text = get_platform_data_account_cookie_text(db, account_id)
+        run.account_id = platform_account.id
         rows = note_source.search_notes(
             cookie_text,
             keyword,
@@ -204,6 +210,16 @@ def create_note_search_run(
         task.finished_at = shanghai_now()
         run.status = "completed"
         run.finished_at = task.finished_at
+        tenant_context = get_or_create_default_tenant_context(db, current_user.id, commit=False)
+        record_note_search_usage(
+            db,
+            tenant_id=tenant_context.tenant.id,
+            user_id=current_user.id,
+            task_id=task.id,
+            run_id=run.id,
+            keyword=keyword,
+            limit=effective_limit,
+        )
         db.commit()
     except Exception as exc:
         task.status = "failed"

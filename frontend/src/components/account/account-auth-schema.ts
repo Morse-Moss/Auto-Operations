@@ -81,7 +81,8 @@ export const accountAuthSchemas = [
   },
 ] as const satisfies readonly AccountAuthSchema[];
 
-const fallbackSchemas: readonly AccountAuthSchema[] = accountAuthSchemas.filter((schema) => schema.platform !== "wechat_official");
+const userFallbackSchemas: readonly AccountAuthSchema[] = accountAuthSchemas.filter((schema) => schema.platform === "xhs");
+const adminFallbackSchemas: readonly AccountAuthSchema[] = accountAuthSchemas.filter((schema) => schema.platform !== "wechat_official");
 
 const supportedPlatforms = new Set<AccountPlatform>(["xhs", "huitun", "wechat_official"]);
 const supportedAccountTypes = new Set<AccountType>(["pc", "creator", "main"]);
@@ -181,20 +182,22 @@ function mapPlatformAuthSchema(platform: PlatformMeta): AccountAuthSchema | null
   };
 }
 
-export function mapPlatformRegistryToAccountAuthSchemas(platforms: readonly PlatformMeta[]): AccountAuthSchema[] {
+export function mapPlatformRegistryToAccountAuthSchemas(platforms: readonly PlatformMeta[], includePrivateDataAccount = false): AccountAuthSchema[] {
+  const fallbackSchemas = includePrivateDataAccount ? adminFallbackSchemas : userFallbackSchemas;
   const mapped = platforms.map(mapPlatformAuthSchema).filter((schema): schema is AccountAuthSchema => Boolean(schema));
+  const visibleMapped = includePrivateDataAccount ? mapped : mapped.filter((schema) => schema.platform !== "huitun");
   if (!mapped.length) {
     return [...fallbackSchemas];
   }
-  const mappedPlatforms = new Set(mapped.map((schema) => schema.platform));
-  return [...mapped, ...fallbackSchemas.filter((schema) => !mappedPlatforms.has(schema.platform))];
+  const mappedPlatforms = new Set(visibleMapped.map((schema) => schema.platform));
+  return [...visibleMapped, ...fallbackSchemas.filter((schema) => !mappedPlatforms.has(schema.platform))];
 }
 
 export function getAccountAuthSchema(
   platform: AccountPlatform,
-  schemas: readonly AccountAuthSchema[] = fallbackSchemas,
+  schemas: readonly AccountAuthSchema[] = userFallbackSchemas,
 ): AccountAuthSchema {
-  return schemas.find((schema) => schema.platform === platform) ?? schemas[0] ?? fallbackSchemas[0];
+  return schemas.find((schema) => schema.platform === platform) ?? schemas[0] ?? userFallbackSchemas[0];
 }
 
 export function getDefaultAccountType(schema: AccountAuthSchema, requested?: AccountType): AccountType {
@@ -225,12 +228,13 @@ export function loginMethodOptionsFor(schema: AccountAuthSchema): AccountAuthOpt
   return [...schema.loginMethods];
 }
 
-export function platformOptionsFor(schemas: readonly AccountAuthSchema[] = fallbackSchemas): AccountAuthOption<AccountPlatform>[] {
+export function platformOptionsFor(schemas: readonly AccountAuthSchema[] = userFallbackSchemas): AccountAuthOption<AccountPlatform>[] {
   return schemas.map((schema) => ({ label: schema.label, value: schema.platform }));
 }
 
-export function accountDrawerTitleFor(schemas: readonly AccountAuthSchema[] = fallbackSchemas): string {
-  return `添加${schemas.map((schema) => schema.label).join(" / ")}账号`;
+export function accountDrawerTitleFor(schemas: readonly AccountAuthSchema[] = userFallbackSchemas): string {
+  const labelText = schemas.map((schema) => schema.label).join(" / ");
+  return labelText.endsWith("账号") ? `添加${labelText}` : `添加${labelText}账号`;
 }
 
 export function supportsPhoneLogin(accountType: AccountType): accountType is "pc" | "creator" {

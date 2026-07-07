@@ -35,7 +35,6 @@ import {
   createHuitunKeywordDiscoveryRun,
   createKeywordGroup,
   deleteKeywordGroup,
-  fetchAccounts,
   fetchHuitunKeywordDiscoveryRuns,
   fetchKeywordGroup,
   fetchKeywordGroups,
@@ -43,7 +42,7 @@ import {
   importKeywordCandidatesToGroup,
   updateKeywordGroup,
 } from "../../../lib/api";
-import type { KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, KeywordGroupDetail, PlatformAccount } from "../../../types";
+import type { KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, KeywordGroupDetail } from "../../../types";
 
 const HUITUN_LIVE_CANDIDATE_LIMIT = 20;
 const { Text } = Typography;
@@ -100,8 +99,6 @@ export function XhsKeywordsPage() {
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isWorking, setIsWorking] = useState(false);
-  const [huitunAccounts, setHuitunAccounts] = useState<PlatformAccount[]>([]);
-  const [selectedHuitunAccountId, setSelectedHuitunAccountId] = useState<number | null>(null);
   const [huitunSeed, setHuitunSeed] = useState("");
   const [huitunRows, setHuitunRows] = useState("");
   const [huitunRun, setHuitunRun] = useState<KeywordDiscoveryRun | null>(null);
@@ -117,15 +114,12 @@ export function XhsKeywordsPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const [result, accounts, discoveryRuns] = await Promise.all([
+      const [result, discoveryRuns] = await Promise.all([
         fetchKeywordGroups("xhs"),
-        fetchAccounts("huitun"),
         fetchHuitunKeywordDiscoveryRuns(1, 5),
       ]);
       setGroups(result.items);
-      setHuitunAccounts(accounts);
       setHuitunRuns(discoveryRuns.items);
-      setSelectedHuitunAccountId((currentId) => currentId ?? accounts[0]?.id ?? null);
       const details = await Promise.all(
         result.items.map(async (group) => {
           try {
@@ -243,17 +237,12 @@ export function XhsKeywordsPage() {
       setMessage("请输入至少一个种子关键词。");
       return;
     }
-    if (!selectedHuitunAccountId) {
-      setMessage("请先到账号矩阵绑定数据账号。");
-      return;
-    }
     setIsHuitunWorking(true);
     setMessage(null);
     setError(null);
     try {
       const run = await createHuitunKeywordDiscoveryRun({
         source_mode: "live_account",
-        account_id: selectedHuitunAccountId,
         limit_per_seed: HUITUN_LIVE_CANDIDATE_LIMIT,
         inputs: seeds.map((source_keyword) => ({ source_keyword })),
       });
@@ -378,17 +367,7 @@ export function XhsKeywordsPage() {
           style={{ marginBottom: 16 }}
         />
         <Row gutter={16}>
-          <Col xs={24} md={8}>
-            <Form.Item label="数据账号">
-              <Select
-                value={selectedHuitunAccountId ?? undefined}
-                onChange={setSelectedHuitunAccountId}
-                placeholder="请选择数据账号"
-                options={huitunAccounts.map((account) => ({ value: account.id, label: `数据账号 ${account.id} · ${account.status}` }))}
-              />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={10}>
+          <Col xs={24} md={18}>
             <Form.Item label="种子关键词">
               <Input.TextArea
                 value={huitunSeed}
