@@ -6,10 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.xhs.pc_api_adapter import XhsPcApiAdapter
-from backend.app.api.platforms.xhs.crawl import (
-    _data_items,
-    _save_normalized_notes,
-)
+from backend.app.api.platforms.xhs.crawl import _data_items
 from backend.app.api.platforms.xhs.pc import (
     _normalize_detail_payload,
     _normalize_search_item,
@@ -25,6 +22,7 @@ from backend.app.models import (
     User,
 )
 from backend.app.services.notification_service import notify_target_paused
+from backend.app.services.xhs_crawl_persistence_service import save_normalized_notes
 
 
 def _find_pc_account(db: Session, target: MonitoringTarget, user: User) -> PlatformAccount | None:
@@ -212,7 +210,7 @@ def execute_monitoring_refresh(
     ok, normalized_items, error_msg = _crawl_for_target(adapter, target)
 
     if ok and normalized_items:
-        _save_normalized_notes(db, account, normalized_items)
+        save_normalized_notes(db, account, normalized_items)
 
     snapshot = _make_snapshot(db, target, user)
 

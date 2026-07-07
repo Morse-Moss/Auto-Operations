@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 import time
 from typing import Any, Generator, Literal
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.xhs.mappers import normalize_xhs_comment_payload
@@ -21,10 +20,11 @@ from backend.app.api.platforms.xhs.pc import (
 from backend.app.api.tasks import serialize_task
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, NoteAsset, NoteComment, NoteExclusion, PlatformAccount, Task, User
+from backend.app.models import CrawlDiagnostic, KeywordGroup, Note, PlatformAccount, Task, User
 from backend.app.schemas.common import paginated
-from backend.app.services.crawl_diagnostics import create_crawl_diagnostic, serialize_crawl_diagnostic
-from backend.app.services.diagnostic_service import skipped_save_diagnostic
+from backend.app.services import xhs_crawl_persistence_service as crawl_persistence
+from backend.app.services import xhs_crawl_quality_service as crawl_quality
+from backend.app.services.crawl_diagnostics import serialize_crawl_diagnostic
 from backend.app.services.xhs_detail_recovery import (
     build_user_message,
     evaluate_detail_quality,
@@ -147,43 +147,19 @@ def _data_items(raw_payload: Any) -> list[dict[str, Any]]:
 
 
 def _raw_with_metrics(normalized: dict[str, Any]) -> dict[str, Any]:
-    raw = normalized.get("raw") if isinstance(normalized.get("raw"), dict) else {}
-    return {
-        **raw,
-        "note_url": normalized.get("note_url", ""),
-        "tags": normalized.get("tags", []),
-        "likes": normalized.get("likes", 0),
-        "collects": normalized.get("collects", 0),
-        "comments": normalized.get("comments", 0),
-        "shares": normalized.get("shares", 0),
-    }
+    return crawl_persistence.raw_with_metrics(normalized)
 
 
 def _image_urls(normalized: dict[str, Any]) -> list[str]:
-    urls = normalized.get("image_urls")
-    if isinstance(urls, list) and urls:
-        return [str(url) for url in urls if url]
-    cover_url = normalized.get("cover_url")
-    return [str(cover_url)] if cover_url else []
+    return crawl_persistence.image_urls(normalized)
 
 
 def _video_url(normalized: dict[str, Any]) -> str:
-    return str(normalized.get("video_url") or normalized.get("video_addr") or "")
+    return crawl_persistence.video_url(normalized)
 
 
 def _filter_saveable_notes(normalized_items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    saveable: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for normalized in normalized_items:
-        raw_payload = normalized.get("raw") if isinstance(normalized.get("raw"), dict) else None
-        quality = evaluate_detail_quality(normalized, raw_payload)
-        normalized.update(quality)
-        if quality["can_save"]:
-            saveable.append(normalized)
-        else:
-            normalized["save_diagnostic_kind"] = "save_skipped_low_quality"
-            skipped.append(normalized)
-    return saveable, skipped
+    return crawl_quality.filter_saveable_notes(normalized_items, quality_evaluator=evaluate_detail_quality)
 
 
 def _split_excluded_saveable_notes(
@@ -191,84 +167,23 @@ def _split_excluded_saveable_notes(
     account: PlatformAccount,
     saveable_items: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    note_ids = [str(item.get("note_id") or "").strip() for item in saveable_items]
-    unique_note_ids = [note_id for note_id in dict.fromkeys(note_ids) if note_id]
-    exclusions = (
-        db.scalars(
-            select(NoteExclusion).where(
-                NoteExclusion.user_id == account.user_id,
-                NoteExclusion.platform == account.platform,
-                NoteExclusion.platform_note_id.in_(unique_note_ids),
-            )
-        ).all()
-        if unique_note_ids
-        else []
-    )
-    exclusion_by_note_id = {exclusion.platform_note_id: exclusion for exclusion in exclusions}
-    remaining: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for item in saveable_items:
-        note_id = str(item.get("note_id") or "").strip()
-        exclusion = exclusion_by_note_id.get(note_id)
-        if exclusion is None:
-            remaining.append(item)
-            continue
-        item.update(
-            {
-                "can_save": False,
-                "quality_status": "excluded",
-                "diagnostic_kind": "excluded_note",
-                "save_diagnostic_kind": "excluded_note",
-                "user_message": "该笔记已标记废弃，本轮跳过评论抓取和保存。",
-                "recoverable": False,
-                "reason": "excluded",
-                "reason_code": exclusion.reason_code,
-                "reason_text": exclusion.reason_text,
-            }
-        )
-        skipped.append(item)
-    return remaining, skipped
+    return crawl_quality.split_excluded_saveable_notes(db, account, saveable_items)
 
 
 def _quality_item_fields(quality: dict[str, Any], *, saved: bool = False, save_diagnostic_kind: str | None = None) -> dict[str, Any]:
-    return {
-        "quality_status": quality.get("quality_status", "unknown"),
-        "recoverable": bool(quality.get("recoverable", False)),
-        "diagnostic_kind": quality.get("diagnostic_kind"),
-        "save_diagnostic_kind": save_diagnostic_kind,
-        "user_message": str(quality.get("user_message") or ""),
-        "saved": saved,
-    }
+    return crawl_quality.quality_item_fields(quality, saved=saved, save_diagnostic_kind=save_diagnostic_kind)
 
 
 def _diagnostic_severity(kind: str | None) -> str:
-    if kind in {"xhs_rate_limited", "xhs_account_expired"}:
-        return "blocked"
-    if kind in {"missing_xsec_token_short_explore", "detail_api_failed", "invalid_note_identity", "search_api_failed"}:
-        return "error"
-    return "warning"
+    return crawl_quality.diagnostic_severity(kind)
 
 
 def _search_failure_kind(message: str, raw_payload: object | None) -> str:
-    raw_message = ""
-    raw_code: object | None = None
-    if isinstance(raw_payload, dict):
-        raw_message = str(raw_payload.get("msg") or raw_payload.get("message") or "")
-        raw_code = raw_payload.get("code")
-    combined = f"{message} {raw_message}"
-    if raw_code == -100 or "登录已过期" in combined or "��¼�ѹ���" in combined:
-        return "xhs_account_expired"
-    if is_xhs_rate_limit_signal(message=combined):
-        return "xhs_rate_limited"
-    return "search_api_failed"
+    return crawl_quality.search_failure_kind(message, raw_payload)
 
 
 def _search_failure_user_message(kind: str) -> str:
-    if kind == "xhs_account_expired":
-        return "小红书账号登录已过期。请到账号矩阵重新登录或更新 PC Cookie 后再采集。"
-    if kind == "xhs_rate_limited":
-        return build_user_message("xhs_rate_limited", "rate_limited")
-    return "搜索接口返回失败，请稍后重试；如果连续失败，请到账号矩阵检查账号登录状态。"
+    return crawl_quality.search_failure_user_message(kind)
 
 
 def _record_crawl_diagnostic(
@@ -287,33 +202,25 @@ def _record_crawl_diagnostic(
     raw_payload: object | None = None,
     note_url: str | None = None,
 ) -> None:
-    create_crawl_diagnostic(
+    crawl_quality.record_crawl_diagnostic(
         db,
-        user_id=current_user.id,
-        task_id=task.id,
-        platform_account_id=account.id,
-        platform="xhs",
+        current_user=current_user,
+        task=task,
+        account=account,
         source=source,
-        note_id=str((note or {}).get("note_id") or "") or None,
-        note_url=note_url or str((note or {}).get("note_url") or "") or None,
+        note=note,
         stage=stage,
         kind=kind,
-        severity=_diagnostic_severity(kind),
-        recoverable=recoverable,
         message=message,
         user_message=user_message,
-        raw_payload=raw_payload or (note or {}).get("raw") or {},
+        recoverable=recoverable,
+        raw_payload=raw_payload,
+        note_url=note_url,
     )
 
 
 def _quality_from_short_url(url: str) -> dict[str, Any]:
-    return {
-        "quality_status": "invalid_source_url",
-        "diagnostic_kind": "missing_xsec_token_short_explore",
-        "recoverable": False,
-        "user_message": build_user_message("missing_xsec_token_short_explore", "invalid_source_url"),
-        "can_save": False,
-    }
+    return crawl_quality.quality_from_short_url(url)
 
 
 def _record_save_skipped_diagnostics(
@@ -324,31 +231,13 @@ def _record_save_skipped_diagnostics(
     account: PlatformAccount,
     skipped_items: list[dict[str, Any]],
 ) -> None:
-    for skipped in skipped_items:
-        diagnostic = skipped_save_diagnostic(
-            platform_id="xhs",
-            skipped_item=skipped,
-            correlation_id=f"task:{task.id}",
-        ).to_payload()
-        existing_diagnostics = skipped.get("diagnostics")
-        skipped["diagnostics"] = [
-            *(existing_diagnostics if isinstance(existing_diagnostics, list) else []),
-            diagnostic,
-        ]
-        _record_crawl_diagnostic(
-            db,
-            current_user=current_user,
-            task=task,
-            account=account,
-            source=str(skipped.get("note_url") or skipped.get("note_id") or ""),
-            note=skipped,
-            stage="save",
-            kind=str(skipped.get("save_diagnostic_kind") or "save_skipped_low_quality"),
-            message=str(skipped.get("diagnostic_kind") or "low quality detail"),
-            user_message=str(skipped.get("user_message") or build_user_message(None, str(skipped.get("quality_status") or "unknown"))),
-            recoverable=bool(skipped.get("recoverable", False)),
-            raw_payload=skipped.get("raw") if isinstance(skipped.get("raw"), dict) else {},
-        )
+    crawl_quality.record_save_skipped_diagnostics(
+        db,
+        current_user=current_user,
+        task=task,
+        account=account,
+        skipped_items=skipped_items,
+    )
 
 
 def _save_with_quality_gate(
@@ -359,21 +248,15 @@ def _save_with_quality_gate(
     account: PlatformAccount,
     normalized_items: list[dict[str, Any]],
 ) -> tuple[list[Note], list[dict[str, Any]]]:
-    remaining_items, excluded_items = _split_excluded_saveable_notes(db, account, normalized_items)
-    saveable_items, skipped_items = _filter_saveable_notes(remaining_items)
-    skipped_items.extend(excluded_items)
-    if skipped_items:
-        _record_save_skipped_diagnostics(
-            db,
-            current_user=current_user,
-            task=task,
-            account=account,
-            skipped_items=skipped_items,
-        )
-    saved_notes = _save_normalized_notes(db, account, saveable_items) if saveable_items else []
-    if skipped_items and not saveable_items:
-        db.commit()
-    return saved_notes, skipped_items
+    return crawl_persistence.save_with_quality_gate(
+        db,
+        current_user=current_user,
+        task=task,
+        account=account,
+        normalized_items=normalized_items,
+        asset_downloader=_download_asset,
+        quality_evaluator=evaluate_detail_quality,
+    )
 
 
 def _save_normalized_notes(
@@ -381,80 +264,15 @@ def _save_normalized_notes(
     account: PlatformAccount,
     normalized_items: list[dict[str, Any]],
 ) -> list[Note]:
-    saved: list[Note] = []
-    normalized_note_ids = [str(normalized.get("note_id") or "").strip() for normalized in normalized_items]
-    unique_note_ids = [note_id for note_id in dict.fromkeys(normalized_note_ids) if note_id]
-    excluded_note_ids = set(
-        db.scalars(
-            select(NoteExclusion.platform_note_id).where(
-                NoteExclusion.user_id == account.user_id,
-                NoteExclusion.platform == account.platform,
-                NoteExclusion.platform_note_id.in_(unique_note_ids),
-            )
-        ).all()
-    ) if unique_note_ids else set()
-    for normalized in normalized_items:
-        note_id = str(normalized.get("note_id") or "").strip()
-        if not note_id or note_id in excluded_note_ids:
-            continue
-        note = db.scalars(
-            select(Note).where(
-                Note.user_id == account.user_id,
-                Note.platform == account.platform,
-                Note.note_id == note_id,
-            )
-        ).first()
-        if note is None:
-            note = Note(user_id=account.user_id, platform_account_id=account.id, platform=account.platform, note_id=note_id)
-            db.add(note)
-        note.title = str(normalized.get("title") or "")
-        note.content = str(normalized.get("content") or "")
-        note.author_name = str(normalized.get("author_name") or "")
-        note.raw_json = _raw_with_metrics(normalized)
-        db.flush()
-        db.execute(delete(NoteAsset).where(NoteAsset.note_id == note.id))
-        for url in _image_urls(normalized):
-            local_name = _download_asset(url, account.user_id, "image")
-            db.add(NoteAsset(note_id=note.id, asset_type="image", url=url, local_path=local_name or ""))
-        video_url = _video_url(normalized)
-        if video_url:
-            local_name = _download_asset(video_url, account.user_id, "video")
-            db.add(NoteAsset(note_id=note.id, asset_type="video", url=video_url, local_path=local_name or ""))
-        saved.append(note)
-
-    db.commit()
-    for note in saved:
-        db.refresh(note)
-    return saved
+    return crawl_persistence.save_normalized_notes(db, account, normalized_items, asset_downloader=_download_asset)
 
 
 def _save_note_comments(db: Session, note: Note, comments: list[dict[str, Any]]) -> None:
-    if not comments:
-        return
-    db.execute(delete(NoteComment).where(NoteComment.note_id == note.id))
-    for comment in comments:
-        comment_id = str(comment.get("comment_id") or "").strip()
-        if not comment_id:
-            continue
-        db.add(
-            NoteComment(
-                note_id=note.id,
-                comment_id=comment_id,
-                user_name=str(comment.get("user_name") or ""),
-                user_id=comment.get("user_id"),
-                content=str(comment.get("content") or ""),
-                like_count=int(comment.get("like_count") or 0),
-                parent_comment_id=comment.get("parent_comment_id"),
-                created_at_remote=comment.get("created_at_remote"),
-                raw_json=comment.get("raw_json"),
-            )
-        )
-    db.commit()
+    crawl_persistence.save_note_comments(db, note, comments)
 
 
 def _download_asset(url: str, user_id: int, asset_type: str) -> str | None:
-    from backend.app.services.asset_downloader import download_asset_to_local
-    return download_asset_to_local(url, user_id, asset_type)
+    return crawl_persistence.download_asset(url, user_id, asset_type)
 
 
 def _sleep_between_requests(seconds: float) -> None:
@@ -463,49 +281,27 @@ def _sleep_between_requests(seconds: float) -> None:
 
 
 def _is_comment_rate_limited(message: str) -> bool:
-    normalized = str(message or "")
-    return any(marker in normalized for marker in ("300013", "访问频繁", "请稍后再试", "'comments'"))
+    return crawl_quality.is_comment_rate_limited(message)
 
 
 def _comment_failure_status(message: str) -> str:
-    return "rate_limited" if _is_comment_rate_limited(message) else "failed"
+    return crawl_quality.comment_failure_status(message)
 
 
 def _comment_skip_error() -> str:
-    return "评论接口访问频繁，本轮后续评论已跳过。"
+    return crawl_quality.comment_skip_error()
 
 
 def _platform_note_id_from_url(url: str) -> str:
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return ""
-    parts = [part for part in parsed.path.split("/") if part]
-    if "explore" in parts:
-        index = parts.index("explore")
-        if index + 1 < len(parts):
-            return parts[index + 1].strip()
-    return ""
+    return crawl_quality.platform_note_id_from_url(url)
 
 
 def _is_platform_note_id_excluded(db: Session, account: PlatformAccount, note_id: str) -> bool:
-    note_id = str(note_id or "").strip()
-    if not note_id:
-        return False
-    return (
-        db.scalar(
-            select(NoteExclusion.id).where(
-                NoteExclusion.user_id == account.user_id,
-                NoteExclusion.platform == account.platform,
-                NoteExclusion.platform_note_id == note_id,
-            )
-        )
-        is not None
-    )
+    return crawl_quality.is_platform_note_id_excluded(db, account, note_id)
 
 
 def _is_normalized_note_excluded(db: Session, account: PlatformAccount, normalized: dict[str, Any]) -> bool:
-    return _is_platform_note_id_excluded(db, account, str(normalized.get("note_id") or "").strip())
+    return crawl_quality.is_normalized_note_excluded(db, account, normalized)
 
 
 def _record_excluded_crawl_diagnostic(
@@ -518,19 +314,13 @@ def _record_excluded_crawl_diagnostic(
     note: dict[str, Any],
     note_url: str | None = None,
 ) -> None:
-    _record_crawl_diagnostic(
+    crawl_quality.record_excluded_crawl_diagnostic(
         db,
         current_user=current_user,
         task=task,
         account=account,
         source=source,
         note=note,
-        stage="save",
-        kind="excluded_note",
-        message="Note is excluded and skipped before comments/save",
-        user_message="该笔记已标记废弃，本轮跳过评论抓取和保存。",
-        recoverable=False,
-        raw_payload=note.get("raw") if isinstance(note.get("raw"), dict) else {},
         note_url=note_url,
     )
 
