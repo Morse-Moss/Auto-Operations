@@ -19,8 +19,10 @@ from backend.app.models import (
     NoteSourceSnapshot,
     PlatformAccount,
     Task,
+    UsageLedger,
     User,
 )
+from backend.app.core.time import shanghai_now
 
 client = TestClient(app)
 
@@ -73,10 +75,12 @@ def create_user_account_and_headers(SessionLocal):
     db = SessionLocal()
     try:
         user = User(username="operator", password_hash=hash_password("secret123"))
+        admin = User(username="data-admin", password_hash=hash_password("secret123"), role="admin")
         db.add(user)
+        db.add(admin)
         db.flush()
         account = PlatformAccount(
-            user_id=user.id,
+            user_id=admin.id,
             platform="huitun",
             sub_type="main",
             external_user_id="huitun-1",
@@ -168,6 +172,89 @@ def test_note_search_run_creates_candidates_without_exposing_internal_source(tmp
         assert candidates[0]["metrics"]["like_count"] == 10
         assert "source" not in candidates[0]
         assert "raw_json" not in candidates[0]
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_note_search_uses_platform_data_account_without_user_account_id(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    fake = FakeNoteSource([sample_note_row("note-platform", "Platform account result")])
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+
+        response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "params": {"keyword": "platform keyword", "limit": 5, "sort": "interaction", "note_type": "all"},
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "completed"
+        assert payload["candidate_count"] == 1
+        assert fake.calls == [("session=ok", "platform keyword", 5, {"sort": "interaction", "note_type": "all"})]
+
+        db = SessionLocal()
+        try:
+            run = db.scalars(select(DataAcquisitionRun)).one()
+            assert run.account_id == account_id
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_note_search_daily_user_limit_returns_429_without_calling_source(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    fake = FakeNoteSource([sample_note_row()])
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    try:
+        user_id, _account_id, headers = create_user_account_and_headers(SessionLocal)
+        db = SessionLocal()
+        try:
+            for index in range(20):
+                db.add(
+                    UsageLedger(
+                        tenant_id=1,
+                        user_id=user_id,
+                        feature_key="xhs.data_acquisition.note_search",
+                        bucket="data_acquisition_note_search",
+                        operation="commit",
+                        amount=1,
+                        balance_after=20 - index,
+                        status="completed",
+                        idempotency_key=f"seed:{index}",
+                        created_at=shanghai_now(),
+                    )
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "params": {"keyword": "rate limit", "limit": 5},
+            },
+        )
+
+        assert response.status_code == 429
+        assert response.json()["detail"]["code"] == "data_acquisition_daily_limit_exceeded"
+        assert fake.calls == []
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(DataAcquisitionRun)).all() == []
+            assert db.scalars(select(Task)).all() == []
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
         app.dependency_overrides.pop(get_db, None)

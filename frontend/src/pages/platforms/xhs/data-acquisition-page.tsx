@@ -38,18 +38,16 @@ import {
   cancelDataAcquisitionRun,
   createDataAcquisitionRun,
   excludeDataAcquisitionCandidates,
-  fetchAccounts,
   fetchDataAcquisitionCandidates,
   fetchDataAcquisitionRuns,
   importDataAcquisitionCandidates,
   restoreDataAcquisitionCandidates,
   retryDataAcquisitionRun,
 } from "../../../lib/api";
-import type { DataAcquisitionCandidate, DataAcquisitionRun, PlatformAccount } from "../../../types";
+import type { DataAcquisitionCandidate, DataAcquisitionRun } from "../../../types";
 import { XhsCrawlerPage } from "./crawler-page";
 
 const { Text, Title } = Typography;
-const dataAccountPlatform = "hui" + "tun";
 const candidateStatusOptions = [
   { value: "pending", label: "待确认" },
   { value: "excluded", label: "已排除" },
@@ -109,8 +107,7 @@ function parseRunId(value: string | null): number | undefined {
 
 export function XhsDataAcquisitionPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [form] = Form.useForm<{ account_id?: number; keyword: string; limit: number; sort: string; note_type: string }>();
-  const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
+  const [form] = Form.useForm<{ keyword: string; limit: number; sort: string; note_type: string }>();
   const [runs, setRuns] = useState<DataAcquisitionRun[]>([]);
   const [candidates, setCandidates] = useState<DataAcquisitionCandidate[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([]);
@@ -120,11 +117,6 @@ export function XhsDataAcquisitionPage() {
   const [running, setRunning] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
-  const dataAccounts = useMemo(
-    () => accounts.filter((account) => account.platform === dataAccountPlatform && account.sub_type === "main"),
-    [accounts]
-  );
-  const activeDataAccounts = useMemo(() => dataAccounts.filter((account) => account.status === "active"), [dataAccounts]);
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId), [runs, selectedRunId]);
   const selectableCandidateIds = useMemo(
     () => candidates.filter((candidate) => candidate.status !== "imported").map((candidate) => candidate.id),
@@ -154,12 +146,10 @@ export function XhsDataAcquisitionPage() {
     setLoading(true);
     try {
       const statusParam = nextStatus === "all" ? undefined : nextStatus;
-      const [accountList, runPage, candidatePage] = await Promise.all([
-        fetchAccounts(),
+      const [runPage, candidatePage] = await Promise.all([
         fetchDataAcquisitionRuns({ page_size: 10 }),
         fetchDataAcquisitionCandidates({ run_id: nextRunId, status: statusParam, page_size: 50 }),
       ]);
-      setAccounts(accountList);
       setRuns(runPage.items);
       setCandidates(candidatePage.items);
       setSelectedCandidateIds((current) => current.filter((id) => candidatePage.items.some((candidate) => candidate.id === id)));
@@ -175,12 +165,6 @@ export function XhsDataAcquisitionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const preferred = activeDataAccounts[0]?.id ?? dataAccounts[0]?.id;
-    const current = form.getFieldValue("account_id");
-    if (!current && preferred) form.setFieldValue("account_id", preferred);
-  }, [activeDataAccounts, dataAccounts, form]);
-
   function updateCandidateView(nextRunId: number | undefined, nextStatus = candidateStatus) {
     setSelectedRunId(nextRunId);
     setCandidateStatus(nextStatus);
@@ -189,12 +173,11 @@ export function XhsDataAcquisitionPage() {
     void loadPageData(nextRunId, nextStatus);
   }
 
-  async function handleCreateRun(values: { account_id?: number; keyword: string; limit: number; sort: string; note_type: string }) {
+  async function handleCreateRun(values: { keyword: string; limit: number; sort: string; note_type: string }) {
     setRunning(true);
     try {
       const run = await createDataAcquisitionRun({
         acquisition_type: "note_search",
-        account_id: values.account_id,
         params: {
           keyword: values.keyword.trim(),
           limit: values.limit,
@@ -376,18 +359,6 @@ export function XhsDataAcquisitionPage() {
           onFinish={(values) => void handleCreateRun(values)}
         >
           <Row gutter={16}>
-            <Col xs={24} md={7}>
-              <Form.Item label="数据账号" name="account_id" rules={[{ required: true, message: "请选择数据账号" }]}>
-                <Select
-                  placeholder="选择数据账号"
-                  options={dataAccounts.map((account) => ({
-                    value: account.id,
-                    label: `数据账号 ${account.id} / ${account.status}`,
-                    disabled: account.status !== "active",
-                  }))}
-                />
-              </Form.Item>
-            </Col>
             <Col xs={24} md={7}>
               <Form.Item label="关键词" name="keyword" rules={[{ required: true, message: "请输入关键词" }]}>
                 <Input placeholder="例如：露营、家居收纳" maxLength={80} />

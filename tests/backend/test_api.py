@@ -1402,13 +1402,21 @@ def _register_and_get_access_token(username: str = "operator") -> str:
 def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
     from backend.app.api.huitun_login_sessions import get_huitun_account_client
     from backend.app.core.database import get_db
-    from backend.app.core.security import decrypt_text
-    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount
+    from backend.app.core.security import create_access_token, decrypt_text
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount, User
 
     db_dependency = _override_database(tmp_path)
     app.dependency_overrides[get_huitun_account_client] = lambda: FakeHuitunAccountClient()
     try:
-        access_token = _register_and_get_access_token()
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = User(username="huitun-admin", password_hash="hash", role="admin", status="active")
+            db.add(admin)
+            db.commit()
+            admin_id = admin.id
+        finally:
+            db.close()
+        access_token = create_access_token(admin_id)
 
         create_response = client.post(
             "/api/huitun/login-sessions/qrcode",
@@ -1475,12 +1483,39 @@ def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
         app.dependency_overrides.pop(get_huitun_account_client, None)
 
 
+def test_huitun_account_management_is_admin_only(tmp_path):
+    from backend.app.api.huitun_login_sessions import get_huitun_account_client
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_huitun_account_client] = lambda: FakeHuitunAccountClient()
+    try:
+        user_token = _register_and_get_access_token("ordinary-data-user")
+
+        qrcode_response = client.post(
+            "/api/huitun/login-sessions/qrcode",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        cookie_response = client.post(
+            "/api/accounts/import-cookie",
+            headers={"Authorization": f"Bearer {user_token}"},
+            json={"platform": "huitun", "sub_type": "main", "cookie_string": '{"xhsapiToken":"user-token"}'},
+        )
+
+        assert qrcode_response.status_code == 403
+        assert cookie_response.status_code == 403
+        assert qrcode_response.json()["detail"] == "Admin role required"
+        assert cookie_response.json()["detail"] == "Admin role required"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_huitun_account_client, None)
+
+
 
 def test_huitun_live_account_discovery_uses_owned_account_and_persists_candidates(tmp_path):
     from backend.app.api.keyword_groups import get_huitun_live_keyword_client
     from backend.app.core.database import get_db
     from backend.app.core.security import encrypt_text
-    from backend.app.models import AccountCookieVersion, KeywordDiscoveryItem, PlatformAccount
+    from backend.app.models import AccountCookieVersion, KeywordDiscoveryItem, PlatformAccount, User
 
     db_dependency = _override_database(tmp_path)
     app.dependency_overrides[get_huitun_live_keyword_client] = lambda: FakeHuitunLiveKeywordClient()
@@ -1488,8 +1523,11 @@ def test_huitun_live_account_discovery_uses_owned_account_and_persists_candidate
         access_token = _register_and_get_access_token("huitun-keyword-operator")
         db = next(app.dependency_overrides[get_db]())
         try:
+            admin = User(username="huitun-keyword-admin", password_hash="hash", role="admin", status="active")
+            db.add(admin)
+            db.flush()
             account = PlatformAccount(
-                user_id=1,
+                user_id=admin.id,
                 platform="huitun",
                 sub_type="main",
                 external_user_id="huitun-keyword-user",
@@ -1505,7 +1543,6 @@ def test_huitun_live_account_discovery_uses_owned_account_and_persists_candidate
                 )
             )
             db.commit()
-            account_id = account.id
         finally:
             db.close()
 
@@ -1514,7 +1551,6 @@ def test_huitun_live_account_discovery_uses_owned_account_and_persists_candidate
             headers={"Authorization": f"Bearer {access_token}"},
             json={
                 "source_mode": "live_account",
-                "account_id": account_id,
                 "limit_per_seed": 20,
                 "inputs": [{"source_keyword": "低卡早餐"}],
             },

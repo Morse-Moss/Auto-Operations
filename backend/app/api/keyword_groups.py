@@ -10,9 +10,8 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import AccountCookieVersion, KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, Note, PlatformAccount, User
+from backend.app.models import KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, Note, User
 from backend.app.schemas.common import paginated
 from backend.app.services import huitun_live_keyword_source
 from backend.app.services.huitun_keyword_source import (
@@ -22,6 +21,7 @@ from backend.app.services.huitun_keyword_source import (
     parse_huitun_number,
     prioritize_exact_hotword_rows,
 )
+from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
 
 router = APIRouter(prefix="/keyword-groups", tags=["keyword-groups"])
 
@@ -336,19 +336,8 @@ def _normalize_manual_item(source_keyword: str, index: int, item: dict[str, Any]
 
 
 def _latest_huitun_cookie_text(db: Session, current_user: User, account_id: int | None) -> str:
-    if account_id is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择灰豚账号。")
-    account = db.get(PlatformAccount, account_id)
-    if account is None or account.user_id != current_user.id or account.platform != "huitun" or account.sub_type != "main":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="灰豚账号不存在。")
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account.id)
-        .order_by(AccountCookieVersion.created_at.desc())
-    ).first()
-    if cookie_version is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="灰豚登录态已过期，请到账号矩阵重新登录。")
-    return decrypt_text(cookie_version.encrypted_cookies)
+    _account, cookie_text = get_platform_data_account_cookie_text(db, account_id)
+    return cookie_text
 
 
 def get_huitun_live_keyword_client():

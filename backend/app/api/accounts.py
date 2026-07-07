@@ -12,7 +12,7 @@ from backend.app.adapters.xhs.creator_login_adapter import XhsCreatorLoginAdapte
 from backend.app.adapters.xhs.pc_api_adapter import XhsPcApiAdapter
 from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_user, require_admin_user
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import AccountCookieVersion, PlatformAccount, PublishJob, User
@@ -124,6 +124,7 @@ def import_cookie(
 ):
     _validate_account_type(payload.platform, payload.sub_type)
     if payload.platform == "huitun":
+        require_admin_user(current_user)
         try:
             user_info = validate_huitun_login_state(payload.cookie_string)
         except Exception as exc:

@@ -104,7 +104,7 @@ const registryPlatforms: PlatformMeta[] = [
 ];
 
 const schemas = mapPlatformRegistryToAccountAuthSchemas(registryPlatforms);
-assert.equal(schemas.length, 3);
+assert.equal(schemas.length, 2);
 assert.equal(schemas[0].platform, "xhs");
 assert.deepEqual(accountTypeOptionsFor(schemas[0]).map((option) => option.value), ["pc", "creator"]);
 assert.deepEqual(loginMethodOptionsFor(schemas[0]).map((option) => option.value), ["cookie", "qr", "phone"]);
@@ -115,8 +115,12 @@ assert.equal(schemas[1].platform, "wechat_official");
 assert.equal(schemas[1].loginMethods[0].value, "none");
 assert.equal(schemas[1].loginMethods[0].disabled, true);
 assert.match(schemas[1].loginMethods[0].description || "", /阻断|blocked|不可用|未开放/);
-assert.equal(accountDrawerTitleFor(schemas), "添加小红书 / 公众号 / 灰豚账号");
-assert.deepEqual(platformOptionsFor(schemas).map((option) => option.value), ["xhs", "wechat_official", "huitun"]);
+assert.equal(accountDrawerTitleFor(schemas), "添加小红书 / 公众号账号");
+assert.deepEqual(platformOptionsFor(schemas).map((option) => option.value), ["xhs", "wechat_official"]);
+
+const adminSchemas = mapPlatformRegistryToAccountAuthSchemas(registryPlatforms, true);
+assert.equal(accountDrawerTitleFor(adminSchemas), "添加小红书 / 公众号 / 数据账号");
+assert.deepEqual(platformOptionsFor(adminSchemas).map((option) => option.value), ["xhs", "wechat_official", "huitun"]);
 
 const fallback = getAccountAuthSchema("xhs");
 assert.deepEqual(accountTypeOptionsFor(fallback).map((option) => option.value), ["pc", "creator"]);
@@ -124,7 +128,10 @@ assert.deepEqual(loginMethodOptionsFor(fallback).map((option) => option.value), 
 assert.equal(getDefaultLoginMethod(fallback, "phone"), "phone");
 
 const emptyRegistryFallback = mapPlatformRegistryToAccountAuthSchemas([]);
-assert.deepEqual(platformOptionsFor(emptyRegistryFallback).map((option) => option.value), ["xhs", "huitun"]);
+assert.deepEqual(platformOptionsFor(emptyRegistryFallback).map((option) => option.value), ["xhs"]);
+
+const adminEmptyRegistryFallback = mapPlatformRegistryToAccountAuthSchemas([], true);
+assert.deepEqual(platformOptionsFor(adminEmptyRegistryFallback).map((option) => option.value), ["xhs", "huitun"]);
 
 const registryWithoutSchemasFallback = mapPlatformRegistryToAccountAuthSchemas([
   {
@@ -132,7 +139,7 @@ const registryWithoutSchemasFallback = mapPlatformRegistryToAccountAuthSchemas([
     account_auth_schemas: [],
   },
 ]);
-assert.deepEqual(platformOptionsFor(registryWithoutSchemasFallback).map((option) => option.value), ["xhs", "huitun"]);
+assert.deepEqual(platformOptionsFor(registryWithoutSchemasFallback).map((option) => option.value), ["xhs"]);
 
 const wechatSchema = schemas[1];
 assert.equal(getDefaultLoginMethod(wechatSchema), "none");

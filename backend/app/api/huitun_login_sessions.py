@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_user, require_admin_user
 from backend.app.core.security import decrypt_text, encrypt_text
 from backend.app.models import LoginSession, User
 from backend.app.services import huitun_account_service
@@ -40,6 +40,7 @@ def huitun_qrcode(
     db: Session = Depends(get_db),
     client=Depends(get_huitun_account_client),
 ):
+    require_admin_user(current_user)
     try:
         qr_payload = client.create_huitun_qrcode()
     except Exception as exc:
@@ -76,6 +77,7 @@ def huitun_login_session(
     db: Session = Depends(get_db),
     client=Depends(get_huitun_account_client),
 ):
+    require_admin_user(current_user)
     session = db.get(LoginSession, session_id)
     if session is None or session.user_id != current_user.id or session.platform != "huitun":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Login session not found")
