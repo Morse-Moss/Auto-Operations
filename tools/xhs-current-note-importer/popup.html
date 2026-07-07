@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Import current note</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <h1>当前笔记导入</h1>
+        <p id="page-status">打开小红书笔记页后导入素材链接和可见内容。</p>
+      </header>
+
+      <label>
+        本地服务
+        <input id="api-base" type="url" placeholder="http://127.0.0.1:18080" />
+      </label>
+
+      <label>
+        访问令牌
+        <textarea id="access-token" rows="3" placeholder="从平台登录态读取，或手动粘贴 Bearer token"></textarea>
+      </label>
+
+      <div class="actions">
+        <button id="load-token" type="button">读取令牌</button>
+        <button id="import-note" type="button" class="primary">导入</button>
+      </div>
+
+      <section class="result" aria-live="polite">
+        <div id="message">待操作</div>
+        <pre id="details"></pre>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

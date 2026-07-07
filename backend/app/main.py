@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.api import accounts, admin, ai, auth, auto_tasks, drafts, feishu_integration, files, huitun_login_sessions, keyword_groups, login_sessions, model_configs, notes, notifications, publish, tags, tasks, usage
 from backend.app.api.platforms import registry
 from backend.app.api.platforms.wechat_official import router as wechat_official_router
-from backend.app.api.platforms.xhs import analysis_center, analytics, crawl, creator, data_acquisition, monitoring, pc
+from backend.app.api.platforms.xhs import analysis_center, analytics, crawl, creator, data_acquisition, monitoring, page_import, pc
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLimitExceeded
@@ -83,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(creator.router, prefix="/api")
     app.include_router(crawl.router, prefix="/api")
     app.include_router(data_acquisition.router, prefix="/api")
+    app.include_router(page_import.router, prefix="/api")
     app.include_router(monitoring.router, prefix="/api")
     app.include_router(auto_tasks.router, prefix="/api")
 

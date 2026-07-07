@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "XHS Current Note Importer",
+  "version": "0.1.0",
+  "description": "Import media links and visible detail from the currently open XHS note page into the local app.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": [
+    "https://www.xiaohongshu.com/*",
+    "http://127.0.0.1:18080/*",
+    "http://localhost:18080/*",
+    "http://127.0.0.1:18081/*",
+    "http://localhost:18081/*"
+  ],
+  "action": {
+    "default_title": "Import current note",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["extractor.js", "content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
