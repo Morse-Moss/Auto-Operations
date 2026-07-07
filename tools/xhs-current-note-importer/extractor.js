@@ -39,6 +39,14 @@ function xhsMediaKey(url) {
   return match ? match[1] : asText(url);
 }
 
+function looksLikeNoteImageUrl(url) {
+  const cleaned = asText(url);
+  if (!cleaned || cleaned.startsWith("data:") || cleaned.startsWith("blob:")) return false;
+  if (!/xhscdn\.com|xiaohongshu\.com/.test(cleaned)) return false;
+  if (/\/avatar\/|\/comment\/|fe-platform/.test(cleaned)) return false;
+  return /notes(?:_[^/]+)*\/[^!?#/]+|sns-(webpic|img)|ci\.xiaohongshu/.test(cleaned);
+}
+
 function cleanExternalId(value) {
   return asText(value).split("?")[0].split("#")[0].slice(0, 128);
 }
@@ -71,6 +79,19 @@ function findStateNote(stateLike, noteId) {
   );
 }
 
+function imageUrlFromInfoList(image) {
+  const infoList = Array.isArray(image?.infoList)
+    ? image.infoList
+    : Array.isArray(image?.info_list)
+      ? image.info_list
+      : [];
+  if (!infoList.length) return "";
+  const defaultInfo =
+    infoList.find((info) => ["WB_DFT", "DFT", "DEFAULT"].includes(asText(info?.imageScene || info?.image_scene).toUpperCase())) ||
+    infoList.find((info) => asText(info?.url));
+  return asText(defaultInfo?.url);
+}
+
 function imageUrlsFromNote(note) {
   const imageList = Array.isArray(note?.imageList)
     ? note.imageList
@@ -79,7 +100,14 @@ function imageUrlsFromNote(note) {
       : [];
   const urls = [];
   for (const image of imageList) {
-    urls.push(image?.urlDefault, image?.url_default, image?.urlPre, image?.url_pre, image?.url);
+    urls.push(
+      image?.urlDefault,
+      image?.url_default,
+      imageUrlFromInfoList(image),
+      image?.url,
+      image?.urlPre,
+      image?.url_pre,
+    );
   }
   return uniqueMediaUrls(urls);
 }
@@ -115,12 +143,54 @@ function videoUrlFromNote(note, documentLike) {
   return domUrl && !domUrl.startsWith("blob:") ? domUrl : "";
 }
 
+function urlsFromSrcset(value) {
+  const entries = asText(value)
+    .split(",")
+    .map((item) => {
+      const [url, descriptor = ""] = item.trim().split(/\s+/);
+      const score = Number.parseFloat(descriptor) || 0;
+      return { url, score };
+    })
+    .filter((entry) => entry.url);
+  if (!entries.some((entry) => entry.score > 0)) {
+    return entries.map((entry) => entry.url);
+  }
+  return [entries.sort((left, right) => right.score - left.score)[0].url];
+}
+
+function urlsFromStyle(value) {
+  return Array.from(asText(value).matchAll(/url\((['"]?)(.*?)\1\)/g), (match) => match[2]);
+}
+
 function imageUrlsFromDom(documentLike) {
   const urls = [];
   for (const img of Array.from(documentLike?.images || [])) {
-    const src = img.currentSrc || img.src || "";
-    if (src.includes("xhscdn.com") && /sns-(webpic|img)|ci\.xiaohongshu/.test(src)) {
-      urls.push(src);
+    const candidates = [
+      img.currentSrc,
+      img.src,
+      img.getAttribute?.("src"),
+      img.getAttribute?.("data-src"),
+      img.getAttribute?.("data-original"),
+      ...urlsFromSrcset(img.getAttribute?.("srcset") || img.srcset),
+    ];
+    for (const src of candidates) {
+      if (looksLikeNoteImageUrl(src)) {
+        urls.push(src);
+      }
+    }
+  }
+  for (const node of Array.from(documentLike?.querySelectorAll?.("[style], [data-src], [data-original], [srcset]") || [])) {
+    const candidates = [
+      node.getAttribute?.("data-src"),
+      node.getAttribute?.("data-original"),
+      ...urlsFromSrcset(node.getAttribute?.("srcset")),
+      ...urlsFromStyle(node.getAttribute?.("style")),
+      ...urlsFromStyle(node.style?.backgroundImage),
+    ];
+    for (const src of candidates) {
+      if (looksLikeNoteImageUrl(src)) {
+        urls.push(src);
+      }
     }
   }
   return uniqueMediaUrls(urls);
@@ -158,7 +228,8 @@ function extractCurrentNote({ locationLike, documentLike, initialState }) {
   }
   const note = findStateNote(initialState, noteId) || {};
   const images = imageUrlsFromNote(note);
-  const fallbackImages = images.length > 0 ? images : imageUrlsFromDom(documentLike);
+  const domImages = imageUrlsFromDom(documentLike);
+  const fallbackImages = uniqueMediaUrls([...images, ...domImages]);
   return {
     note_id: noteId,
     note_url: locationLike.href,
@@ -185,10 +256,12 @@ globalThis.XhsCurrentNoteImporter = {
   unwrap,
   unique,
   xhsMediaKey,
+  looksLikeNoteImageUrl,
   cleanExternalId,
   uniqueMediaUrls,
   currentNoteId,
   findStateNote,
+  imageUrlFromInfoList,
   imageUrlsFromNote,
   tagsFromNote,
   videoUrlFromNote,

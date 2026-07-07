@@ -98,6 +98,138 @@ test("imageUrlsFromDom dedupes carousel clones by XHS media key", () => {
   }
 });
 
+test("imageUrlsFromNote reads default URLs from infoList when direct fields are absent", () => {
+  const extractor = loadExtractor();
+
+  const imageUrls = extractor.imageUrlsFromNote({
+    imageList: [
+      {
+        fileId: "notes_pre_post/image-a",
+        infoList: [
+          {
+            imageScene: "WB_PRV",
+            url: "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/image-a!nd_prv_wlteh_webp_3",
+          },
+          {
+            imageScene: "WB_DFT",
+            url: "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/image-a!nd_dft_wlteh_webp_3",
+          },
+        ],
+      },
+      {
+        file_id: "notes_pre_post/image-b",
+        info_list: [
+          {
+            image_scene: "WB_DFT",
+            url: "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/image-b!nd_dft_wlteh_webp_3",
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(imageUrls.length, 2);
+  assert.match(imageUrls[0], /image-a!nd_dft/);
+  assert.match(imageUrls[1], /image-b!nd_dft/);
+});
+
+test("extractCurrentNote appends DOM images when state only has a cover image", () => {
+  const extractor = loadExtractor();
+  const payload = extractor.extractCurrentNote({
+    locationLike: {
+      href: "https://www.xiaohongshu.com/explore/partial-state-note",
+      pathname: "/explore/partial-state-note",
+    },
+    documentLike: {
+      title: "fallback",
+      images: [
+        {
+          src: "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/cover!nd_dft_wlteh_webp_3",
+          currentSrc: "",
+        },
+        {
+          src: "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/second!nd_dft_wlteh_webp_3",
+          currentSrc: "",
+        },
+        {
+          src: "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/third!nd_dft_wlteh_webp_3",
+          currentSrc: "",
+        },
+      ],
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+    initialState: {
+      note: {
+        noteDetailMap: {
+          "partial-state-note": {
+            note: {
+              noteId: "partial-state-note",
+              type: "normal",
+              title: "partial state",
+              imageList: [
+                {
+                  urlDefault: "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/cover!nd_dft_wlteh_webp_3",
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(payload.image_urls.length, 3);
+  assert.match(payload.image_urls[0], /cover/);
+  assert.match(payload.image_urls[1], /second/);
+  assert.match(payload.image_urls[2], /third/);
+});
+
+test("imageUrlsFromDom reads srcset data-src and background images", () => {
+  const extractor = loadExtractor();
+  const nodes = [
+    {
+      getAttribute: (name) => {
+        if (name === "srcset") {
+          return [
+            "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/srcset-small!nd_webp_3 360w",
+            "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/srcset-large!nd_webp_3 720w",
+          ].join(", ");
+        }
+        return "";
+      },
+      srcset: "",
+      src: "",
+      currentSrc: "",
+    },
+    {
+      getAttribute: (name) =>
+        name === "data-src"
+          ? "https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/data-src!nd_webp_3"
+          : "",
+      src: "",
+      currentSrc: "",
+    },
+    {
+      getAttribute: (name) =>
+        name === "style"
+          ? "background-image: url(\"https://sns-webpic-qc.xhscdn.com/path/notes_pre_post/background!nd_webp_3\")"
+          : "",
+      style: { backgroundImage: "" },
+    },
+  ];
+
+  const imageUrls = extractor.imageUrlsFromDom({
+    images: nodes.slice(0, 2),
+    querySelectorAll: () => nodes,
+  });
+
+  assert.equal(imageUrls.length, 3);
+  assert.match(imageUrls[0], /srcset-large/);
+  assert.match(imageUrls[1], /data-src/);
+  assert.match(imageUrls[2], /background/);
+});
+
 test("normal image notes do not save blob video URLs from the page shell", () => {
   const extractor = loadExtractor();
   const payload = extractor.extractCurrentNote({
