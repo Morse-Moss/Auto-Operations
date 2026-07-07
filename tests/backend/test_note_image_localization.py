@@ -285,6 +285,71 @@ def test_import_source_images_adds_missing_images_and_downloads_without_touching
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_import_source_images_downloads_existing_remote_images_without_duplicating(monkeypatch):
+    SessionLocal = override_database()
+    download_calls: list[tuple[str, int, str]] = []
+    try:
+        user_id, note_id, headers = create_user_headers(SessionLocal, username="source-image-existing-localizer")
+        existing_url = "https://sns-webpic-qc.xhscdn.com/202607071002/a/notes_pre_post/existing!nd_dft_wlteh_webp_3"
+        db = SessionLocal()
+        try:
+            db.add_all(
+                [
+                    NoteAsset(note_id=note_id, asset_type="image", url=existing_url, local_path="", sort_order=0),
+                    NoteAsset(note_id=note_id, asset_type="video", url="https://cdn.example.test/v.mp4", local_path="", sort_order=1),
+                ]
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        def fake_fetch(_source_url: str) -> list[str]:
+            return [existing_url + "?imageView2/2/w/360/format/webp"]
+
+        def fake_download(url: str, owner_id: int, asset_type: str) -> str | None:
+            download_calls.append((url, owner_id, asset_type))
+            return "downloaded-existing.jpg"
+
+        monkeypatch.setattr("backend.app.api.notes.fetch_xhs_note_image_urls", fake_fetch, raising=False)
+        monkeypatch.setattr("backend.app.api.notes._download_asset", fake_download, raising=False)
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images",
+            headers=headers,
+            json={"source_url": "https://www.xiaohongshu.com/explore/note-1"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total_source_image_count"] == 1
+        assert payload["imported_count"] == 0
+        assert payload["skipped_count"] == 1
+        assert payload["downloaded_count"] == 1
+        assert payload["failed_count"] == 0
+        assert payload["items"] == [
+            {
+                "url": existing_url + "?imageView2/2/w/360/format/webp",
+                "status": "downloaded",
+                "asset_id": payload["items"][0]["asset_id"],
+                "local_path": "downloaded-existing.jpg",
+                "error": "",
+            }
+        ]
+        assert download_calls == [(existing_url + "?imageView2/2/w/360/format/webp", user_id, "image")]
+
+        db = SessionLocal()
+        try:
+            assets = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note_id).order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())).all()
+            assert [(asset.asset_type, asset.url, asset.local_path) for asset in assets] == [
+                ("image", existing_url, "downloaded-existing.jpg"),
+                ("video", "https://cdn.example.test/v.mp4", ""),
+            ]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_import_source_images_accepts_page_payload_token_and_downloads(monkeypatch):
     SessionLocal = override_database()
     download_calls: list[tuple[str, int, str]] = []
@@ -304,6 +369,7 @@ def test_import_source_images_accepts_page_payload_token_and_downloads(monkeypat
         assert "cookie" not in script_payload["script"].lower()
         assert "__INITIAL_STATE__" in script_payload["script"]
         assert "imageList" in script_payload["script"]
+        assert "if(!urls.length)" in script_payload["script"]
         token = script_payload["script"].split("token=")[1].split(";", 1)[0].strip("'\"")
 
         response = client.post(
@@ -344,6 +410,22 @@ def test_import_source_images_accepts_page_payload_token_and_downloads(monkeypat
             assert [asset.local_path for asset in assets] == ["page-payload-1.jpg", "page-payload-2.jpg"]
         finally:
             db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_source_image_page_script_uses_backend_port_from_frontend_origin():
+    SessionLocal = override_database()
+    try:
+        _user_id, note_id, headers = create_user_headers(SessionLocal, username="source-image-frontend-origin")
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images/page-script",
+            headers={**headers, "Origin": "http://127.0.0.1:18080"},
+        )
+
+        assert response.status_code == 200
+        assert "http://127.0.0.1:18081/api/notes/" in response.json()["script"]
     finally:
         app.dependency_overrides.pop(get_db, None)
 

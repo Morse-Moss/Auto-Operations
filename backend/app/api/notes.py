@@ -890,7 +890,11 @@ def _import_source_image_urls(
         .where(NoteAsset.note_id == note.id, NoteAsset.asset_type == "image")
         .order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())
     ).all()
-    existing_keys = {canonical_xhs_image_key(asset.url) for asset in existing_assets if asset.url}
+    existing_assets_by_key = {
+        key: asset
+        for asset in existing_assets
+        if asset.url and (key := canonical_xhs_image_key(asset.url))
+    }
     next_sort_order = (
         db.scalars(select(NoteAsset.sort_order).where(NoteAsset.note_id == note.id).order_by(NoteAsset.sort_order.desc())).first()
     )
@@ -903,9 +907,23 @@ def _import_source_image_urls(
 
     for image_url in source_urls:
         canonical_key = canonical_xhs_image_key(image_url)
-        if canonical_key in existing_keys:
+        existing_asset = existing_assets_by_key.get(canonical_key)
+        if existing_asset is not None:
             skipped_count += 1
-            items.append({"url": image_url, "status": "skipped", "asset_id": None, "local_path": "", "error": ""})
+            status_text = "skipped"
+            local_name = existing_asset.local_path or ""
+            error = ""
+            if download and not existing_asset.local_path:
+                local_name = _download_asset(image_url, user_id, "image") or ""
+                if local_name:
+                    existing_asset.local_path = local_name
+                    downloaded_count += 1
+                    status_text = "downloaded"
+                else:
+                    failed_count += 1
+                    status_text = "failed"
+                    error = "download_failed"
+            items.append({"url": image_url, "status": status_text, "asset_id": existing_asset.id, "local_path": local_name, "error": error})
             continue
 
         local_name = ""
@@ -931,7 +949,7 @@ def _import_source_image_urls(
         db.add(asset)
         db.flush()
         imported_count += 1
-        existing_keys.add(canonical_key)
+        existing_assets_by_key[canonical_key] = asset
         sort_order += 1
         items.append({"url": image_url, "status": status_text, "asset_id": asset.id, "local_path": local_name, "error": error})
 
@@ -964,7 +982,9 @@ def _import_source_image_urls(
 def _source_image_import_target_url(request: Request, note_id: int) -> str:
     origin = str(request.headers.get("origin") or "").rstrip("/")
     if origin.startswith(("http://127.0.0.1", "http://localhost")):
-        return f"{origin}/api/notes/{note_id}/assets/import-source-images/page-payload"
+        parsed = urlparse(origin)
+        host = parsed.hostname or "127.0.0.1"
+        return f"{parsed.scheme or 'http'}://{host}:{get_settings().server_port}/api/notes/{note_id}/assets/import-source-images/page-payload"
     return f"{str(request.base_url).rstrip('/')}/api/notes/{note_id}/assets/import-source-images/page-payload"
 
 
@@ -981,11 +1001,11 @@ def _build_source_image_import_script(*, target_url: str, token: str) -> str:
         "if(/^https?:\\/\\/(sns-[^/]+\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\//.test(u)&&noteRe.test(new URL(u).pathname)){const k=u.split('!')[0];if(!seen.has(k)){seen.add(k);urls.push(u);}}};"
         "const addList=(list)=>{if(Array.isArray(list))list.forEach(i=>{if(!i)return;[i.urlDefault,i.url,i.traceId,i.fileId,i.id].forEach(add);if(Array.isArray(i.urlList))i.urlList.forEach(x=>typeof x==='string'?add(x):x&&[x.urlDefault,x.url,x.traceId,x.fileId,x.id].forEach(add));});};"
         "try{const s=window.__INITIAL_STATE__||{},id=(location.pathname.match(/\\/explore\\/([^/?#]+)/)||[])[1]||'';addList(s.noteData&&s.noteData.data&&s.noteData.data.noteData&&s.noteData.data.noteData.imageList);const m=s.note&&s.note.noteDetailMap;if(m){addList(m[id]&&m[id].note&&m[id].note.imageList);Object.values(m).forEach(v=>addList(v&&v.note&&v.note.imageList));}}catch(e){}"
-        "const scan=(s)=>{String(s||'').replace(/https?:\\/\\/(?:sns-[^\\\"'<>\\s]+?\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\/[^\\\"'<>\\s)]+/g,add);};"
+        "if(!urls.length){const scan=(s)=>{String(s||'').replace(/https?:\\/\\/(?:sns-[^\\\"'<>\\s]+?\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\/[^\\\"'<>\\s)]+/g,add);};"
         "document.querySelectorAll('img,source').forEach(i=>{add(i.currentSrc||i.src||i.getAttribute('src'));scan(i.getAttribute('srcset'));});"
         "document.querySelectorAll('[style],[data-src],[data-original],[data-url]').forEach(e=>{scan(e.getAttribute('style'));add(e.getAttribute('data-src'));add(e.getAttribute('data-original'));add(e.getAttribute('data-url'));});"
-        "scan(document.documentElement.innerHTML);"
-        "try{performance.getEntriesByType('resource').forEach(e=>add(e.name));}catch(e){}"
+        "scan(document.documentElement.innerHTML.slice(0,200000));"
+        "try{performance.getEntriesByType('resource').slice(-200).forEach(e=>add(e.name));}catch(e){}}"
         "const body={token,source_url:location.href,image_urls:urls.slice(0,50),download:true};"
         "try{await fetch(target,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify(body)});"
         "alert(`已发送 ${body.image_urls.length} 张图片，返回系统刷新详情查看。`);}"

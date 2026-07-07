@@ -176,6 +176,16 @@ def _normalize_image_url(url: str) -> str:
 
 def _canonical_image_key(url: str) -> str:
     parsed = urlparse(url)
+    path = parsed.path.strip("/")
+    parts = path.split("/")
+    for marker in ("notes_pre_post", "notes_uhdr"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index + 1 < len(parts):
+                return f"{marker}/{parts[index + 1]}".rstrip("/")
+    note_pre_post = re.search(r"(note_pre_post_[^/]+)", path)
+    if note_pre_post:
+        return note_pre_post.group(1).rstrip("/")
     return f"{parsed.netloc.lower()}{parsed.path}".rstrip("/")
 
 

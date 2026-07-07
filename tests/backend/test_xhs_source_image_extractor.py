@@ -40,8 +40,17 @@ def test_extracts_multi_image_urls_from_pc_initial_state():
 
 def test_canonical_image_key_ignores_transform_suffixes():
     assert canonical_xhs_image_key("https://sns-webpic-qc.xhscdn.com/202407/notes_pre_post/a!nd_whgt34_webp_3") == (
-        "sns-webpic-qc.xhscdn.com/202407/notes_pre_post/a"
+        "notes_pre_post/a"
     )
+
+
+def test_canonical_image_key_dedupes_xhs_cdn_variants_by_note_image_token():
+    webpic_url = "http://sns-webpic-qc.xhscdn.com/202607072141/4232985492d7b89d33117e50add0bba2/notes_pre_post/1040g3k03223tv026na005nv0648g80tc8psra6o!nd_dft_wlteh_webp_3"
+    raw_url = "https://sns-img-bd.xhscdn.com/notes_pre_post/1040g3k03223tv026na005nv0648g80tc8psra6o"
+    older_webpic_url = "http://sns-webpic-qc.xhscdn.com/202607071002/aa80cd42a6966525ecb4501eec9c72ae/notes_pre_post/1040g3k03223tv026na005nv0648g80tc8psra6o!nd_dft_wlteh_webp_3"
+
+    assert canonical_xhs_image_key(webpic_url) == canonical_xhs_image_key(raw_url)
+    assert canonical_xhs_image_key(older_webpic_url) == canonical_xhs_image_key(raw_url)
 
 
 def test_extracts_initial_state_with_spaced_assignment_and_url_list_objects():
