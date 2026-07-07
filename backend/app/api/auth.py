@@ -53,6 +53,12 @@ def _token_response(user: User) -> dict:
     }
 
 
+def _ensure_user_tenant_active(user: User, db: Session) -> None:
+    context = get_or_create_default_tenant_context(db, user.id)
+    if context.tenant.status == "suspended":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is suspended")
+
+
 @router.post("/register")
 def register(credentials: AuthCredentials, db: Session = Depends(get_db)):
     from backend.app.services.invite_service import consume_invite_code
@@ -87,6 +93,7 @@ def login(credentials: AuthCredentials, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
     if user.status == "disabled":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
+    _ensure_user_tenant_active(user, db)
     return _token_response(user)
 
 
@@ -101,6 +108,7 @@ def refresh_token(payload: RefreshRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if user.status == "disabled":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
+    _ensure_user_tenant_active(user, db)
     return {"access_token": create_access_token(user.id), "token_type": "bearer"}
 
 

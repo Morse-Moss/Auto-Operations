@@ -30,6 +30,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         )
     if user.status == "disabled":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
+    context = get_or_create_default_tenant_context(db, user.id)
+    if context.tenant.status == "suspended":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is suspended")
     return user
 
 
