@@ -33,19 +33,22 @@ import {
   fetchSavedNoteFilterOptions,
   fetchSavedNotes,
   fetchTags,
+  createSavedNoteSourceImageImportScript,
+  importSavedNoteSourceImages,
   localizeSavedNoteImages,
   pullXhsNotesFromFeishu,
   pushAllXhsNotesToFeishu,
   pushXhsNotesToFeishu,
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
-import type { NoteComment, SavedNote } from "../../../types";
+import type { NoteAsset, NoteComment, SavedNote } from "../../../types";
 
 const { Text, Paragraph } = Typography;
 const h = React.createElement;
 
 type XhsNavigate = (path: string) => void;
 const localizingImageNoteIds = new Set<number>();
+const importingSourceImageNoteIds = new Set<number>();
 
 function formatSavedTime(value: string): string {
   return formatShanghaiTime(value);
@@ -356,7 +359,42 @@ function renderComment(comment: NoteComment, replies: NoteComment[]) {
 }
 
 function getActionErrorMessage(error: unknown): string {
+  const responseData = typeof error === "object" && error !== null && "response" in error
+    ? (error as { response?: { data?: unknown } }).response?.data
+    : null;
+  if (typeof responseData === "object" && responseData !== null && "detail" in responseData) {
+    const detail = (responseData as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail) return detail;
+  }
   return error instanceof Error ? error.message : "未知错误";
+}
+
+async function copyTextWithFallback(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Fall through to the textarea fallback below.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) throw new Error("copy_failed");
+}
+
+function getAssetPreviewUrl(asset: NoteAsset): string {
+  return asset.download_url || asset.url;
 }
 
 function renderSaveImagesButton(controller: ContentLibraryRenderContext<SavedNote>["controller"], selectedNote: SavedNote) {
@@ -396,6 +434,67 @@ function renderSaveImagesButton(controller: ContentLibraryRenderContext<SavedNot
     onClick: () => void saveImages(),
     size: "small",
   }, missingCount ? `保存图片 (${missingCount})` : "图片已保存");
+}
+
+function renderImportSourceImagesButton(
+  controller: ContentLibraryRenderContext<SavedNote>["controller"],
+  selectedNote: SavedNote,
+  noteUrl: string,
+) {
+  const isLoading = importingSourceImageNoteIds.has(selectedNote.id);
+  const canImport = noteUrl.startsWith("http");
+
+  async function copyPageImportScript() {
+    const scriptPayload = await createSavedNoteSourceImageImportScript(selectedNote.id);
+    await copyTextWithFallback(scriptPayload.script);
+    const hint = "已复制当前页面导入脚本。打开作品链接后，在地址栏粘贴并回车，图片会自动保存到本系统。";
+    controller.setDetailActionMessage(hint);
+    message.success(hint);
+  }
+
+  async function importSourceImages() {
+    if (!canImport) {
+      const errorMessage = "缺少可访问的作品链接，无法补全原文图片。";
+      controller.setDetailError(errorMessage);
+      message.error(errorMessage);
+      return;
+    }
+    importingSourceImageNoteIds.add(selectedNote.id);
+    controller.setDetailActionMessage("正在补全原文图片...");
+    try {
+      const result = await importSavedNoteSourceImages(selectedNote.id, { source_url: noteUrl, download: true });
+      await controller.refreshSelectedItem();
+      if (result.total_source_image_count === 0) {
+        await copyPageImportScript();
+        return;
+      }
+      const summary = `原文图片补全完成：新增 ${result.imported_count} 张，已存在 ${result.skipped_count} 张，已保存 ${result.downloaded_count} 张，失败 ${result.failed_count} 张。`;
+      controller.setDetailActionMessage(summary);
+      if (result.failed_count > 0) {
+        message.warning(summary);
+      } else {
+        message.success(summary);
+      }
+    } catch (error) {
+      try {
+        await copyPageImportScript();
+      } catch (scriptError) {
+        const errorMessage = `补全原文图片失败：${getActionErrorMessage(error)}；当前页面导入脚本复制失败：${getActionErrorMessage(scriptError)}`;
+        controller.setDetailError(errorMessage);
+        message.error(errorMessage);
+      }
+    } finally {
+      importingSourceImageNoteIds.delete(selectedNote.id);
+    }
+  }
+
+  return h(Button, {
+    icon: h(PictureOutlined),
+    loading: isLoading,
+    disabled: isLoading || !canImport,
+    onClick: () => void importSourceImages(),
+    size: "small",
+  }, "补全原文图片");
 }
 
 function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
@@ -528,6 +627,7 @@ function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibr
       h(Button, { icon: h(CopyOutlined), onClick: controller.copySelectedItem, size: "small" }, "复制内容"),
       h(Button, { icon: h(FileAddOutlined), onClick: controller.addToDrafts, loading: controller.isCreatingDraft, size: "small" }, "加入草稿工坊"),
       h(Button, { icon: h(EditOutlined), onClick: () => void controller.createDraft("rewrite"), loading: controller.isCreatingDraft, size: "small" }, "AI 改写"),
+      renderImportSourceImagesButton(controller, selectedNote, noteUrl),
       h(Popconfirm, { title: "确定删除？", onConfirm: () => void controller.deleteItem(selectedNote) }, h(Button, { danger: true, icon: h(DeleteOutlined), size: "small" }, "删除")),
     ),
     controller.selectedAssets.length > 0 ? h("div", { style: { marginBottom: 16 } },
@@ -537,8 +637,8 @@ function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibr
       ),
       h(Image.PreviewGroup, null,
         h(Space, { size: 8, wrap: true }, controller.selectedAssets.map((asset) => asset.asset_type === "video"
-          ? h("div", { key: asset.id, style: { width: 80, height: 80, background: "#262626", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" } }, h(Button, { type: "link", icon: h(PlayCircleOutlined), href: asset.url, target: "_blank", rel: "noreferrer" }, "视频"))
-          : h(Image, { key: asset.id, src: asset.url, width: 80, height: 80, style: { objectFit: "cover", borderRadius: 6 }, referrerPolicy: "no-referrer" }),
+          ? h("div", { key: asset.id, style: { width: 80, height: 80, background: "#262626", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" } }, h(Button, { type: "link", icon: h(PlayCircleOutlined), href: getAssetPreviewUrl(asset), target: "_blank", rel: "noreferrer" }, "视频"))
+          : h(Image, { key: asset.id, src: getAssetPreviewUrl(asset), width: 80, height: 80, style: { objectFit: "cover", borderRadius: 6 }, referrerPolicy: "no-referrer" }),
         )),
       ),
     ) : null,
@@ -547,10 +647,6 @@ function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibr
       h(Paragraph, { style: { marginTop: 4, color: "rgba(255,255,255,.65)", whiteSpace: "pre-wrap" } }, selectedNote.content || "暂无正文。"),
     ),
     renderComments(controller),
-    selectedNote.raw_json ? h("details", { style: { marginTop: 16 } },
-      h("summary", { style: { cursor: "pointer", color: "rgba(255,255,255,.45)", fontSize: 12 } }, "原始 JSON"),
-      h("pre", { style: { fontSize: 11, color: "rgba(255,255,255,.5)", background: "#1f1f1f", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 300 } }, JSON.stringify(selectedNote.raw_json, null, 2)),
-    ) : null,
   );
 }
 

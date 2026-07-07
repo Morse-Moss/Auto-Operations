@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, hash_password
@@ -20,10 +21,11 @@ SAMPLE_NOTE_URL = (
 SAMPLE_CLEAN_NOTE_URL = "https://www.xiaohongshu.com/explore/6a45e1250000000022014470"
 
 
-def override_database(tmp_path):
+def override_database():
     engine = create_engine(
-        f"sqlite:///{tmp_path / 'xhs-page-import-test.db'}",
+        "sqlite://",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -103,8 +105,8 @@ def patch_page_import_downloader(monkeypatch):
     return calls
 
 
-def test_current_note_import_saves_six_images_and_visible_comments_with_local_images(tmp_path, monkeypatch):
-    SessionLocal = override_database(tmp_path)
+def test_current_note_import_saves_six_images_and_visible_comments_with_local_images(monkeypatch):
+    SessionLocal = override_database()
     try:
         user_id, headers = create_user_headers(SessionLocal)
         download_calls = patch_page_import_downloader(monkeypatch)
@@ -146,8 +148,8 @@ def test_current_note_import_saves_six_images_and_visible_comments_with_local_im
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_current_note_import_replaces_assets_on_repeat_import(tmp_path, monkeypatch):
-    SessionLocal = override_database(tmp_path)
+def test_current_note_import_replaces_assets_on_repeat_import(monkeypatch):
+    SessionLocal = override_database()
     try:
         _user_id, headers = create_user_headers(SessionLocal)
         patch_page_import_downloader(monkeypatch)
@@ -181,8 +183,8 @@ def test_current_note_import_replaces_assets_on_repeat_import(tmp_path, monkeypa
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_current_note_import_rejects_empty_media_payload(tmp_path):
-    SessionLocal = override_database(tmp_path)
+def test_current_note_import_rejects_empty_media_payload():
+    SessionLocal = override_database()
     try:
         _user_id, headers = create_user_headers(SessionLocal)
         payload = sample_payload()
@@ -197,8 +199,8 @@ def test_current_note_import_rejects_empty_media_payload(tmp_path):
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_current_note_import_sanitizes_note_url_and_comment_user_ids(tmp_path, monkeypatch):
-    SessionLocal = override_database(tmp_path)
+def test_current_note_import_sanitizes_note_url_and_comment_user_ids(monkeypatch):
+    SessionLocal = override_database()
     try:
         user_id, headers = create_user_headers(SessionLocal)
         patch_page_import_downloader(monkeypatch)

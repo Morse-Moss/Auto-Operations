@@ -1030,6 +1030,26 @@ export type NoteImageLocalizationResult = {
   }>;
 };
 
+export type NoteSourceImageImportResult = {
+  total_source_image_count: number;
+  imported_count: number;
+  skipped_count: number;
+  downloaded_count: number;
+  failed_count: number;
+  items: Array<{
+    url: string;
+    status: "downloaded" | "imported" | "skipped" | "failed" | string;
+    asset_id?: number | null;
+    local_path: string;
+    error: string;
+  }>;
+};
+
+export type NoteSourceImageImportScript = {
+  script: string;
+  expires_in_seconds: number;
+};
+
 export type NoteComment = {
   id: number;
   note_id: number;

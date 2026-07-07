@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, hash_password
@@ -13,10 +16,11 @@ from backend.app.models import Note, NoteAsset, PlatformAccount, User
 client = TestClient(app)
 
 
-def override_database(tmp_path):
+def override_database():
     engine = create_engine(
-        f"sqlite:///{tmp_path / 'note-image-localization-test.db'}",
+        "sqlite://",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -70,8 +74,8 @@ def assert_signed_media_url(url: str, file_name: str) -> None:
     assert "token=" in url
 
 
-def test_localize_note_image_assets_downloads_missing_images_and_ignores_video(tmp_path, monkeypatch):
-    SessionLocal = override_database(tmp_path)
+def test_localize_note_image_assets_downloads_missing_images_and_ignores_video(monkeypatch):
+    SessionLocal = override_database()
     download_calls: list[tuple[str, int, str]] = []
     try:
         user_id, note_id, headers = create_user_headers(SessionLocal)
@@ -132,8 +136,8 @@ def test_localize_note_image_assets_downloads_missing_images_and_ignores_video(t
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_localize_note_image_assets_reports_failures_without_touching_video(tmp_path, monkeypatch):
-    SessionLocal = override_database(tmp_path)
+def test_localize_note_image_assets_reports_failures_without_touching_video(monkeypatch):
+    SessionLocal = override_database()
     download_calls: list[tuple[str, int, str]] = []
     try:
         user_id, note_id, headers = create_user_headers(SessionLocal, username="image-localizer-failure")
@@ -181,3 +185,224 @@ def test_localize_note_image_assets_reports_failures_without_touching_video(tmp_
     finally:
         app.dependency_overrides.pop(get_db, None)
 
+
+def test_import_source_images_does_not_persist_xsec_token(monkeypatch):
+    SessionLocal = override_database()
+    try:
+        _user_id, note_id, headers = create_user_headers(SessionLocal, username="source-image-import-sanitized")
+
+        def fake_fetch(source_url: str) -> list[str]:
+            assert source_url == "https://www.xiaohongshu.com/explore/note-1?xsec_token=secret-token&xsec_source=pc_feed"
+            return ["https://sns-img-bd.xhscdn.com/notes_pre_post/new-image"]
+
+        monkeypatch.setattr("backend.app.api.notes.fetch_xhs_note_image_urls", fake_fetch, raising=False)
+        monkeypatch.setattr("backend.app.api.notes._download_asset", lambda *_args: "downloaded.jpg", raising=False)
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images",
+            headers=headers,
+            json={"source_url": "https://www.xiaohongshu.com/explore/note-1?xsec_token=secret-token&xsec_source=pc_feed"},
+        )
+
+        assert response.status_code == 200
+        db = SessionLocal()
+        try:
+            note = db.get(Note, note_id)
+            assert note is not None
+            raw_text = str(note.raw_json)
+            assert "secret-token" not in raw_text
+            assert note.raw_json["source_image_import"]["source_url"] == "https://www.xiaohongshu.com/explore/note-1"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_source_images_adds_missing_images_and_downloads_without_touching_video(monkeypatch):
+    SessionLocal = override_database()
+    download_calls: list[tuple[str, int, str]] = []
+    try:
+        user_id, note_id, headers = create_user_headers(SessionLocal, username="source-image-importer")
+        existing_url = "https://sns-img-hw.xhscdn.com/notes_pre_post/existing-image"
+        db = SessionLocal()
+        try:
+            db.add_all(
+                [
+                    NoteAsset(note_id=note_id, asset_type="image", url=existing_url, local_path="existing.jpg", sort_order=0),
+                    NoteAsset(note_id=note_id, asset_type="video", url="https://cdn.example.test/v.mp4", local_path="", sort_order=1),
+                ]
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        source_urls = [
+            existing_url + "?imageView2/2/w/360/format/webp",
+            "https://sns-img-bd.xhscdn.com/notes_pre_post/new-image-a",
+            "https://sns-img-bd.xhscdn.com/notes_pre_post/new-image-b",
+        ]
+
+        def fake_fetch(_source_url: str) -> list[str]:
+            return source_urls
+
+        def fake_download(url: str, owner_id: int, asset_type: str) -> str | None:
+            download_calls.append((url, owner_id, asset_type))
+            return f"downloaded-{len(download_calls)}.jpg"
+
+        monkeypatch.setattr("backend.app.api.notes.fetch_xhs_note_image_urls", fake_fetch, raising=False)
+        monkeypatch.setattr("backend.app.api.notes._download_asset", fake_download, raising=False)
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images",
+            headers=headers,
+            json={"source_url": "https://www.xiaohongshu.com/explore/note-1?xsec_token=secret"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total_source_image_count"] == 3
+        assert payload["imported_count"] == 2
+        assert payload["skipped_count"] == 1
+        assert payload["downloaded_count"] == 2
+        assert payload["failed_count"] == 0
+        assert download_calls == [
+            ("https://sns-img-bd.xhscdn.com/notes_pre_post/new-image-a", user_id, "image"),
+            ("https://sns-img-bd.xhscdn.com/notes_pre_post/new-image-b", user_id, "image"),
+        ]
+
+        db = SessionLocal()
+        try:
+            assets = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note_id).order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())).all()
+            assert [(asset.asset_type, asset.url, asset.local_path) for asset in assets] == [
+                ("image", existing_url, "existing.jpg"),
+                ("video", "https://cdn.example.test/v.mp4", ""),
+                ("image", "https://sns-img-bd.xhscdn.com/notes_pre_post/new-image-a", "downloaded-1.jpg"),
+                ("image", "https://sns-img-bd.xhscdn.com/notes_pre_post/new-image-b", "downloaded-2.jpg"),
+            ]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_source_images_accepts_page_payload_token_and_downloads(monkeypatch):
+    SessionLocal = override_database()
+    download_calls: list[tuple[str, int, str]] = []
+    try:
+        user_id, note_id, headers = create_user_headers(SessionLocal, username="source-image-page-payload")
+
+        def fake_download(url: str, owner_id: int, asset_type: str) -> str | None:
+            download_calls.append((url, owner_id, asset_type))
+            return f"page-payload-{len(download_calls)}.jpg"
+
+        monkeypatch.setattr("backend.app.api.notes._download_asset", fake_download, raising=False)
+
+        script_response = client.post(f"/api/notes/{note_id}/assets/import-source-images/page-script", headers=headers)
+        assert script_response.status_code == 200
+        script_payload = script_response.json()
+        assert "localStorage" not in script_payload["script"]
+        assert "cookie" not in script_payload["script"].lower()
+        assert "__INITIAL_STATE__" in script_payload["script"]
+        assert "imageList" in script_payload["script"]
+        token = script_payload["script"].split("token=")[1].split(";", 1)[0].strip("'\"")
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images/page-payload",
+            content=json.dumps(
+                {
+                    "token": token,
+                    "source_url": "https://www.xiaohongshu.com/explore/note-1?xsec_token=secret-token",
+                    "image_urls": [
+                        "https://sns-webpic-qc.xhscdn.com/202607071002/a/notes_pre_post/one!nd_dft_wlteh_webp_3",
+                        "https://sns-webpic-qc.xhscdn.com/202607071002/b/notes_pre_post/two!nd_dft_wlteh_webp_3",
+                        "https://sns-webpic-qc.xhscdn.com/202607071002/a/notes_pre_post/one!nd_dft_wlteh_webp_3",
+                        "https://sns-avatar-qc.xhscdn.com/avatar/not-a-note-image.jpg",
+                    ],
+                    "download": True,
+                }
+            ),
+            headers={"Content-Type": "text/plain;charset=UTF-8"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "ok"
+        assert payload["total_source_image_count"] == 2
+        assert payload["imported_count"] == 2
+        assert payload["downloaded_count"] == 2
+        assert download_calls == [
+            ("https://sns-webpic-qc.xhscdn.com/202607071002/a/notes_pre_post/one!nd_dft_wlteh_webp_3", user_id, "image"),
+            ("https://sns-webpic-qc.xhscdn.com/202607071002/b/notes_pre_post/two!nd_dft_wlteh_webp_3", user_id, "image"),
+        ]
+
+        db = SessionLocal()
+        try:
+            note = db.get(Note, note_id)
+            assert note is not None
+            assert "secret-token" not in str(note.raw_json)
+            assets = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note_id).order_by(NoteAsset.sort_order.asc())).all()
+            assert [asset.local_path for asset in assets] == ["page-payload-1.jpg", "page-payload-2.jpg"]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_source_images_page_payload_allows_original_page_preflight():
+    SessionLocal = override_database()
+    try:
+        _user_id, note_id, _headers = create_user_headers(SessionLocal, username="source-image-preflight")
+
+        response = client.options(
+            f"/api/notes/{note_id}/assets/import-source-images/page-payload",
+            headers={
+                "Origin": "https://www.xiaohongshu.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Private-Network": "true",
+            },
+        )
+
+        assert response.status_code == 204
+        assert response.headers["access-control-allow-origin"] == "https://www.xiaohongshu.com"
+        assert response.headers["access-control-allow-methods"] == "POST, OPTIONS"
+        assert response.headers["access-control-allow-private-network"] == "true"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_source_images_rejects_bad_page_payload_token_without_importing(monkeypatch):
+    SessionLocal = override_database()
+    download_calls: list[tuple[str, int, str]] = []
+    try:
+        _user_id, note_id, _headers = create_user_headers(SessionLocal, username="source-image-bad-token")
+
+        def fake_download(url: str, owner_id: int, asset_type: str) -> str | None:
+            download_calls.append((url, owner_id, asset_type))
+            return "bad-token-should-not-download.jpg"
+
+        monkeypatch.setattr("backend.app.api.notes._download_asset", fake_download, raising=False)
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images/page-payload",
+            content=json.dumps(
+                {
+                    "token": "bad.token",
+                    "source_url": "https://www.xiaohongshu.com/explore/note-1?xsec_token=secret-token",
+                    "image_urls": ["https://sns-webpic-qc.xhscdn.com/202607071002/a/notes_pre_post/one"],
+                    "download": True,
+                }
+            ),
+            headers={"Content-Type": "text/plain;charset=UTF-8"},
+        )
+
+        assert response.status_code == 401
+        assert download_calls == []
+
+        db = SessionLocal()
+        try:
+            assets = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note_id)).all()
+            assert assets == []
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)

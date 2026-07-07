@@ -80,6 +80,8 @@ import type {
   NoteAsset,
   NoteComment,
   NoteImageLocalizationResult,
+  NoteSourceImageImportScript,
+  NoteSourceImageImportResult,
   NotesExportPayload,
   NotesExportResponse,
   Paginated,
@@ -899,6 +901,19 @@ export async function addNoteAsset(noteId: number, payload: { asset_type: string
 
 export async function localizeSavedNoteImages(noteId: number): Promise<NoteImageLocalizationResult> {
   const response = await http.post<NoteImageLocalizationResult>(`/notes/${noteId}/assets/localize-images`, null, { _silent: true } as never);
+  return response.data;
+}
+
+export async function importSavedNoteSourceImages(
+  noteId: number,
+  payload: { source_url: string; download?: boolean },
+): Promise<NoteSourceImageImportResult> {
+  const response = await http.post<NoteSourceImageImportResult>(`/notes/${noteId}/assets/import-source-images`, payload, { _silent: true } as never);
+  return response.data;
+}
+
+export async function createSavedNoteSourceImageImportScript(noteId: number): Promise<NoteSourceImageImportScript> {
+  const response = await http.post<NoteSourceImageImportScript>(`/notes/${noteId}/assets/import-source-images/page-script`, null, { _silent: true } as never);
   return response.data;
 }
 

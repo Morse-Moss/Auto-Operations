@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
+import time
 from pathlib import Path
 from typing import Any, Literal, Optional
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
@@ -27,8 +32,15 @@ from backend.app.schemas.common import paginated
 from backend.app.services.asset_storage_policy import create_signed_media_url, export_owner_prefix, validate_owned_media_reference
 from backend.app.services.feishu_bitable_service import get_or_create_analysis_result
 from backend.app.services.note_exclusion_service import build_current_cleanup_candidates, mark_notes_excluded
+from backend.app.services.xhs_source_image_extractor import (
+    XhsSourceImageExtractionError,
+    canonical_xhs_image_key,
+    fetch_xhs_note_image_urls,
+    is_xhs_note_image_url,
+)
 
 router = APIRouter(prefix="/notes", tags=["notes"])
+SOURCE_IMAGE_IMPORT_TOKEN_TTL_SECONDS = 15 * 60
 
 
 class BatchSaveNoteItem(BaseModel):
@@ -777,6 +789,211 @@ class AddNoteAssetRequest(BaseModel):
     local_path: str = Field(default="", max_length=512)
 
 
+class ImportSourceImagesRequest(BaseModel):
+    source_url: str = Field(default="", max_length=2048)
+    download: bool = True
+    image_urls: list[str] = Field(default_factory=list, max_length=50)
+
+
+def _safe_source_image_import_url(source_url: str) -> str:
+    parsed = urlparse(str(source_url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
+def _source_import_base64_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("utf-8").rstrip("=")
+
+
+def _source_import_base64_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("utf-8"))
+
+
+def _create_source_image_import_token(*, user_id: int, note_id: int) -> str:
+    payload = {
+        "purpose": "xhs_source_image_import",
+        "user_id": user_id,
+        "note_id": note_id,
+        "exp": int(time.time()) + SOURCE_IMAGE_IMPORT_TOKEN_TTL_SECONDS,
+    }
+    payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    payload_part = _source_import_base64_encode(payload_text.encode("utf-8"))
+    signature = hmac.new(get_settings().secret_key.encode("utf-8"), payload_part.encode("utf-8"), hashlib.sha256).digest()
+    return f"{payload_part}.{_source_import_base64_encode(signature)}"
+
+
+def _decode_source_image_import_token(token: str) -> dict[str, Any]:
+    credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid import token")
+    try:
+        payload_part, signature_part = str(token or "").split(".", 1)
+    except ValueError as exc:
+        raise credentials_exception from exc
+
+    expected_signature = hmac.new(
+        get_settings().secret_key.encode("utf-8"),
+        payload_part.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    try:
+        actual_signature = _source_import_base64_decode(signature_part)
+    except Exception as exc:
+        raise credentials_exception from exc
+    if not hmac.compare_digest(actual_signature, expected_signature):
+        raise credentials_exception
+
+    try:
+        payload = json.loads(_source_import_base64_decode(payload_part))
+    except Exception as exc:
+        raise credentials_exception from exc
+    if payload.get("purpose") != "xhs_source_image_import":
+        raise credentials_exception
+    if not isinstance(payload.get("user_id"), int) or not isinstance(payload.get("note_id"), int):
+        raise credentials_exception
+    if not isinstance(payload.get("exp"), int) or payload["exp"] < int(time.time()):
+        raise credentials_exception
+    return payload
+
+
+def _unique_source_image_urls(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        url = str(value or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        if not is_xhs_note_image_url(url):
+            continue
+        key = canonical_xhs_image_key(url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(url)
+        if len(result) >= 50:
+            break
+    return result
+
+
+def _import_source_image_urls(
+    *,
+    db: Session,
+    note: Note,
+    user_id: int,
+    source_urls: list[str],
+    source_url: str,
+    download: bool,
+) -> dict[str, Any]:
+    source_urls = _unique_source_image_urls(source_urls)
+    existing_assets = db.scalars(
+        select(NoteAsset)
+        .where(NoteAsset.note_id == note.id, NoteAsset.asset_type == "image")
+        .order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())
+    ).all()
+    existing_keys = {canonical_xhs_image_key(asset.url) for asset in existing_assets if asset.url}
+    next_sort_order = (
+        db.scalars(select(NoteAsset.sort_order).where(NoteAsset.note_id == note.id).order_by(NoteAsset.sort_order.desc())).first()
+    )
+    sort_order = int(next_sort_order or 0) + 1 if next_sort_order is not None else 0
+    items: list[dict[str, Any]] = []
+    imported_count = 0
+    skipped_count = 0
+    downloaded_count = 0
+    failed_count = 0
+
+    for image_url in source_urls:
+        canonical_key = canonical_xhs_image_key(image_url)
+        if canonical_key in existing_keys:
+            skipped_count += 1
+            items.append({"url": image_url, "status": "skipped", "asset_id": None, "local_path": "", "error": ""})
+            continue
+
+        local_name = ""
+        status_text = "imported"
+        error = ""
+        if download:
+            local_name = _download_asset(image_url, user_id, "image") or ""
+            if local_name:
+                downloaded_count += 1
+                status_text = "downloaded"
+            else:
+                failed_count += 1
+                status_text = "failed"
+                error = "download_failed"
+
+        asset = NoteAsset(
+            note_id=note.id,
+            asset_type="image",
+            url=image_url,
+            local_path=local_name,
+            sort_order=sort_order,
+        )
+        db.add(asset)
+        db.flush()
+        imported_count += 1
+        existing_keys.add(canonical_key)
+        sort_order += 1
+        items.append({"url": image_url, "status": status_text, "asset_id": asset.id, "local_path": local_name, "error": error})
+
+    if imported_count:
+        raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
+        source_image_urls = [item["url"] for item in items if item["status"] != "skipped"]
+        note.raw_json = {
+            **raw_json,
+            "source_image_import": {
+                "source_url": _safe_source_image_import_url(source_url),
+                "total_source_image_count": len(source_urls),
+                "imported_count": imported_count,
+                "downloaded_count": downloaded_count,
+                "failed_count": failed_count,
+            },
+            "image_urls": list(dict.fromkeys([*(raw_json.get("image_urls") if isinstance(raw_json.get("image_urls"), list) else []), *source_image_urls])),
+        }
+    db.commit()
+
+    return {
+        "total_source_image_count": len(source_urls),
+        "imported_count": imported_count,
+        "skipped_count": skipped_count,
+        "downloaded_count": downloaded_count,
+        "failed_count": failed_count,
+        "items": items,
+    }
+
+
+def _source_image_import_target_url(request: Request, note_id: int) -> str:
+    origin = str(request.headers.get("origin") or "").rstrip("/")
+    if origin.startswith(("http://127.0.0.1", "http://localhost")):
+        return f"{origin}/api/notes/{note_id}/assets/import-source-images/page-payload"
+    return f"{str(request.base_url).rstrip('/')}/api/notes/{note_id}/assets/import-source-images/page-payload"
+
+
+def _build_source_image_import_script(*, target_url: str, token: str) -> str:
+    target_json = json.dumps(target_url, ensure_ascii=False)
+    token_json = json.dumps(token, ensure_ascii=False)
+    return (
+        "javascript:(async()=>{"
+        f"const target={target_json},token={token_json};"
+        "const urls=[],seen=new Set();"
+        "const noteRe=/(\\/notes_pre_post\\/|\\/note_pre_post_|\\/notes_uhdr\\/|\\/[A-Za-z0-9_-]{20,}(?:[!?]|$))/;"
+        "const add=(u)=>{u=String(u||'').trim().replace(/\\\\u002F/g,'/').replace(/\\\\\\//g,'/');"
+        "if(!/^https?:\\/\\//.test(u)&&noteRe.test('/'+u.replace(/^\\/+/,'')))u='https://sns-img-bd.xhscdn.com/'+u.replace(/^\\/+/, '');"
+        "if(/^https?:\\/\\/(sns-[^/]+\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\//.test(u)&&noteRe.test(new URL(u).pathname)){const k=u.split('!')[0];if(!seen.has(k)){seen.add(k);urls.push(u);}}};"
+        "const addList=(list)=>{if(Array.isArray(list))list.forEach(i=>{if(!i)return;[i.urlDefault,i.url,i.traceId,i.fileId,i.id].forEach(add);if(Array.isArray(i.urlList))i.urlList.forEach(x=>typeof x==='string'?add(x):x&&[x.urlDefault,x.url,x.traceId,x.fileId,x.id].forEach(add));});};"
+        "try{const s=window.__INITIAL_STATE__||{},id=(location.pathname.match(/\\/explore\\/([^/?#]+)/)||[])[1]||'';addList(s.noteData&&s.noteData.data&&s.noteData.data.noteData&&s.noteData.data.noteData.imageList);const m=s.note&&s.note.noteDetailMap;if(m){addList(m[id]&&m[id].note&&m[id].note.imageList);Object.values(m).forEach(v=>addList(v&&v.note&&v.note.imageList));}}catch(e){}"
+        "const scan=(s)=>{String(s||'').replace(/https?:\\/\\/(?:sns-[^\\\"'<>\\s]+?\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\/[^\\\"'<>\\s)]+/g,add);};"
+        "document.querySelectorAll('img,source').forEach(i=>{add(i.currentSrc||i.src||i.getAttribute('src'));scan(i.getAttribute('srcset'));});"
+        "document.querySelectorAll('[style],[data-src],[data-original],[data-url]').forEach(e=>{scan(e.getAttribute('style'));add(e.getAttribute('data-src'));add(e.getAttribute('data-original'));add(e.getAttribute('data-url'));});"
+        "scan(document.documentElement.innerHTML);"
+        "try{performance.getEntriesByType('resource').forEach(e=>add(e.name));}catch(e){}"
+        "const body={token,source_url:location.href,image_urls:urls.slice(0,50),download:true};"
+        "try{await fetch(target,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify(body)});"
+        "alert(`已发送 ${body.image_urls.length} 张图片，返回系统刷新详情查看。`);}"
+        "catch(e){alert('发送失败：'+(e&&e.message?e.message:e));}"
+        "})()"
+    )
+
+
 @router.post("/{note_id}/assets")
 def add_note_asset(
     note_id: int,
@@ -803,6 +1020,84 @@ def add_note_asset(
     db.commit()
     db.refresh(asset)
     return _serialize_asset(asset, current_user.id)
+
+
+@router.post("/{note_id}/assets/import-source-images")
+def import_source_image_assets(
+    note_id: int,
+    payload: ImportSourceImagesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    note = _get_owned_note(db, current_user, note_id)
+    if payload.image_urls:
+        source_urls = payload.image_urls
+    else:
+        if not payload.source_url:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="source_url_or_image_urls_required")
+        try:
+            source_urls = fetch_xhs_note_image_urls(payload.source_url)
+        except XhsSourceImageExtractionError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    return _import_source_image_urls(
+        db=db,
+        note=note,
+        user_id=current_user.id,
+        source_urls=source_urls,
+        source_url=payload.source_url,
+        download=payload.download,
+    )
+
+
+@router.post("/{note_id}/assets/import-source-images/page-script")
+def create_source_image_import_script(
+    note_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    note = _get_owned_note(db, current_user, note_id)
+    token = _create_source_image_import_token(user_id=current_user.id, note_id=note.id)
+    target_url = _source_image_import_target_url(request, note.id)
+    return {
+        "script": _build_source_image_import_script(target_url=target_url, token=token),
+        "expires_in_seconds": SOURCE_IMAGE_IMPORT_TOKEN_TTL_SECONDS,
+    }
+
+
+@router.post("/{note_id}/assets/import-source-images/page-payload")
+async def import_source_image_page_payload(
+    note_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    raw_body = (await request.body()).decode("utf-8", errors="ignore")
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_payload")
+
+    token_payload = _decode_source_image_import_token(str(payload.get("token") or ""))
+    if token_payload["note_id"] != note_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    note = db.get(Note, note_id)
+    if note is None or note.user_id != token_payload["user_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    image_urls = payload.get("image_urls")
+    if not isinstance(image_urls, list):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="image_urls_required")
+    result = _import_source_image_urls(
+        db=db,
+        note=note,
+        user_id=token_payload["user_id"],
+        source_urls=[str(value or "") for value in image_urls],
+        source_url=str(payload.get("source_url") or ""),
+        download=bool(payload.get("download", True)),
+    )
+    return {"status": "ok", **result}
 
 
 @router.post("/{note_id}/assets/localize-images")

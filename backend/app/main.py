@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.api import accounts, admin, ai, auth, auto_tasks, drafts, feishu_integration, files, huitun_login_sessions, keyword_groups, login_sessions, model_configs, notes, notifications, publish, tags, tasks, usage
@@ -37,6 +38,24 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.api_title, lifespan=lifespan)
 
+    def _is_xhs_page_payload_path(path: str) -> bool:
+        return path.startswith("/api/notes/") and path.endswith("/assets/import-source-images/page-payload")
+
+    def _is_allowed_xhs_page_origin(origin: str) -> bool:
+        parsed = urlparse(origin)
+        host = parsed.netloc.lower()
+        return parsed.scheme == "https" and (host == "xiaohongshu.com" or host.endswith(".xiaohongshu.com"))
+
+    def _xhs_page_cors_headers(origin: str) -> dict[str, str]:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Private-Network": "true",
+            "Access-Control-Max-Age": "600",
+            "Vary": "Origin",
+        }
+
     origins = [origin.strip() for origin in settings.backend_cors_origins.split(",") if origin.strip()]
     app.add_middleware(
         CORSMiddleware,
@@ -45,6 +64,19 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _source_image_import_page_cors(request, call_next):
+        origin = request.headers.get("origin", "")
+        if _is_xhs_page_payload_path(request.url.path) and _is_allowed_xhs_page_origin(origin):
+            headers = _xhs_page_cors_headers(origin)
+            if request.method == "OPTIONS":
+                return Response(status_code=204, headers=headers)
+            response = await call_next(request)
+            for key, value in headers.items():
+                response.headers[key] = value
+            return response
+        return await call_next(request)
 
     @app.exception_handler(UsageQuotaInsufficientError)
     async def _usage_quota_insufficient_handler(_request, exc: UsageQuotaInsufficientError):
