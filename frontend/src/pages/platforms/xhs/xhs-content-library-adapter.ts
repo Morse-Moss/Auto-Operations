@@ -545,6 +545,70 @@ function SystemAnalysisButton({
   }, hasSystemAnalysis ? "重新系统分析" : "系统分析");
 }
 
+function renderBatchSystemAnalysisAction(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
+  return h(BatchSystemAnalysisButton, { controller: context.controller });
+}
+
+function BatchSystemAnalysisButton({
+  controller,
+}: {
+  controller: ContentLibraryRenderContext<SavedNote>["controller"];
+}) {
+  const [isLoading, setIsLoading] = React.useState(false);
+  const selectedCount = controller.selectedItemIds.length;
+
+  async function analyzeSelected() {
+    const noteIds = [...controller.selectedItemIds];
+    if (!noteIds.length) {
+      controller.setBatchActionMessage("请先选择要系统分析的笔记。");
+      return;
+    }
+
+    setIsLoading(true);
+    controller.setBatchActionMessage(`正在系统分析 ${noteIds.length} 条笔记，请保持页面打开…`);
+    const loadingMessage = message.loading(`正在系统分析 ${noteIds.length} 条笔记…`, 0);
+    let successCount = 0;
+    let failedCount = 0;
+
+    try {
+      for (const [index, noteId] of noteIds.entries()) {
+        controller.setBatchActionMessage(`正在系统分析 ${index + 1}/${noteIds.length}：笔记 #${noteId}`);
+        try {
+          await analyzeSavedNote(noteId);
+          successCount += 1;
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      await controller.refreshItems();
+      await controller.refreshFilterOptions();
+      await controller.refreshSelectedItem();
+
+      const summary = `系统分析完成：成功 ${successCount} 条，失败 ${failedCount} 条。`;
+      controller.setBatchActionMessage(summary);
+      if (failedCount > 0) {
+        message.warning(summary);
+      } else {
+        message.success(summary);
+      }
+    } finally {
+      setIsLoading(false);
+      loadingMessage();
+    }
+  }
+
+  return h(Button, {
+    icon: h(PlayCircleOutlined),
+    type: "primary",
+    ghost: true,
+    loading: isLoading,
+    disabled: isLoading || !selectedCount,
+    onClick: () => void analyzeSelected(),
+    size: "small",
+  }, selectedCount ? `系统分析 ${selectedCount} 条` : "系统分析");
+}
+
 function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
   async function syncSelectedToFeishu() {
     const selectedIds = [...context.controller.selectedItemIds];
@@ -779,6 +843,7 @@ export function createXhsContentLibraryAdapter(navigate: XhsNavigate): ContentLi
     loadFilterOptions: () => fetchSavedNoteFilterOptions("xhs"),
     emptyState: { description: "内容库还是空的", actionLabel: "去发现笔记", actionPath: "/platforms/xhs/discovery" },
     renderToolbarExtras: renderFeishuToolbar,
+    renderBatchActions: renderBatchSystemAnalysisAction,
     loadItems: (filters) => fetchSavedNotes({ platform: "xhs", ...filters }),
     loadItem: (itemId) => fetchSavedNote(itemId),
     loadAssets: (itemId) => fetchSavedNoteAssets(itemId),

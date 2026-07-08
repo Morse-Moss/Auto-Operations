@@ -19,6 +19,17 @@ def test_xhs_content_library_exposes_system_analysis_action():
     assert "重新系统分析" in adapter_source
 
 
+def test_xhs_content_library_exposes_batch_system_analysis_action():
+    shell_source = read_frontend("components/content-library/content-library-shell.tsx")
+    adapter_source = read_frontend("pages/platforms/xhs/xhs-content-library-adapter.ts")
+
+    assert "adapter.renderBatchActions?.({ controller })" in shell_source
+    assert "renderBatchActions: renderBatchSystemAnalysisAction" in adapter_source
+    assert "BatchSystemAnalysisButton" in adapter_source
+    assert "controller.selectedItemIds" in adapter_source
+    assert "await analyzeSavedNote(noteId)" in adapter_source
+
+
 def test_xhs_analysis_display_uses_system_analysis_copy():
     shell_source = read_frontend("components/content-library/content-library-shell.tsx")
     hook_source = read_frontend("components/content-library/use-content-library.ts")

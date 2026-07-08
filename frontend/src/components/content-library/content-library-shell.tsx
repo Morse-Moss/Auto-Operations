@@ -216,6 +216,7 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
             {adapter.capabilities.canBatchCreateDrafts ? (
               <Button icon={<CheckSquareOutlined />} disabled={controller.isBatchWorking || !controller.selectedItemIds.length} onClick={controller.createBatchRewriteDrafts} size="small">{adapter.labels.batchCreateDrafts}</Button>
             ) : null}
+            {adapter.renderBatchActions?.({ controller })}
             {adapter.capabilities.canExport ? (
               <>
                 <Button type="primary" icon={<DownloadOutlined />} disabled={controller.isBatchWorking || !controller.selectedItemIds.length} onClick={() => void controller.exportSelectedItems("json")} size="small">{adapter.labels.exportJson}</Button>

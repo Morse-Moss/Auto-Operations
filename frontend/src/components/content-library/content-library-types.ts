@@ -165,6 +165,10 @@ export type ContentLibraryToolbarRenderContext<TItem extends ContentLibraryItem 
   controller: ContentLibraryController<TItem>;
 };
 
+export type ContentLibraryBatchActionsRenderContext<TItem extends ContentLibraryItem = ContentLibraryItem> = {
+  controller: ContentLibraryController<TItem>;
+};
+
 export type ContentLibraryAdapter<TItem extends ContentLibraryItem = ContentLibraryItem> = {
   platform: PlatformId;
   pageTitle: string;
@@ -194,6 +198,7 @@ export type ContentLibraryAdapter<TItem extends ContentLibraryItem = ContentLibr
   downloadExport(exportFile: ContentLibraryExportResponse): Promise<void>;
   getCopyText(item: TItem): string;
   renderToolbarExtras?(context: ContentLibraryToolbarRenderContext<TItem>): ReactNode;
+  renderBatchActions?(context: ContentLibraryBatchActionsRenderContext<TItem>): ReactNode;
   renderCardGrid(context: ContentLibraryRenderContext<TItem>): ReactNode;
   renderTable(context: ContentLibraryRenderContext<TItem>): ReactNode;
   renderDetail(context: ContentLibraryDetailRenderContext<TItem>): ReactNode;
