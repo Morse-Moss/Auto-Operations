@@ -128,6 +128,9 @@ def test_xhs_data_acquisition_page_hides_internal_source_terms_and_keeps_high_ri
     assert "待确认候选" in source
     assert "小红书账号直连" in source
     assert "高风险" in source
+    assert "taskCards" not in source
+    for hidden_status in ("获取热词趋势", "获取榜单笔记", "补全笔记详情", "关键词分析", "导入数据文件", "验证中", "后续"):
+        assert hidden_status not in source
     assert '<XhsCrawlerPage visibleSource="xhs" />' in source
     assert 'visibleSource?: "all" | "xhs"' in crawler_source
     assert "account.nickname" not in source

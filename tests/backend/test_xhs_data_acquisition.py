@@ -96,6 +96,17 @@ def create_user_account_and_headers(SessionLocal):
         db.close()
 
 
+def create_user_headers_without_data_account(SessionLocal):
+    db = SessionLocal()
+    try:
+        user = User(username="operator-no-data-account", password_hash=hash_password("secret123"))
+        db.add(user)
+        db.commit()
+        return user.id, {"Authorization": f"Bearer {create_access_token(user.id)}"}
+    finally:
+        db.close()
+
+
 def create_successful_run(
     *,
     SessionLocal,
@@ -550,7 +561,7 @@ def test_note_search_failure_records_failed_run_without_fallback_candidates(tmp_
         assert response.status_code == 200
         payload = response.json()
         assert payload["status"] == "failed"
-        assert payload["user_message"] == "本次数据获取失败，任务已停止。"
+        assert payload["user_message"] == "笔记数据结构变化，任务已停止，请联系管理员检查采集配置。"
         assert payload["candidate_count"] == 0
 
         db = SessionLocal()
@@ -597,7 +608,7 @@ def test_note_search_does_not_call_source_when_data_account_is_expired(tmp_path)
         assert payload["status"] == "failed"
         assert payload["candidate_count"] == 0
         assert fake.calls == []
-        assert payload["user_message"] == "本次数据获取失败，任务已停止。"
+        assert payload["user_message"] == "数据账号登录状态已过期，请让管理员重新登录后再重试。"
 
         db = SessionLocal()
         try:
@@ -605,6 +616,35 @@ def test_note_search_does_not_call_source_when_data_account_is_expired(tmp_path)
             assert "数据账号登录状态已过期" in run.error_message
         finally:
             db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_note_search_failure_reports_missing_data_account_without_internal_source(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    fake = FakeNoteSource([sample_note_row()])
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    try:
+        _user_id, headers = create_user_headers_without_data_account(SessionLocal)
+
+        response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "params": {"keyword": "露营", "limit": 1, "sort": "interaction", "note_type": "all"},
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "failed"
+        assert payload["candidate_count"] == 0
+        assert payload["user_message"] == "数据账号未配置，请让管理员完成登录后再重试。"
+        assert fake.calls == []
+        assert "huitun" not in str(payload).lower()
+        assert "灰豚" not in str(payload)
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
         app.dependency_overrides.pop(get_db, None)

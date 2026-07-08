@@ -55,15 +55,6 @@ const candidateStatusOptions = [
   { value: "all", label: "全部候选" },
 ];
 
-const taskCards = [
-  { key: "trend", title: "获取热词趋势", status: "验证中", disabled: true },
-  { key: "notes", title: "获取笔记数据", status: "可用", disabled: false },
-  { key: "rank", title: "获取榜单笔记", status: "验证中", disabled: true },
-  { key: "detail", title: "补全笔记详情", status: "验证中", disabled: true },
-  { key: "keyword", title: "关键词分析", status: "验证中", disabled: true },
-  { key: "file", title: "导入数据文件", status: "后续", disabled: true },
-];
-
 function statusTag(status: string) {
   if (status === "completed") return <Tag color="success">已完成</Tag>;
   if (status === "failed") return <Tag color="error">失败</Tag>;
@@ -327,22 +318,6 @@ export function XhsDataAcquisitionPage() {
             刷新
           </Button>
         </Col>
-      </Row>
-
-      <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
-        {taskCards.map((card) => (
-          <Col xs={12} md={8} xl={4} key={card.key}>
-            <Card size="small" style={{ height: "100%" }}>
-              <Space direction="vertical" size={6}>
-                <Space>
-                  {card.disabled ? <ExclamationCircleOutlined /> : <SearchOutlined />}
-                  <Text strong>{card.title}</Text>
-                </Space>
-                <Tag color={card.disabled ? "default" : "success"}>{card.status}</Tag>
-              </Space>
-            </Card>
-          </Col>
-        ))}
       </Row>
 
       <Card title={<Space><SearchOutlined />获取笔记数据</Space>} style={{ marginBottom: 20 }}>
