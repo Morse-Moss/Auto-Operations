@@ -2,6 +2,33 @@ body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   transition: background-color 0.3s ease;
+  color: var(--app-text);
+  background: var(--app-bg);
+}
+
+:root,
+html[data-theme="light"] {
+  --app-bg: #f4f7fb;
+  --app-panel: #ffffff;
+  --app-panel-muted: #f8fafc;
+  --app-border: #dce4ef;
+  --app-text: #111827;
+  --app-muted: #667085;
+  --app-hover: #f3f7ff;
+  --app-scroll-track: #edf2f8;
+  --app-scroll-thumb: #c8d3e0;
+}
+
+html[data-theme="dark"] {
+  --app-bg: #0b1118;
+  --app-panel: #111827;
+  --app-panel-muted: #162033;
+  --app-border: #263244;
+  --app-text: #e5edf8;
+  --app-muted: #93a4b8;
+  --app-hover: #17223a;
+  --app-scroll-track: #101827;
+  --app-scroll-thumb: #3d4b63;
 }
 
 #root {
@@ -14,16 +41,16 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1f1f1f;
+  background: var(--app-scroll-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #434343;
+  background: var(--app-scroll-thumb);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: #7b8798;
 }
 
 .ant-layout {
@@ -53,7 +80,37 @@ body {
 }
 
 .ant-table-tbody > tr:hover > td {
-  background: #1a1a2e !important;
+  background: var(--app-hover) !important;
+}
+
+html[data-theme="light"] .ant-card,
+html[data-theme="light"] .ant-card .ant-card-body,
+html[data-theme="light"] .ant-card .ant-card-head,
+html[data-theme="light"] .ant-drawer-body,
+html[data-theme="light"] .ant-drawer-header,
+html[data-theme="light"] .ant-modal-content,
+html[data-theme="light"] .ant-popover-inner {
+  background: var(--app-panel) !important;
+  border-color: var(--app-border) !important;
+}
+
+html[data-theme="light"] .ant-input,
+html[data-theme="light"] .ant-input-affix-wrapper,
+html[data-theme="light"] .ant-input-number,
+html[data-theme="light"] .ant-input-number-input,
+html[data-theme="light"] .ant-picker,
+html[data-theme="light"] .ant-select-selector,
+html[data-theme="light"] textarea.ant-input {
+  background: #ffffff !important;
+  border-color: var(--app-border) !important;
+  color: var(--app-text) !important;
+}
+
+html[data-theme="light"] .ant-typography,
+html[data-theme="light"] .ant-statistic-content,
+html[data-theme="light"] .ant-list-item-meta-title,
+html[data-theme="light"] .ant-list-item-meta-description {
+  color: inherit;
 }
 
 .ant-tag {
@@ -93,7 +150,7 @@ body {
 }
 
 .ant-spin-dot-item {
-  background: #1668dc;
+  background: #1f6feb;
 }
 
 .ant-image-preview-img {

@@ -1,4 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="12" fill="#111111"/>
-  <path d="M18 19h28v6H18zM18 30h20v6H18zM18 41h28v6H18z" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="自动化运营系统">
+  <rect width="64" height="64" rx="14" fill="#0B1118"/>
+  <path d="M18 18h28a6 6 0 0 1 6 6v16a6 6 0 0 1-6 6H18a6 6 0 0 1-6-6V24a6 6 0 0 1 6-6Z" fill="#1F6FEB"/>
+  <path d="M22 29h20v6H22z" fill="#fff"/>
+  <path d="M29 22h6v20h-6z" fill="#fff" opacity=".9"/>
+  <circle cx="20" cy="48" r="3" fill="#12B886"/>
+  <circle cx="32" cy="48" r="3" fill="#12B886"/>
+  <circle cx="44" cy="48" r="3" fill="#12B886"/>
 </svg>

@@ -151,7 +151,7 @@ export function LoginPage() {
                 Operations Center
               </Text>
               <Text strong style={{ fontSize: 14 }}>
-                Operations OS
+                自动化运营系统
               </Text>
             </div>
           </Space>
@@ -164,7 +164,7 @@ export function LoginPage() {
               lineHeight: 1.4,
             }}
           >
-            运营中台，从爆文发现到草稿 dry-run 一屏推进。
+            自动化运营系统，从爆文发现到草稿 dry-run 一屏推进。
           </Title>
           <Paragraph
             type="secondary"
