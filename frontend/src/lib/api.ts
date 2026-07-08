@@ -76,6 +76,7 @@ import type {
   MonitoringNote,
   MonitoringRefreshResponse,
   MonitoringSnapshot,
+  NoteAnalysisResult,
   MonitoringTarget,
   MonitoringTargetPayload,
   NoteAsset,
@@ -887,6 +888,11 @@ export async function fetchSavedNoteFilterOptions(platform = "xhs", filters: Pic
 
 export async function fetchSavedNote(noteId: number, silent = false): Promise<SavedNote> {
   const response = await http.get<SavedNote>(`/notes/${noteId}`, { _silent: silent } as never);
+  return response.data;
+}
+
+export async function analyzeSavedNote(noteId: number): Promise<NoteAnalysisResult> {
+  const response = await http.post<NoteAnalysisResult>(`/notes/${noteId}/analysis`, null, { timeout: 600000 });
   return response.data;
 }
 

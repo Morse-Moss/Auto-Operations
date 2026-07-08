@@ -838,6 +838,7 @@ export type FeishuCreateAnalysisBaseResponse = {
 };
 
 export type NoteAnalysisResult = {
+  source?: "system" | "feishu" | string | null;
   analysis_status?: string | null;
   core_product_service?: string | null;
   subject_object: string;

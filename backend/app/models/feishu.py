@@ -48,6 +48,8 @@ class NoteAnalysisResult(Base):
     core_points: Mapped[str] = mapped_column(Text, default="")
     target_audience: Mapped[str] = mapped_column(Text, default="")
     title_hook: Mapped[str] = mapped_column(Text, default="")
+    cover_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    title_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     content_structure: Mapped[str] = mapped_column(Text, default="")
     reusable_models: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     reuse_value: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)

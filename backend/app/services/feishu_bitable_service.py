@@ -733,13 +733,17 @@ def _feishu_preanalysis_prompt(note: Note, tags: list[str]) -> str:
 """.strip()
 
 
-def get_or_create_analysis_result(db: Session, *, user_id: int, note_id: int) -> NoteAnalysisResult:
+def get_or_create_feishu_analysis_result(db: Session, *, user_id: int, note_id: int) -> NoteAnalysisResult:
     result = db.scalar(select(NoteAnalysisResult).where(NoteAnalysisResult.note_id == note_id, NoteAnalysisResult.source == "feishu"))
     if result is None:
         result = NoteAnalysisResult(user_id=user_id, note_id=note_id, source="feishu")
         db.add(result)
         db.flush()
     return result
+
+
+def get_or_create_analysis_result(db: Session, *, user_id: int, note_id: int) -> NoteAnalysisResult:
+    return get_or_create_feishu_analysis_result(db, user_id=user_id, note_id=note_id)
 
 
 def apply_preanalysis_to_result(result: NoteAnalysisResult, analysis: dict[str, Any], warning: str = "", *, force_update: bool = False) -> None:

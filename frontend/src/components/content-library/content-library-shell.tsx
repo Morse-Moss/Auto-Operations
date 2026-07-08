@@ -130,7 +130,7 @@ export function ContentLibraryShell<TItem extends ContentLibraryItem>({ adapter,
       </Card>
 
       {adapter.capabilities.canFilterFeishuAnalysis ? (
-        <Card size="small" title="飞书分析筛选" style={{ marginBottom: 16 }}>
+        <Card size="small" title="系统分析筛选" style={{ marginBottom: 16 }}>
           {controller.filterOptionsError ? <Alert message={controller.filterOptionsError} type="warning" showIcon style={{ marginBottom: 12 }} /> : null}
           <Row gutter={[12, 12]} align="middle">
             <Col span={4}>

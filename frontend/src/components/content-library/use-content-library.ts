@@ -127,7 +127,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
       setFilterOptions(result);
     } catch {
       setFilterOptions(adapter.filterOptions ?? {});
-      setFilterOptionsError("飞书分析筛选项加载失败，请刷新后重试。");
+      setFilterOptionsError("系统分析筛选项加载失败，请刷新后重试。");
     }
   }, [adapter, visibilityFilter]);
 
@@ -192,7 +192,7 @@ export function useContentLibrary<TItem extends ContentLibraryItem>(adapter: Con
       } catch {
         if (!cancelled) {
           setFilterOptions(adapter.filterOptions ?? {});
-          setFilterOptionsError("飞书分析筛选项加载失败，请刷新后重试。");
+          setFilterOptionsError("系统分析筛选项加载失败，请刷新后重试。");
         }
       }
     }

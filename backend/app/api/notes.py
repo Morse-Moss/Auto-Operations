@@ -31,6 +31,7 @@ from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAnalysis
 from backend.app.schemas.common import paginated
 from backend.app.services.asset_storage_policy import create_signed_media_url, export_owner_prefix, validate_owned_media_reference
 from backend.app.services.feishu_bitable_service import get_or_create_analysis_result
+from backend.app.services.note_analysis_service import analyze_note_system
 from backend.app.services.note_exclusion_service import build_current_cleanup_candidates, mark_notes_excluded
 from backend.app.services.xhs_source_image_extractor import (
     XhsSourceImageExtractionError,
@@ -223,10 +224,32 @@ def _get_feishu_analysis_result(db: Session, note_id: int) -> NoteAnalysisResult
     )
 
 
+def _get_effective_analysis_result(db: Session, note_id: int) -> NoteAnalysisResult | None:
+    return db.scalar(
+        select(NoteAnalysisResult)
+        .where(
+            NoteAnalysisResult.note_id == note_id,
+            NoteAnalysisResult.source.in_(["system", "feishu"]),
+        )
+        .order_by(NoteAnalysisResult.source.desc())
+    )
+
+
+def _payload_value(payload: Any, *keys: str) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        value = payload.get(key)
+        if value:
+            return value
+    return None
+
+
 def _serialize_analysis_result(result: NoteAnalysisResult | None) -> dict | None:
     if result is None:
         return None
     return {
+        "source": result.source,
         "analysis_status": result.analysis_status,
         "core_product_service": result.subject_object,
         "subject_object": result.subject_object,
@@ -234,9 +257,9 @@ def _serialize_analysis_result(result: NoteAnalysisResult | None) -> dict | None
         "core_points": result.core_points,
         "target_audience": result.target_audience,
         "title_hook": result.title_hook,
-        "cover_type": result.raw_payload.get("封面类型") if isinstance(result.raw_payload, dict) else None,
-        "title_type": result.raw_payload.get("标题类型") if isinstance(result.raw_payload, dict) else None,
         "content_structure": result.content_structure,
+        "cover_type": result.cover_type or _payload_value(result.raw_payload, "cover_type", "灏侀潰绫诲瀷", "封面类型"),
+        "title_type": result.title_type or _payload_value(result.raw_payload, "title_type", "鏍囬绫诲瀷", "标题类型"),
         "reusable_model": result.reusable_models or [],
         "reusable_models": result.reusable_models or [],
         "content_usage": result.reuse_value,
@@ -279,7 +302,8 @@ def _serialize_note(
     response_cover_url = _asset_display_url(image_assets[0], note.user_id) if image_assets else (mapped_cover_url or raw_cover)
     response_video_url = _asset_display_url(video_assets[0], note.user_id) if video_assets else mapped_video_url
     marks = (top20_marks or {}).get(note.id, [])
-    analysis = _get_feishu_analysis_result(db, note.id)
+    feishu_analysis = _get_feishu_analysis_result(db, note.id)
+    effective_analysis = _get_effective_analysis_result(db, note.id)
     return {
         "id": note.id,
         "platform": note.platform,
@@ -297,8 +321,8 @@ def _serialize_note(
         "engagement_metrics": _note_engagement_metrics(note, mapping_cache),
         "analysis_marks": marks,
         "is_analysis_focus": len(marks) >= 2,
-        "feishu_sync": _serialize_feishu_sync(analysis),
-        "analysis_result": _serialize_analysis_result(analysis),
+        "feishu_sync": _serialize_feishu_sync(feishu_analysis),
+        "analysis_result": _serialize_analysis_result(effective_analysis),
     }
 
 
@@ -489,6 +513,24 @@ def _add_option(counter: dict[str, int], value: Any) -> None:
         counter[item] = counter.get(item, 0) + 1
 
 
+def _effective_analysis_results_for_notes(db: Session, *, user_id: int, note_ids: list[int]) -> list[NoteAnalysisResult]:
+    if not note_ids:
+        return []
+    statement = (
+        select(NoteAnalysisResult)
+        .where(
+            NoteAnalysisResult.user_id == user_id,
+            NoteAnalysisResult.source.in_(["system", "feishu"]),
+            NoteAnalysisResult.note_id.in_(note_ids),
+        )
+        .order_by(NoteAnalysisResult.note_id.asc(), NoteAnalysisResult.source.desc())
+    )
+    selected: dict[int, NoteAnalysisResult] = {}
+    for result in db.scalars(statement):
+        selected.setdefault(result.note_id, result)
+    return list(selected.values())
+
+
 @router.get("/filter-options")
 def get_note_filter_options(
     platform: Optional[str] = None,
@@ -502,15 +544,7 @@ def get_note_filter_options(
         note_statement = note_statement.where(Note.platform == platform)
     visible_note_ids = list(db.scalars(note_statement))
 
-    statement = (
-        select(NoteAnalysisResult)
-        .where(
-            NoteAnalysisResult.user_id == current_user.id,
-            NoteAnalysisResult.source == "feishu",
-            NoteAnalysisResult.note_id.in_(visible_note_ids),
-        )
-    )
-    results = db.scalars(statement).all() if visible_note_ids else []
+    results = _effective_analysis_results_for_notes(db, user_id=current_user.id, note_ids=visible_note_ids)
     analyzed_note_ids = {result.note_id for result in results}
     has_unanalyzed_notes = any(note_id not in analyzed_note_ids for note_id in visible_note_ids)
     analysis_status: dict[str, int] = {UNANALYZED_STATUS: 1} if has_unanalyzed_notes else {}
@@ -624,8 +658,9 @@ def get_notes(
     ])
 
     def _matches_analysis_filters(note: Note) -> bool:
-        result = _get_feishu_analysis_result(db, note.id)
-        if feishu_push_status and (result.push_status if result else "not_synced") != feishu_push_status:
+        feishu_result = _get_feishu_analysis_result(db, note.id)
+        result = _get_effective_analysis_result(db, note.id)
+        if feishu_push_status and (feishu_result.push_status if feishu_result else "not_synced") != feishu_push_status:
             return False
         if wants_unanalyzed and _is_unanalyzed_analysis(result):
             return True
@@ -655,6 +690,17 @@ def get_notes(
     if sort_by != "latest":
         notes = sorted(notes, key=lambda note: (_note_metric(note, sort_by, mapping_cache), note.created_at, note.id), reverse=True)
     return paginated([_serialize_note_with_tags(db, note, top20_marks, mapping_cache) for note in notes], page, page_size)
+
+
+@router.post("/{note_id}/analysis")
+def analyze_note(
+    note_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    note = _get_owned_note(db, current_user, note_id)
+    result = analyze_note_system(db, user_id=current_user.id, note=note)
+    return _serialize_analysis_result(result)
 
 
 @router.post("/batch-create-drafts")
