@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/huitun/login-sessions", tags=["huitun-login-sessions
 
 HUITUN_LOGIN_STATUS_CHECK_FAILED_MESSAGE = "数据账号登录状态检查失败，请稍后重试。"
 HUITUN_ACCOUNT_INFO_FAILED_MESSAGE = "数据账号信息获取失败，请刷新二维码重试。"
+HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE = "数据账号登录失败，请检查账号密码或重新完成验证。"
 
 
 def _dump_json(value: dict[str, Any]) -> str:
@@ -32,6 +34,21 @@ def _load_json(value: str | None) -> dict[str, Any]:
 
 def get_huitun_account_client():
     return huitun_account_service
+
+
+class HuitunPasswordLoginRequest(BaseModel):
+    mobile: str = Field(min_length=5, max_length=32)
+    password: str = Field(min_length=1, max_length=128)
+    ticket: str = Field(min_length=1, max_length=512)
+    randStr: str = Field(min_length=1, max_length=512)
+    captcha: str | None = Field(default=None, max_length=16)
+
+
+def _mask_mobile(mobile: str) -> str:
+    digits = "".join(char for char in mobile if char.isdigit())
+    if len(digits) >= 7:
+        return f"{digits[:3]}****{digits[-4:]}"
+    return "已填写"
 
 
 @router.post("/qrcode")
@@ -122,4 +139,81 @@ def huitun_login_session(
         "status": session.status,
         "qr_url": session.qr_url,
         "account": account_payload,
+    }
+
+
+@router.post("/password/confirm")
+def huitun_password_login_confirm(
+    payload: HuitunPasswordLoginRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    client=Depends(get_huitun_account_client),
+):
+    require_admin_user(current_user)
+    session = LoginSession(
+        user_id=current_user.id,
+        platform="huitun",
+        sub_type="main",
+        status="pending",
+        login_method="password",
+        phone_mask=_mask_mobile(payload.mobile),
+        encrypted_temp_cookies=None,
+    )
+    db.add(session)
+    db.flush()
+
+    try:
+        result = client.login_huitun_with_password(
+            payload.mobile.strip(),
+            payload.password,
+            payload.ticket.strip(),
+            payload.randStr.strip(),
+            payload.captcha.strip() if payload.captcha else None,
+        )
+    except Exception as exc:
+        session.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE) from exc
+
+    result_status = result.get("status") or "pending"
+    if result_status == "verification_required":
+        session.status = "verification_required"
+        db.commit()
+        return {
+            "session_id": session.id,
+            "status": session.status,
+            "qr_url": "",
+            "message": result.get("message") or huitun_account_service.HUITUN_PASSWORD_SMS_REQUIRED_MESSAGE,
+            "account": None,
+        }
+
+    if result_status != "confirmed":
+        session.status = str(result_status)
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE)
+
+    cookies_text = result.get("cookies_text") or ""
+    user_info = result.get("user_info")
+    if not cookies_text or not isinstance(user_info, dict):
+        session.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=HUITUN_ACCOUNT_INFO_FAILED_MESSAGE)
+
+    account, action = upsert_platform_account_from_login(
+        db=db,
+        user_id=current_user.id,
+        platform="huitun",
+        sub_type="main",
+        user_info=user_info,
+        cookies_text=cookies_text,
+    )
+    session.status = "confirmed"
+    db.commit()
+    db.refresh(session)
+    db.refresh(account)
+    return {
+        "session_id": session.id,
+        "status": session.status,
+        "qr_url": "",
+        "account": serialize_account(account, action),
     }

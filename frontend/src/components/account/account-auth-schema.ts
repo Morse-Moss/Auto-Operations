@@ -2,7 +2,7 @@ import type { PlatformAccountAuthSchema, PlatformId, PlatformMeta } from "../../
 
 export type AccountPlatform = Extract<PlatformId, "xhs" | "huitun" | "wechat_official">;
 export type AccountType = "pc" | "creator" | "main";
-export type LoginMethod = "qr" | "phone" | "cookie" | "none";
+export type LoginMethod = "qr" | "phone" | "cookie" | "password" | "none";
 
 export type AccountAuthOption<T extends string> = {
   label: string;
@@ -42,6 +42,7 @@ const xhsLoginMethods = [
 ] as const satisfies readonly AccountAuthOption<LoginMethod>[];
 
 const huitunLoginMethods = [
+  { label: "账号密码", value: "password" },
   { label: "二维码", value: "qr" },
   { label: "Cookie", value: "cookie" },
 ] as const satisfies readonly AccountAuthOption<LoginMethod>[];

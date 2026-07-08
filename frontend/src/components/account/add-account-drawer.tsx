@@ -21,6 +21,7 @@ import {
   type LoginMethod,
 } from "./account-auth-schema";
 import { CookieImportPanel } from "./cookie-import-panel";
+import { HuitunPasswordLoginPanel } from "./huitun-password-login-panel";
 import { PhoneLoginPanel } from "./phone-login-panel";
 import { QrLoginPanel } from "./qr-login-panel";
 
@@ -150,6 +151,8 @@ export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = 
         <QrLoginPanel platform={schema.platform} accountType={effectiveAccountType} onConfirmed={handleConfirmed} />
       ) : effectiveMethod === "cookie" && (schema.platform === "xhs" || schema.platform === "huitun") ? (
         <CookieImportPanel platform={schema.platform} accountType={effectiveAccountType} onImported={handleConfirmed} />
+      ) : effectiveMethod === "password" && schema.platform === "huitun" ? (
+        <HuitunPasswordLoginPanel onConfirmed={handleConfirmed} />
       ) : effectiveMethod === "phone" && schema.platform === "xhs" && supportsPhoneLogin(effectiveAccountType) ? (
         <PhoneLoginPanel accountType={effectiveAccountType} onConfirmed={handleConfirmed} />
       ) : null}

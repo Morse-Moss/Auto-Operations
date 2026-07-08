@@ -1375,6 +1375,23 @@ class FakeHuitunAccountClient:
             },
         }
 
+    def login_huitun_with_password(self, mobile, password, ticket, rand_str, captcha=None):
+        assert mobile == "13800138000"
+        assert password == "company-pass-123"
+        assert ticket == "captcha-ticket"
+        assert rand_str == "captcha-rand"
+        assert captcha in {None, "123456"}
+        return {
+            "status": "confirmed",
+            "cookies_text": '{"xhsapiToken":"password-token"}',
+            "user_info": {
+                "external_user_id": "huitun-web-user-1",
+                "nickname": "灰豚密码号",
+                "avatar_url": "https://example.test/huitun-web-avatar.webp",
+                "profile": {"source": "huitun", "raw": {"userId": "huitun-web-user-1"}},
+            },
+        }
+
 
 class FakePhoneLoginAdapter:
     def create_phone_session(self, phone):
@@ -1482,6 +1499,107 @@ def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
             cookie_version = db.query(AccountCookieVersion).one()
             assert cookie_version.platform_account_id == account.id
             assert decrypt_text(cookie_version.encrypted_cookies) == '{"xhsapiToken":"final-token"}'
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_huitun_account_client, None)
+
+
+def test_huitun_password_login_session_is_admin_only(tmp_path):
+    from backend.app.api.huitun_login_sessions import get_huitun_account_client
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_huitun_account_client] = lambda: FakeHuitunAccountClient()
+    try:
+        user_token = _register_and_get_access_token("ordinary-huitun-password-user")
+
+        response = client.post(
+            "/api/huitun/login-sessions/password/confirm",
+            headers={"Authorization": f"Bearer {user_token}"},
+            json={
+                "mobile": "13800138000",
+                "password": "company-pass-123",
+                "ticket": "captcha-ticket",
+                "randStr": "captcha-rand",
+            },
+        )
+
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_huitun_account_client, None)
+
+
+def test_huitun_password_login_persists_cookie_without_storing_plain_password(tmp_path):
+    from backend.app.api.huitun_login_sessions import get_huitun_account_client
+    from backend.app.core.database import get_db
+    from backend.app.core.security import create_access_token, decrypt_text
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount, User
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_huitun_account_client] = lambda: FakeHuitunAccountClient()
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = User(username="huitun-password-admin", password_hash="hash", role="admin", status="active")
+            db.add(admin)
+            db.commit()
+            admin_id = admin.id
+        finally:
+            db.close()
+        access_token = create_access_token(admin_id)
+
+        response = client.post(
+            "/api/huitun/login-sessions/password/confirm",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "mobile": "13800138000",
+                "password": "company-pass-123",
+                "ticket": "captcha-ticket",
+                "randStr": "captcha-rand",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "confirmed"
+        assert payload["account"]["platform"] == "huitun"
+        assert payload["account"]["sub_type"] == "main"
+        assert payload["account"]["nickname"] == "数据账号密码号"
+        assert "company-pass-123" not in str(payload)
+        assert "captcha-ticket" not in str(payload)
+        assert "captcha-rand" not in str(payload)
+        assert "password-token" not in str(payload)
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.query(LoginSession).filter(LoginSession.login_method == "password").one()
+            assert stored_session.platform == "huitun"
+            assert stored_session.sub_type == "main"
+            assert stored_session.status == "confirmed"
+            assert stored_session.phone_mask == "138****8000"
+            assert stored_session.encrypted_temp_cookies in {None, ""}
+            serialized_session = " ".join(
+                str(value or "")
+                for value in (
+                    stored_session.phone_mask,
+                    stored_session.qr_id,
+                    stored_session.code,
+                    stored_session.qr_url,
+                    stored_session.encrypted_temp_cookies,
+                )
+            )
+            assert "company-pass-123" not in serialized_session
+            assert "captcha-ticket" not in serialized_session
+            assert "captcha-rand" not in serialized_session
+
+            account = db.query(PlatformAccount).one()
+            assert account.platform == "huitun"
+            assert account.external_user_id == "huitun-web-user-1"
+            cookie_version = db.query(AccountCookieVersion).one()
+            assert cookie_version.platform_account_id == account.id
+            assert decrypt_text(cookie_version.encrypted_cookies) == '{"xhsapiToken":"password-token"}'
         finally:
             db.close()
     finally:

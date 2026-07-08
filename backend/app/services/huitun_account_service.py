@@ -15,9 +15,14 @@ from backend.app.services.account_service import cookie_header_from_text, decode
 HUITUN_QR_TICKET_URL = "https://login.huitun.com/weChat/getTicket"
 HUITUN_QR_CHECK_URL = "https://xhsapi.huitun.com/user/checkHuiTunLogin"
 HUITUN_CURRENT_USER_URL = "https://xhsapi.huitun.com/user/currentUser"
+HUITUN_PHONE_LOGIN_URL = "https://xhsapi.huitun.com/user/phoneLogin"
+HUITUN_DEVICE_PHONE_LOGIN_URL = "https://xhsapi.huitun.com/user/v2/phoneLoginChange"
 HUITUN_QR_TAG = "XiaoHongShu"
+HUITUN_WEB_VERSION = "16101520.52.102"
 HUITUN_INVALID_LOGIN_MESSAGE = "数据账号登录态无效或已过期。"
 HUITUN_QR_FAILED_MESSAGE = "数据账号二维码生成失败，请稍后重试。"
+HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE = "数据账号登录失败，请检查账号密码或重新完成验证。"
+HUITUN_PASSWORD_SMS_REQUIRED_MESSAGE = "当前设备需要短信验证，请输入短信验证码后继续。"
 
 
 def _now_ms() -> int:
@@ -166,6 +171,107 @@ def check_huitun_qrcode_status(state: dict[str, Any]) -> dict[str, Any]:
         return {"status": "confirmed", "cookies_text": cookies_text, "user_info": user_info}
 
     return {"status": "pending", "cookies_text": cookies_text, "user_info": None}
+
+
+def _huitun_form_headers() -> dict[str, str]:
+    return {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://xhs.huitun.com",
+        "Referer": "https://xhs.huitun.com/",
+        "Source": "web",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+    }
+
+
+def _is_sms_required_payload(payload: dict[str, Any]) -> bool:
+    message = _safe_message(payload.get("message") or payload.get("msg"))
+    status_code = str(payload.get("status") or payload.get("code") or "").strip()
+    return status_code in {"1006", "1010", "2006", "3006"} or any(word in message for word in ("短信", "验证码", "设备", "安全验证"))
+
+
+def _post_huitun_password_login(
+    session: requests.Session,
+    *,
+    mobile: str,
+    password: str,
+    ticket: str,
+    rand_str: str,
+    captcha: str | None = None,
+) -> dict[str, Any]:
+    login_url = HUITUN_DEVICE_PHONE_LOGIN_URL if captcha else HUITUN_PHONE_LOGIN_URL
+    form_data = {
+        "mobile": mobile,
+        "password": password,
+        "ticket": ticket,
+        "randStr": rand_str,
+        "vs": HUITUN_WEB_VERSION,
+        "Source": "web",
+    }
+    if captcha:
+        form_data["captcha"] = captcha
+
+    response = session.post(
+        login_url,
+        params={"_t": _now_ms()},
+        data=form_data,
+        headers=_huitun_form_headers(),
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError(HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE)
+    return payload
+
+
+def login_huitun_with_password(
+    mobile: str,
+    password: str,
+    ticket: str,
+    rand_str: str,
+    captcha: str | None = None,
+) -> dict[str, Any]:
+    session = requests.Session()
+    try:
+        payload = _post_huitun_password_login(
+            session,
+            mobile=mobile,
+            password=password,
+            ticket=ticket,
+            rand_str=rand_str,
+            captcha=captcha,
+        )
+    except Exception as exc:
+        raise RuntimeError(HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE) from exc
+
+    if _is_sms_required_payload(payload):
+        return {
+            "status": "verification_required",
+            "cookies_text": _cookies_text_from_session(session),
+            "user_info": None,
+            "message": HUITUN_PASSWORD_SMS_REQUIRED_MESSAGE,
+        }
+
+    status_code = str(payload.get("status") or payload.get("code") or "").strip()
+    if status_code in {"1000", "1001", "401", "403"}:
+        raise RuntimeError(HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE)
+
+    cookies_text = _cookies_text_from_session(session)
+    try:
+        user_info = validate_huitun_login_state(cookies_text)
+    except Exception as exc:
+        raise RuntimeError(HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE) from exc
+
+    return {
+        "status": "confirmed",
+        "cookies_text": cookies_text,
+        "user_info": user_info,
+        "message": "",
+    }
 
 
 def validate_huitun_login_state(cookie_text: str) -> dict[str, Any]:

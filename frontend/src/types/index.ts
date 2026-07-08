@@ -648,6 +648,7 @@ export type XhsQrLoginSession = {
   status: "pending" | "scanned" | "confirmed" | "expired" | string;
   qr_url: string;
   qr_image_data_url?: string;
+  message?: string;
   account?: PlatformAccount | null;
   creator_account?: PlatformAccount | null;
 };

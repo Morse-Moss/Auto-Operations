@@ -1650,6 +1650,16 @@ export async function pollHuitunLoginSession(sessionId: number): Promise<XhsQrLo
   return response.data;
 }
 
+export async function confirmHuitunPasswordLogin(payload: {
+  mobile: string;
+  password: string;
+  ticket: string;
+  randStr: string;
+  captcha?: string;
+}): Promise<XhsQrLoginSession> {
+  const response = await http.post<XhsQrLoginSession>("/huitun/login-sessions/password/confirm", payload, { _silent: true } as never);
+  return response.data;
+}
 export async function pollXhsLoginSession(sessionId: number): Promise<XhsQrLoginSession> {
   const response = await http.get<XhsQrLoginSession>(`/xhs/login-sessions/${sessionId}`);
   return response.data;

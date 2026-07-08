@@ -53,6 +53,30 @@ class FakeQrSession:
         return FakeResponse({"status": 0, "extData": {"userId": "from-check-only"}})
 
 
+class FakePasswordLoginSession:
+    def __init__(self, post_payload=None):
+        self.cookies = FakeCookieJar()
+        self.calls = []
+        self.post_payload = post_payload or {"status": 0, "message": "ok"}
+
+    def post(self, url, params=None, data=None, headers=None, timeout=None):
+        self.calls.append(
+            {
+                "url": url,
+                "params": dict(params or {}),
+                "data": dict(data or {}),
+                "headers": dict(headers or {}),
+                "timeout": timeout,
+            }
+        )
+        self.cookies.set("xhsapiToken", "password-token", domain=".huitun.com", path="/")
+        return FakeResponse(self.post_payload)
+
+    def get(self, url, params=None, timeout=None):
+        assert url == account_source.HUITUN_CURRENT_USER_URL
+        return FakeResponse({"status": 0, "extData": {"userId": "web-user-1", "nickName": "数据账号"}})
+
+
 def test_note_search_rows_map_verified_fields_to_candidates():
     rows = _rows_from_response(
         {
@@ -213,3 +237,60 @@ def test_qrcode_status_does_not_confirm_when_current_user_validation_fails(monke
 
     assert result["status"] == "pending"
     assert result["user_info"] is None
+
+
+def test_password_login_uses_official_captcha_ticket_and_returns_cookie(monkeypatch):
+    fake_session = FakePasswordLoginSession()
+    monkeypatch.setattr(account_source.requests, "Session", lambda: fake_session)
+    monkeypatch.setattr(account_source, "_now_ms", lambda: 1234567890)
+
+    result = account_source.login_huitun_with_password(
+        "13800138000",
+        "company-pass-123",
+        "captcha-ticket",
+        "captcha-rand",
+    )
+
+    assert result["status"] == "confirmed"
+    assert result["cookies_text"] == '{"xhsapiToken":"password-token"}'
+    assert result["user_info"]["external_user_id"] == "web-user-1"
+    assert fake_session.calls == [
+        {
+            "url": account_source.HUITUN_PHONE_LOGIN_URL,
+            "params": {"_t": 1234567890},
+            "data": {
+                "mobile": "13800138000",
+                "password": "company-pass-123",
+                "ticket": "captcha-ticket",
+                "randStr": "captcha-rand",
+                "vs": account_source.HUITUN_WEB_VERSION,
+                "Source": "web",
+            },
+            "headers": {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Origin": "https://xhs.huitun.com",
+                "Referer": "https://xhs.huitun.com/",
+                "Source": "web",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 Safari/537.36"
+                ),
+            },
+            "timeout": 20,
+        }
+    ]
+
+
+def test_password_login_treats_string_status_as_sms_verification_required(monkeypatch):
+    fake_session = FakePasswordLoginSession({"status": "1006", "message": "ok"})
+    monkeypatch.setattr(account_source.requests, "Session", lambda: fake_session)
+
+    result = account_source.login_huitun_with_password(
+        "13800138000",
+        "company-pass-123",
+        "captcha-ticket",
+        "captcha-rand",
+    )
+
+    assert result["status"] == "verification_required"

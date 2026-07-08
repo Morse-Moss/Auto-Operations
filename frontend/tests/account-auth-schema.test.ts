@@ -121,6 +121,7 @@ assert.deepEqual(platformOptionsFor(schemas).map((option) => option.value), ["xh
 const adminSchemas = mapPlatformRegistryToAccountAuthSchemas(registryPlatforms, true);
 assert.equal(accountDrawerTitleFor(adminSchemas), "添加小红书 / 公众号 / 数据账号");
 assert.deepEqual(platformOptionsFor(adminSchemas).map((option) => option.value), ["xhs", "wechat_official", "huitun"]);
+assert.deepEqual(loginMethodOptionsFor(getAccountAuthSchema("huitun", adminSchemas)).map((option) => option.value), ["password", "qr", "cookie"]);
 
 const fallback = getAccountAuthSchema("xhs");
 assert.deepEqual(accountTypeOptionsFor(fallback).map((option) => option.value), ["pc", "creator"]);
@@ -132,6 +133,7 @@ assert.deepEqual(platformOptionsFor(emptyRegistryFallback).map((option) => optio
 
 const adminEmptyRegistryFallback = mapPlatformRegistryToAccountAuthSchemas([], true);
 assert.deepEqual(platformOptionsFor(adminEmptyRegistryFallback).map((option) => option.value), ["xhs", "huitun"]);
+assert.deepEqual(loginMethodOptionsFor(getAccountAuthSchema("huitun", adminEmptyRegistryFallback)).map((option) => option.value), ["password", "qr", "cookie"]);
 
 const registryWithoutSchemasFallback = mapPlatformRegistryToAccountAuthSchemas([
   {
