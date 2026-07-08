@@ -103,6 +103,8 @@ def get_accounts(
         PlatformAccount.user_id == current_user.id,
         PlatformAccount.status != "deleted",
     )
+    if current_user.role != "admin":
+        statement = statement.where(PlatformAccount.platform != "huitun")
     if platform:
         statement = statement.where(PlatformAccount.platform == platform)
     accounts = db.scalars(statement.order_by(PlatformAccount.created_at.desc())).all()
@@ -176,6 +178,8 @@ def check_account(
     account = db.get(PlatformAccount, account_id)
     if account is None or account.user_id != current_user.id or account.status == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    if account.platform == "huitun":
+        require_admin_user(current_user)
 
     cookie_version = db.scalars(
         select(AccountCookieVersion)
@@ -240,6 +244,8 @@ def update_account(
     account = db.get(PlatformAccount, account_id)
     if account is None or account.user_id != current_user.id or account.status == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    if account.platform == "huitun":
+        require_admin_user(current_user)
     return {"id": account_id, "status": "updated"}
 
 
@@ -252,6 +258,8 @@ def delete_account(
     account = db.get(PlatformAccount, account_id)
     if account is None or account.user_id != current_user.id or account.status == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    if account.platform == "huitun":
+        require_admin_user(current_user)
     for cookie_version in db.scalars(
         select(AccountCookieVersion).where(AccountCookieVersion.platform_account_id == account.id)
     ).all():

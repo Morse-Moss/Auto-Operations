@@ -33,18 +33,15 @@ SUPPORTED_ACQUISITION_TYPE = "note_search"
 NOTE_SEARCH_DEFAULT_LIMIT = 20
 NOTE_SEARCH_MAX_LIMIT = 100
 FAILURE_USER_MESSAGE = "本次数据获取失败，任务已停止。"
-MISSING_DATA_ACCOUNT_MESSAGE = "数据账号未配置，请让管理员完成登录后再重试。"
-EXPIRED_DATA_ACCOUNT_MESSAGE = "数据账号登录状态已过期，请让管理员重新登录后再重试。"
+
 NETWORK_FAILURE_MESSAGE = "笔记数据网络请求失败，任务已停止，请稍后低频重试。"
 STRUCTURE_CHANGED_MESSAGE = "笔记数据结构变化，任务已停止，请联系管理员检查采集配置。"
 
 
 def data_acquisition_failure_user_message(error_message: str) -> str:
     message = str(error_message or "")
-    if "数据账号未配置" in message:
-        return MISSING_DATA_ACCOUNT_MESSAGE
-    if "数据账号登录状态已过期" in message:
-        return EXPIRED_DATA_ACCOUNT_MESSAGE
+    if "数据账号未配置" in message or "数据账号登录状态已过期" in message:
+        return FAILURE_USER_MESSAGE
     if "网络请求失败" in message or "HTTP 400" in message:
         return NETWORK_FAILURE_MESSAGE
     if "structure changed" in message or "结构" in message:

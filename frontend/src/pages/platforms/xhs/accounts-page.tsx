@@ -152,6 +152,7 @@ function toXhsAccountCardItems(
 
 export function XhsAccountsPage() {
   const auth = useAuth();
+  const isAdmin = auth.user?.role === "admin";
   const [searchParams] = useSearchParams();
   const defaultAccountType = searchParams.get("bind") === "creator" ? "creator" : "pc";
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
@@ -212,9 +213,15 @@ export function XhsAccountsPage() {
     });
   }
 
-  const visibleAccounts = auth.user?.role === "admin"
-    ? accounts
-    : accounts.filter((account) => account.platform !== "huitun");
+  const visibleAccounts = isAdmin ? accounts : accounts.filter((account) => account.platform !== "huitun");
+  const pageDescription = isAdmin
+    ? "管理小红书账号与数据账号、登录态、健康检查和账号作用域。"
+    : "管理小红书账号、登录态、健康检查和账号作用域。";
+  const emptyTitle = isAdmin ? "还没有绑定小红书账号或数据账号" : "还没有绑定小红书账号";
+  const emptySummary = isAdmin ? "还没有绑定小红书账号或数据账号" : "还没有绑定小红书账号";
+  const emptyDescription = isAdmin
+    ? "绑定小红书 PC 账号用于搜索和抓取；绑定数据账号用于自动获取关键词候选词。"
+    : "绑定小红书 PC 账号用于搜索和抓取；Creator 账号用于发布前检查和发布任务。";
   const accountItems = toXhsAccountCardItems(visibleAccounts, {
     isChecking: (accountId) => checkingAccountIds.has(accountId),
     onCheck: (accountId) => void handleCheck(accountId),
@@ -250,25 +257,25 @@ export function XhsAccountsPage() {
           账号矩阵
         </Title>
         <Text style={{ color: "rgba(255,255,255,0.45)", marginTop: 4, display: "block" }}>
-          管理小红书账号与数据账号、登录态、健康检查和账号作用域。
+          {pageDescription}
         </Text>
       </div>
 
       <PlatformAccountsShell
         title="已绑定账号"
-        description="管理小红书账号与数据账号、登录态、健康检查和账号作用域。"
+        description={pageDescription}
         items={accountItems}
         loading={isLoading}
         error={error}
-        emptyTitle="还没有绑定小红书账号或数据账号"
+        emptyTitle={emptyTitle}
         emptyDescription={(
           <Space direction="vertical" size={8}>
             <SafetyCertificateOutlined style={{ fontSize: 48, color: "rgba(255,255,255,0.25)" }} />
             <Text strong style={{ color: "rgba(255,255,255,0.65)" }}>
-              还没有绑定小红书账号或数据账号
+              {emptySummary}
             </Text>
             <Text style={{ color: "rgba(255,255,255,0.35)", fontSize: 13 }}>
-              绑定小红书 PC 账号用于搜索和抓取；绑定数据账号用于自动获取关键词候选词。
+              {emptyDescription}
             </Text>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
               添加账号

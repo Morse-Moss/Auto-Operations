@@ -32,6 +32,7 @@ import type {
   DataAcquisitionCandidate,
   DataAcquisitionCandidateDecisionPayload,
   DataAcquisitionImportResponse,
+  DataAcquisitionReadiness,
   DataAcquisitionRun,
   DataAcquisitionRunPayload,
   CreateDraftFromTopicCardsPayload,
@@ -966,6 +967,11 @@ export async function exportSavedNotes(payload: NotesExportPayload): Promise<Not
 
 export async function createDataAcquisitionRun(payload: DataAcquisitionRunPayload): Promise<DataAcquisitionRun> {
   const response = await http.post<DataAcquisitionRun>("/xhs/data-acquisition/runs", payload);
+  return response.data;
+}
+
+export async function fetchDataAcquisitionReadiness(): Promise<DataAcquisitionReadiness> {
+  const response = await http.get<DataAcquisitionReadiness>("/xhs/data-acquisition/readiness");
   return response.data;
 }
 

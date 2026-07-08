@@ -362,7 +362,7 @@ export function XhsKeywordsPage() {
         <Alert
           type="info"
           showIcon
-          message={`输入多个种子关键词，系统会用已绑定的数据账号低频逐个获取候选词；每个种子最多获取 ${HUITUN_LIVE_CANDIDATE_LIMIT} 个，单个种子失败不会隐藏其他成功结果。`}
+          message={`输入多个种子关键词，系统会低频逐个获取候选词；每个种子最多获取 ${HUITUN_LIVE_CANDIDATE_LIMIT} 个，单个种子失败不会隐藏其他成功结果。`}
           description="为什么最多 20 个：当前热词获取一次最多稳定返回 20 个候选词；多页翻页需要单独验证去重、重复页、失败保留和风控频率后再开放。"
           style={{ marginBottom: 16 }}
         />

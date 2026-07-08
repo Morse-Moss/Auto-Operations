@@ -307,6 +307,9 @@ def test_keywords_page_supports_batch_huitun_discovery_runs_and_seed_diagnostics
     assert "seed_results" in source
     assert "partial_failed" in source
     assert re.search(r"失败[^`'\"}]{0,80}(种子词|种子|seed)|(?:种子词|种子|seed)[^`'\"}]{0,80}失败", source, re.IGNORECASE)
+    assert "数据账号" not in source
+    for forbidden in ("灰豚", "extData", "connector", "第三方数据源"):
+        assert forbidden not in source
 
 
 def test_real_drafts_route_exposes_duplicate_draft_action():
@@ -1488,11 +1491,37 @@ def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
 
 def test_huitun_account_management_is_admin_only(tmp_path):
     from backend.app.api.huitun_login_sessions import get_huitun_account_client
+    from backend.app.core.database import get_db
+    from backend.app.core.security import encrypt_text
+    from backend.app.models import AccountCookieVersion, PlatformAccount, User
 
     db_dependency = _override_database(tmp_path)
     app.dependency_overrides[get_huitun_account_client] = lambda: FakeHuitunAccountClient()
     try:
         user_token = _register_and_get_access_token("ordinary-data-user")
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            ordinary_user = db.query(User).filter(User.username == "ordinary-data-user").one()
+            legacy_data_account = PlatformAccount(
+                user_id=ordinary_user.id,
+                platform="huitun",
+                sub_type="main",
+                external_user_id="legacy-data-account",
+                nickname="legacy data account",
+                status="active",
+            )
+            db.add(legacy_data_account)
+            db.flush()
+            db.add(
+                AccountCookieVersion(
+                    platform_account_id=legacy_data_account.id,
+                    encrypted_cookies=encrypt_text('{"xhsapiToken":"legacy-token"}'),
+                )
+            )
+            db.commit()
+            legacy_data_account_id = legacy_data_account.id
+        finally:
+            db.close()
 
         qrcode_response = client.post(
             "/api/huitun/login-sessions/qrcode",
@@ -1503,11 +1532,30 @@ def test_huitun_account_management_is_admin_only(tmp_path):
             headers={"Authorization": f"Bearer {user_token}"},
             json={"platform": "huitun", "sub_type": "main", "cookie_string": '{"xhsapiToken":"user-token"}'},
         )
+        list_response = client.get("/api/accounts?platform=huitun", headers={"Authorization": f"Bearer {user_token}"})
+        check_response = client.post(
+            f"/api/accounts/{legacy_data_account_id}/check",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        update_response = client.patch(
+            f"/api/accounts/{legacy_data_account_id}",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        delete_response = client.delete(
+            f"/api/accounts/{legacy_data_account_id}",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
 
         assert qrcode_response.status_code == 403
         assert cookie_response.status_code == 403
         assert qrcode_response.json()["detail"] == "Admin role required"
         assert cookie_response.json()["detail"] == "Admin role required"
+        assert list_response.status_code == 200
+        assert list_response.json()["total"] == 0
+        assert list_response.json()["items"] == []
+        assert check_response.status_code == 403
+        assert update_response.status_code == 403
+        assert delete_response.status_code == 403
     finally:
         app.dependency_overrides.pop(db_dependency, None)
         app.dependency_overrides.pop(get_huitun_account_client, None)

@@ -1171,6 +1171,13 @@ export type DataAcquisitionRun = {
   candidates?: DataAcquisitionCandidate[];
 };
 
+export type DataAcquisitionReadiness = {
+  available: boolean;
+  status: "ready" | "missing" | "expired" | string;
+  message: string;
+  next_action: string;
+};
+
 export type DataAcquisitionRunPayload = {
   acquisition_type: "note_search";
   account_id?: number | null;

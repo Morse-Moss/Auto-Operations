@@ -490,6 +490,53 @@ def test_list_runs_reports_candidate_count_and_task_center_links_to_run(tmp_path
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_list_runs_redacts_legacy_data_account_error_from_ordinary_user(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        user_id, headers = create_user_headers_without_data_account(SessionLocal)
+        db = SessionLocal()
+        try:
+            task = Task(
+                user_id=user_id,
+                platform="xhs",
+                task_type="data_acquisition_note_search",
+                status="failed",
+                progress=100,
+            )
+            db.add(task)
+            db.flush()
+            db.add(
+                DataAcquisitionRun(
+                    task_id=task.id,
+                    user_id=user_id,
+                    platform="xhs",
+                    acquisition_type="note_search",
+                    source="huitun",
+                    source_mode="live_account",
+                    status="failed",
+                    requested_limit=1,
+                    effective_limit=1,
+                    params_json={"keyword": "露营"},
+                    error_code="note_search_failed",
+                    error_message="数据账号未配置，请联系管理员。",
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get("/api/xhs/data-acquisition/runs", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["items"][0]["user_message"] == "本次数据获取失败，任务已停止。"
+        assert "数据账号" not in str(payload)
+        assert "huitun" not in str(payload).lower()
+        assert "灰豚" not in str(payload)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_admin_debug_query_does_not_expose_internal_source_to_ordinary_user(tmp_path):
     SessionLocal = override_database(tmp_path)
     fake = FakeNoteSource(
@@ -603,17 +650,20 @@ def test_note_search_does_not_call_source_when_data_account_is_expired(tmp_path)
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 409
         payload = response.json()
-        assert payload["status"] == "failed"
-        assert payload["candidate_count"] == 0
+        assert payload["detail"]["code"] == "data_account_not_ready"
+        assert payload["detail"]["status"] == "expired"
+        assert payload["detail"]["message"] == "数据获取服务未就绪，请联系管理员处理后再重试。"
         assert fake.calls == []
-        assert payload["user_message"] == "数据账号登录状态已过期，请让管理员重新登录后再重试。"
+        assert "数据账号" not in str(payload)
+        assert "huitun" not in str(payload).lower()
+        assert "灰豚" not in str(payload)
 
         db = SessionLocal()
         try:
-            run = db.scalars(select(DataAcquisitionRun)).one()
-            assert "数据账号登录状态已过期" in run.error_message
+            assert db.scalars(select(DataAcquisitionRun)).all() == []
+            assert db.scalars(select(Task)).all() == []
         finally:
             db.close()
     finally:
@@ -637,16 +687,100 @@ def test_note_search_failure_reports_missing_data_account_without_internal_sourc
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 409
         payload = response.json()
-        assert payload["status"] == "failed"
-        assert payload["candidate_count"] == 0
-        assert payload["user_message"] == "数据账号未配置，请让管理员完成登录后再重试。"
+        assert payload["detail"]["code"] == "data_account_not_ready"
+        assert payload["detail"]["status"] == "missing"
+        assert payload["detail"]["message"] == "数据获取服务未就绪，请联系管理员处理后再重试。"
         assert fake.calls == []
+        assert "数据账号" not in str(payload)
         assert "huitun" not in str(payload).lower()
         assert "灰豚" not in str(payload)
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(DataAcquisitionRun)).all() == []
+            assert db.scalars(select(Task)).all() == []
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_data_acquisition_readiness_reports_ready_missing_and_expired_states(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _user_id, headers = create_user_headers_without_data_account(SessionLocal)
+
+        missing_response = client.get("/api/xhs/data-acquisition/readiness", headers=headers)
+
+        assert missing_response.status_code == 200
+        assert missing_response.json() == {
+            "available": False,
+            "status": "missing",
+            "message": "数据获取服务未就绪，请联系管理员处理后再重试。",
+            "next_action": "联系管理员处理。",
+        }
+        assert "数据账号" not in str(missing_response.json())
+
+        db = SessionLocal()
+        try:
+            admin = User(username="expired-data-admin", password_hash=hash_password("secret123"), role="admin")
+            db.add(admin)
+            db.flush()
+            admin_id = admin.id
+            expired_account = PlatformAccount(
+                user_id=admin.id,
+                platform="huitun",
+                sub_type="main",
+                external_user_id="expired-data-account",
+                nickname="expired data account",
+                status="expired",
+            )
+            db.add(expired_account)
+            db.commit()
+        finally:
+            db.close()
+
+        expired_response = client.get("/api/xhs/data-acquisition/readiness", headers=headers)
+
+        assert expired_response.status_code == 200
+        assert expired_response.json()["available"] is False
+        assert expired_response.json()["status"] == "expired"
+        assert expired_response.json()["message"] == "数据获取服务未就绪，请联系管理员处理后再重试。"
+        assert "数据账号" not in str(expired_response.json())
+        assert "huitun" not in str(expired_response.json()).lower()
+        assert "灰豚" not in str(expired_response.json())
+
+        admin_expired_response = client.get(
+            "/api/xhs/data-acquisition/readiness",
+            headers={"Authorization": f"Bearer {create_access_token(admin_id)}"},
+        )
+
+        assert admin_expired_response.status_code == 200
+        assert admin_expired_response.json()["available"] is False
+        assert admin_expired_response.json()["status"] == "expired"
+        assert admin_expired_response.json()["message"] == "数据账号登录状态已过期，请让管理员重新登录后再重试。"
+
+        db = SessionLocal()
+        try:
+            expired_account = db.scalars(select(PlatformAccount).where(PlatformAccount.platform == "huitun")).one()
+            expired_account.status = "active"
+            db.add(AccountCookieVersion(platform_account_id=expired_account.id, encrypted_cookies=encrypt_text("session=ok")))
+            db.commit()
+        finally:
+            db.close()
+
+        ready_response = client.get("/api/xhs/data-acquisition/readiness", headers=headers)
+
+        assert ready_response.status_code == 200
+        assert ready_response.json() == {
+            "available": True,
+            "status": "ready",
+            "message": "数据获取服务已就绪。",
+            "next_action": "",
+        }
+    finally:
         app.dependency_overrides.pop(get_db, None)
 
 

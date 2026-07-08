@@ -39,12 +39,13 @@ import {
   createDataAcquisitionRun,
   excludeDataAcquisitionCandidates,
   fetchDataAcquisitionCandidates,
+  fetchDataAcquisitionReadiness,
   fetchDataAcquisitionRuns,
   importDataAcquisitionCandidates,
   restoreDataAcquisitionCandidates,
   retryDataAcquisitionRun,
 } from "../../../lib/api";
-import type { DataAcquisitionCandidate, DataAcquisitionRun } from "../../../types";
+import type { DataAcquisitionCandidate, DataAcquisitionReadiness, DataAcquisitionRun } from "../../../types";
 import { XhsCrawlerPage } from "./crawler-page";
 
 const { Text, Title } = Typography;
@@ -54,6 +55,12 @@ const candidateStatusOptions = [
   { value: "imported", label: "已入库" },
   { value: "all", label: "全部候选" },
 ];
+const defaultReadiness: DataAcquisitionReadiness = {
+  available: false,
+  status: "checking",
+  message: "正在检查数据获取服务状态。",
+  next_action: "",
+};
 
 function statusTag(status: string) {
   if (status === "completed") return <Tag color="success">已完成</Tag>;
@@ -107,6 +114,7 @@ export function XhsDataAcquisitionPage() {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [readiness, setReadiness] = useState<DataAcquisitionReadiness>(defaultReadiness);
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId), [runs, selectedRunId]);
   const selectableCandidateIds = useMemo(
@@ -137,10 +145,12 @@ export function XhsDataAcquisitionPage() {
     setLoading(true);
     try {
       const statusParam = nextStatus === "all" ? undefined : nextStatus;
-      const [runPage, candidatePage] = await Promise.all([
+      const [readinessPayload, runPage, candidatePage] = await Promise.all([
+        fetchDataAcquisitionReadiness(),
         fetchDataAcquisitionRuns({ page_size: 10 }),
         fetchDataAcquisitionCandidates({ run_id: nextRunId, status: statusParam, page_size: 50 }),
       ]);
+      setReadiness(readinessPayload);
       setRuns(runPage.items);
       setCandidates(candidatePage.items);
       setSelectedCandidateIds((current) => current.filter((id) => candidatePage.items.some((candidate) => candidate.id === id)));
@@ -165,6 +175,10 @@ export function XhsDataAcquisitionPage() {
   }
 
   async function handleCreateRun(values: { keyword: string; limit: number; sort: string; note_type: string }) {
+    if (!readiness.available) {
+      message.warning(readiness.message || "数据获取服务未就绪，请联系管理员。");
+      return;
+    }
     setRunning(true);
     try {
       const run = await createDataAcquisitionRun({
@@ -184,6 +198,7 @@ export function XhsDataAcquisitionPage() {
       updateCandidateView(run.id, "pending");
     } catch {
       message.error("本次数据获取失败，任务已停止。");
+      void loadPageData();
     } finally {
       setRunning(false);
     }
@@ -322,9 +337,10 @@ export function XhsDataAcquisitionPage() {
 
       <Card title={<Space><SearchOutlined />获取笔记数据</Space>} style={{ marginBottom: 20 }}>
         <Alert
-          type="info"
+          type={readiness.available ? "info" : "warning"}
           showIcon
-          message="新数据会进入待确认候选，不会自动进入内容库。"
+          message={readiness.available ? "新数据会进入待确认候选，不会自动进入内容库。" : readiness.message}
+          description={!readiness.available && readiness.next_action ? readiness.next_action : undefined}
           style={{ marginBottom: 16 }}
         />
         <Form
@@ -355,7 +371,13 @@ export function XhsDataAcquisitionPage() {
               </Form.Item>
             </Col>
           </Row>
-          <Button type="primary" htmlType="submit" icon={<CloudDownloadOutlined />} loading={running}>
+          <Button
+            type="primary"
+            htmlType="submit"
+            icon={<CloudDownloadOutlined />}
+            loading={running}
+            disabled={!readiness.available}
+          >
             创建获取任务
           </Button>
         </Form>
