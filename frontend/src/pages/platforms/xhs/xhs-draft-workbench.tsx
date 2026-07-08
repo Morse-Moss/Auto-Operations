@@ -328,9 +328,7 @@ export function XhsDraftsPage() {
   const [isLoadingDraftAiScore, setIsLoadingDraftAiScore] = useState(false);
   const [isScoringDraft, setIsScoringDraft] = useState(false);
   const usage = useUsageBalance();
-  const aiRewriteRemaining = usage.bucketRemaining("ai_rewrite");
-  const textActionRemaining = usage.bucketRemaining("text_action");
-  const draftScoreRemaining = usage.bucketRemaining("draft_score");
+  const creditsRemaining = usage.bucketRemaining("credits");
 
   const selectedDraft = controller.selectedDraft;
   const selectedSourceNoteId = selectedDraft?.source_note_id ?? null;
@@ -772,8 +770,8 @@ export function XhsDraftsPage() {
             <Alert
               type="info"
               showIcon
-              message={`AI 改写额度：${aiRewriteRemaining ?? "加载中"} 次；文本 AI 额度：${textActionRemaining ?? "加载中"} 次；草稿评分额度：${draftScoreRemaining ?? "加载中"} 次`}
-              description="AI 改写、标题/标签生成、系统打分每次各消耗 1 次；失败会由后端自动退回。"
+              message={`积分余额：${creditsRemaining ?? "加载中"} 积分`}
+              description="AI 改写、标题/标签生成、系统打分每次各消耗 2 积分；失败会由后端自动退回。"
             />
             <Tabs
               defaultActiveKey="score"
@@ -787,8 +785,8 @@ export function XhsDraftsPage() {
                     title={<Space><TrophyOutlined />系统打分</Space>}
                     loading={isLoadingDraftAiScore}
                     extra={(
-                      <Button size="small" type="primary" loading={isScoringDraft} disabled={!selectedDraft || draftScoreRemaining === 0} onClick={() => void handleScoreDraft()}>
-                        保存并打分（消耗 1 次）
+                      <Button size="small" type="primary" loading={isScoringDraft} disabled={!selectedDraft || (creditsRemaining !== null && creditsRemaining < 2)} onClick={() => void handleScoreDraft()}>
+                        保存并打分（消耗 2 积分）
                       </Button>
                     )}
                   >
@@ -832,11 +830,11 @@ export function XhsDraftsPage() {
                     </div>
 
                     <Space wrap>
-                      <Button onClick={() => void handleRewrite()} loading={isRewriting} disabled={aiRewriteRemaining === 0} icon={<ReloadOutlined />}>
-                        {activeRewriteTemplate.buttonLabel}（消耗 1 次）
+                      <Button onClick={() => void handleRewrite()} loading={isRewriting} disabled={creditsRemaining !== null && creditsRemaining < 2} icon={<ReloadOutlined />}>
+                        {activeRewriteTemplate.buttonLabel}（消耗 2 积分）
                       </Button>
-                      <Button onClick={() => void handleGenerateTitles()} disabled={textActionRemaining === 0}>生成标题（消耗 1 次）</Button>
-                      <Button onClick={() => void handleGenerateTags()} disabled={textActionRemaining === 0}>生成标签（消耗 1 次）</Button>
+                      <Button onClick={() => void handleGenerateTitles()} disabled={creditsRemaining !== null && creditsRemaining < 2}>生成标题（消耗 2 积分）</Button>
+                      <Button onClick={() => void handleGenerateTags()} disabled={creditsRemaining !== null && creditsRemaining < 2}>生成标签（消耗 2 积分）</Button>
                     </Space>
 
                     {titleOptions.length > 0 ? (

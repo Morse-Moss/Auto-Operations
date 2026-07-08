@@ -10,21 +10,60 @@ from sqlalchemy.orm import Session
 
 from backend.app.models import BetaCreditAccount, Tenant, TenantMember, UsageLedger
 
+CREDITS_BUCKET = "credits"
+
 BETA_DEFAULT_BUCKETS: dict[str, int] = {
-    "image_generation": 20,
-    "ai_rewrite": 20,
-    "text_action": 30,
-    "draft_score": 20,
-    "analysis_report": 5,
+    CREDITS_BUCKET: 100,
+}
+
+CREDIT_COSTS: dict[str, int] = {
+    "note_search": 2,
+    "ai_text": 2,
+    "image_generation": 5,
+    "analysis_report": 10,
 }
 
 BUCKET_LABELS: dict[str, str] = {
+    CREDITS_BUCKET: "积分",
     "image_generation": "图片生成",
     "ai_rewrite": "AI 改写",
     "text_action": "文本 AI",
     "draft_score": "草稿评分",
     "analysis_report": "分析报告",
 }
+
+
+FEATURE_CREDIT_ACTIONS: dict[str, str] = {
+    "ai.rewrite_note": "ai_text",
+    "ai.generate_note": "ai_text",
+    "ai.generate_title": "ai_text",
+    "ai.generate_tags": "ai_text",
+    "ai.polish_text": "ai_text",
+    "ai.describe_image": "ai_text",
+    "draft.ai_score": "ai_text",
+    "ai.image_generate_cover": "image_generation",
+    "ai.image_generate": "image_generation",
+    "ai.image_generate_async": "image_generation",
+    "analysis.report_create": "analysis_report",
+    "analysis.report_rerun": "analysis_report",
+    "xhs.data_acquisition.note_search": "note_search",
+}
+
+
+def credit_cost(action_key: str) -> int:
+    if action_key not in CREDIT_COSTS:
+        raise ValueError(f"Unknown credit action: {action_key}")
+    return CREDIT_COSTS[action_key]
+
+
+def credit_action_for_feature(feature_key: str) -> str:
+    if feature_key not in FEATURE_CREDIT_ACTIONS:
+        raise ValueError(f"Unknown credit feature: {feature_key}")
+    return FEATURE_CREDIT_ACTIONS[feature_key]
+
+
+def credit_cost_for_feature(feature_key: str) -> int:
+    return credit_cost(credit_action_for_feature(feature_key))
 
 
 @dataclass(frozen=True)
@@ -44,9 +83,10 @@ class UsageBucketBalance:
 class UsageQuotaInsufficientError(HTTPException):
     def __init__(self, *, feature_key: str, bucket: str, required: int, remaining: int) -> None:
         label = BUCKET_LABELS.get(bucket, bucket)
+        unit = "积分" if bucket == CREDITS_BUCKET else "次"
         payload = {
             "code": "usage_quota_insufficient",
-            "message": f"{label}额度不足，本次需要 {required} 次，当前剩余 {remaining} 次。",
+            "message": f"{label}不足，本次需要 {required} {unit}，当前剩余 {remaining} {unit}。",
             "feature_key": feature_key,
             "bucket": bucket,
             "required": required,
@@ -124,7 +164,12 @@ class UsageQuotaService:
 
     def get_balance(self, tenant_id: int) -> dict[str, UsageBucketBalance]:
         _ensure_beta_credit_accounts(self.db, tenant_id)
-        accounts = self.db.scalars(select(BetaCreditAccount).where(BetaCreditAccount.tenant_id == tenant_id)).all()
+        accounts = self.db.scalars(
+            select(BetaCreditAccount).where(
+                BetaCreditAccount.tenant_id == tenant_id,
+                BetaCreditAccount.bucket.in_(BETA_DEFAULT_BUCKETS.keys()),
+            )
+        ).all()
         return {
             account.bucket: UsageBucketBalance(
                 bucket=account.bucket,

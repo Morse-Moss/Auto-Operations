@@ -200,8 +200,7 @@ export function XhsImageStudioPage() {
   const [isSendingPublish, setIsSendingPublish] = useState(false);
   const [isAttachingDraftAsset, setIsAttachingDraftAsset] = useState(false);
   const usage = useUsageBalance();
-  const imageGenerationRemaining = usage.bucketRemaining("image_generation");
-  const textActionRemaining = usage.bucketRemaining("text_action");
+  const creditsRemaining = usage.bucketRemaining("credits");
 
   useEffect(() => {
     draftContextRef.current = draftContext;
@@ -667,8 +666,8 @@ export function XhsImageStudioPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message={`图片生成额度：${imageGenerationRemaining ?? "加载中"} 次；图片描述走文本 AI 额度：${textActionRemaining ?? "加载中"} 次`}
-        description="生成/改图会先预占 1 次图片额度，任务失败会自动退回；成功后页面会刷新余额。"
+        message={`积分余额：${creditsRemaining ?? "加载中"} 积分`}
+        description="生成/改图每次消耗 5 积分，图片描述消耗 2 积分；任务失败会自动退回，成功后页面会刷新余额。"
       />
 
       {error && (
@@ -967,9 +966,9 @@ export function XhsImageStudioPage() {
                     icon={<RobotOutlined />}
                     onClick={handleGenerate}
                     loading={isGenerating}
-                    disabled={imageGenerationRemaining === 0}
+                    disabled={creditsRemaining !== null && creditsRemaining < 5}
                   >
-                    {draftContext && !isWechatOfficialDraftContext(draftContext) ? <>生成 AI 改图</> : "生成"}（消耗 1 次）
+                    {draftContext && !isWechatOfficialDraftContext(draftContext) ? <>生成 AI 改图</> : "生成"}（消耗 5 积分）
                   </Button>
                 </Space>
               </Col>
@@ -1087,11 +1086,11 @@ export function XhsImageStudioPage() {
             <Button
               onClick={handleDescribeImage}
               loading={isDescribing}
-              disabled={textActionRemaining === 0}
+              disabled={creditsRemaining !== null && creditsRemaining < 2}
               block
               style={{ marginBottom: 12 }}
             >
-              生成描述（消耗 1 次）
+              生成描述（消耗 2 积分）
             </Button>
             {description && (
               <Paragraph

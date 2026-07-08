@@ -1223,7 +1223,7 @@ export type AnalyticsReportResponse = {
   };
 };
 
-export type UsageBucketKey = "image_generation" | "ai_rewrite" | "text_action" | "draft_score" | "analysis_report" | string;
+export type UsageBucketKey = "credits" | string;
 
 export type UsageBucketBalance = {
   total: number;

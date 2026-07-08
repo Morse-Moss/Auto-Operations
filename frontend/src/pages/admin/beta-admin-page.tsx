@@ -31,11 +31,7 @@ import type { AdminInviteCode, AdminTenant, AdminUser } from "../../types";
 const { Title, Text } = Typography;
 
 const bucketOptions = [
-  { label: "图片生成", value: "image_generation" },
-  { label: "AI 改写", value: "ai_rewrite" },
-  { label: "文本 AI", value: "text_action" },
-  { label: "草稿评分", value: "draft_score" },
-  { label: "分析报告", value: "analysis_report" },
+  { label: "积分", value: "credits" },
 ];
 
 function statusTag(status: string) {
@@ -101,7 +97,7 @@ export function BetaAdminPage() {
       total: values.total,
       reason: values.reason || "",
     });
-    message.success("额度已调整");
+    message.success("积分已调整");
     setCreditTenant(null);
     creditForm.resetFields();
     await loadAll();
@@ -145,7 +141,7 @@ export function BetaAdminPage() {
                     width: 240,
                     render: (_, tenant) => (
                       <Space>
-                        <Button size="small" onClick={() => setCreditTenant(tenant)}>额度</Button>
+                        <Button size="small" onClick={() => setCreditTenant(tenant)}>积分</Button>
                         <Popconfirm title="确认切换租户状态？" onConfirm={() => void toggleTenant(tenant)}>
                           <Button size="small" danger={tenant.status !== "suspended"}>
                             {tenant.status === "suspended" ? "解冻" : "冻结"}
@@ -224,17 +220,17 @@ export function BetaAdminPage() {
       />
 
       <Modal
-        title={creditTenant ? `调整额度：${creditTenant.name}` : "调整额度"}
+        title={creditTenant ? `调整积分：${creditTenant.name}` : "调整积分"}
         open={Boolean(creditTenant)}
         onCancel={() => setCreditTenant(null)}
         onOk={() => void submitCreditAdjustment()}
         destroyOnHidden
       >
         <Form form={creditForm} layout="vertical">
-          <Form.Item name="bucket" label="额度桶" rules={[{ required: true }]}>
+          <Form.Item name="bucket" label="积分池" rules={[{ required: true }]}>
             <Select options={bucketOptions} />
           </Form.Item>
-          <Form.Item name="total" label="总额度" rules={[{ required: true }]}>
+          <Form.Item name="total" label="总积分" rules={[{ required: true }]}>
             <InputNumber min={0} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item name="reason" label="调整原因">

@@ -21,19 +21,16 @@ from backend.app.models import (
     User,
 )
 from backend.app.services import huitun_live_note_source
-from backend.app.services.platform_data_account_service import (
-    get_platform_data_account_cookie_text,
-    record_note_search_usage,
-)
-from backend.app.services.usage_quota_service import get_or_create_default_tenant_context
+from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, get_or_create_default_tenant_context
 
 ACQUISITION_SOURCE = "huitun"
 SOURCE_MODE = "live_account"
 SUPPORTED_ACQUISITION_TYPE = "note_search"
+NOTE_SEARCH_FEATURE_KEY = "xhs.data_acquisition.note_search"
 NOTE_SEARCH_DEFAULT_LIMIT = 20
 NOTE_SEARCH_MAX_LIMIT = 100
 FAILURE_USER_MESSAGE = "本次数据获取失败，任务已停止。"
-
 NETWORK_FAILURE_MESSAGE = "笔记数据网络请求失败，任务已停止，请稍后低频重试。"
 STRUCTURE_CHANGED_MESSAGE = "笔记数据结构变化，任务已停止，请联系管理员检查采集配置。"
 
@@ -205,6 +202,20 @@ def create_note_search_run(
         "data_acquisition_run_id": run.id,
         "data_acquisition_url": f"/platforms/xhs/crawler?run_id={run.id}",
     }
+    tenant_context = get_or_create_default_tenant_context(db, current_user.id, commit=False)
+    usage_reservation = UsageQuotaService(db).reserve(
+        tenant_id=tenant_context.tenant.id,
+        user_id=current_user.id,
+        feature_key=NOTE_SEARCH_FEATURE_KEY,
+        bucket=CREDITS_BUCKET,
+        amount=credit_cost_for_feature(NOTE_SEARCH_FEATURE_KEY),
+        idempotency_key=f"data-acquisition-run:{run.id}",
+        request_summary={"keyword": keyword, "limit": effective_limit},
+        task_id=task.id,
+        resource_type="data_acquisition_run",
+        resource_id=run.id,
+        provider=ACQUISITION_SOURCE,
+    )
 
     candidates: list[DataAcquisitionCandidate] = []
     try:
@@ -224,18 +235,13 @@ def create_note_search_run(
         task.finished_at = shanghai_now()
         run.status = "completed"
         run.finished_at = task.finished_at
-        tenant_context = get_or_create_default_tenant_context(db, current_user.id, commit=False)
-        record_note_search_usage(
-            db,
-            tenant_id=tenant_context.tenant.id,
-            user_id=current_user.id,
-            task_id=task.id,
-            run_id=run.id,
-            keyword=keyword,
-            limit=effective_limit,
-        )
+        UsageQuotaService(db).commit(usage_reservation.id)
         db.commit()
     except Exception as exc:
+        try:
+            UsageQuotaService(db).refund(usage_reservation.id, failure_reason=str(exc))
+        except ValueError:
+            pass
         task.status = "failed"
         task.progress = 100
         task.error_type = "data_acquisition_failed"

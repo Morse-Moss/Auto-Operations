@@ -14,7 +14,7 @@ from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.user import User
 from backend.app.services.ai_service import TextAiClient
 from backend.app.services.beta_concurrency_service import acquire_analysis_report_lease
-from backend.app.services.usage_quota_service import UsageQuotaService
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
 
 router = APIRouter(prefix="/xhs/analytics/analysis", tags=["xhs-analysis-center"])
@@ -106,8 +106,8 @@ def _reserve_analysis_report_usage(
         tenant_id=context.tenant.id,
         user_id=current_user.id,
         feature_key=feature_key,
-        bucket="analysis_report",
-        amount=1,
+        bucket=CREDITS_BUCKET,
+        amount=credit_cost_for_feature(feature_key),
         idempotency_key=_quota_idempotency_key(request, f"{feature_key}:{current_user.id}:{payload.keyword_group_id}:{payload.title}"),
         request_summary=_analysis_request_summary(payload),
         model_config_id=model_config.id if model_config is not None else None,

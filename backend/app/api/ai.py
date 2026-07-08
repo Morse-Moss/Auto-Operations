@@ -29,7 +29,7 @@ from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 from backend.app.services.asset_storage_policy import asset_owner_prefix
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLeaseGuard, BetaConcurrencyService, acquire_image_generation_leases
-from backend.app.services.usage_quota_service import UsageQuotaService
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -433,8 +433,6 @@ def _reserve_usage(
     db: Session,
     current_user: User,
     feature_key: str,
-    bucket: str,
-    amount: int,
     idempotency_key: str,
     request_summary: dict[str, Any] | None = None,
     model_config_id: int | None = None,
@@ -445,8 +443,8 @@ def _reserve_usage(
         tenant_id=context.tenant.id,
         user_id=current_user.id,
         feature_key=feature_key,
-        bucket=bucket,
-        amount=amount,
+        bucket=CREDITS_BUCKET,
+        amount=credit_cost_for_feature(feature_key),
         idempotency_key=idempotency_key,
         request_summary=request_summary,
         model_config_id=model_config_id,
@@ -646,8 +644,6 @@ def rewrite_note(
         db=db,
         current_user=current_user,
         feature_key="ai.rewrite_note",
-        bucket="ai_rewrite",
-        amount=1,
         idempotency_key=_quota_idempotency_key(request, f"ai.rewrite_note:{current_user.id}:{draft.id}:{payload.instruction}"),
         request_summary={"draft_id": draft.id, "instruction_length": len(payload.instruction), "body_length": len(draft.body)},
         model_config_id=model_config.id,
@@ -704,8 +700,6 @@ def generate_note(
         db=db,
         current_user=current_user,
         feature_key="ai.generate_note",
-        bucket="text_action",
-        amount=1,
         idempotency_key=_quota_idempotency_key(request, f"ai.generate_note:{current_user.id}:{payload.platform}:{payload.topic}:{payload.instruction}"),
         request_summary={
             "topic_length": len(payload.topic),
@@ -757,8 +751,6 @@ def generate_title(
         db=db,
         current_user=current_user,
         feature_key="ai.generate_title",
-        bucket="text_action",
-        amount=1,
         idempotency_key=_quota_idempotency_key(request, f"ai.generate_title:{current_user.id}:{payload.title}:{payload.body}:{payload.count}"),
         request_summary={"title_length": len(payload.title), "body_length": len(payload.body), "count": payload.count},
         model_config_id=model_config.id,
@@ -797,8 +789,6 @@ def generate_tags(
         db=db,
         current_user=current_user,
         feature_key="ai.generate_tags",
-        bucket="text_action",
-        amount=1,
         idempotency_key=_quota_idempotency_key(request, f"ai.generate_tags:{current_user.id}:{payload.title}:{payload.body}:{payload.count}"),
         request_summary={"title_length": len(payload.title), "body_length": len(payload.body), "count": payload.count},
         model_config_id=model_config.id,
@@ -837,8 +827,6 @@ def polish_text(
         db=db,
         current_user=current_user,
         feature_key="ai.polish_text",
-        bucket="ai_rewrite",
-        amount=1,
         idempotency_key=_quota_idempotency_key(request, f"ai.polish_text:{current_user.id}:{payload.text}:{payload.instruction}"),
         request_summary={"text_length": len(payload.text), "instruction_length": len(payload.instruction)},
         model_config_id=model_config.id,
@@ -920,8 +908,6 @@ def generate_cover(
             db=db,
             current_user=current_user,
             feature_key=feature_key,
-            bucket="image_generation",
-            amount=1,
             idempotency_key=idempotency_key,
             request_summary={"prompt_length": len(payload.prompt), "size": payload.size, "style": payload.style, "draft_id": payload.draft_id},
             model_config_id=model_config.id,
@@ -1000,8 +986,6 @@ def generate_image(
             db=db,
             current_user=current_user,
             feature_key=feature_key,
-            bucket="image_generation",
-            amount=1,
             idempotency_key=idempotency_key,
             request_summary={
                 "prompt_length": len(payload.prompt),
@@ -1112,8 +1096,6 @@ def generate_image_async(
             db=db,
             current_user=current_user,
             feature_key=feature_key,
-            bucket="image_generation",
-            amount=1,
             idempotency_key=idempotency_key,
             request_summary={
                 "prompt_length": len(payload.prompt),
@@ -1143,7 +1125,7 @@ def generate_image_async(
                 "aspect_ratio": payload.aspect_ratio,
                 "usage_reservation_id": usage_reservation.id,
                 "feature_key": feature_key,
-                "usage_bucket": "image_generation",
+                "usage_bucket": CREDITS_BUCKET,
                 "idempotency_key": usage_reservation.idempotency_key,
                 "concurrency_lease_ids": concurrency_guard.lease_ids,
             },
@@ -1173,8 +1155,6 @@ def describe_image(
         db=db,
         current_user=current_user,
         feature_key="ai.describe_image",
-        bucket="text_action",
-        amount=1,
         idempotency_key=_quota_idempotency_key(request, f"ai.describe_image:{current_user.id}:{payload.image_url}:{payload.instruction}"),
         request_summary={"image_url_length": len(payload.image_url), "instruction_length": len(payload.instruction)},
         model_config_id=model_config.id,

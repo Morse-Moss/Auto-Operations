@@ -195,7 +195,7 @@ class TrapApiJsonAiClient:
 
     def complete_json_prompt(self, **kwargs):
         self.called = True
-        raise AssertionError("provider must not be called when analysis_report quota is exhausted")
+        raise AssertionError("provider must not be called when credits are exhausted")
 
 
 def _create_note_with_comments(
@@ -249,7 +249,7 @@ def test_health_api_returns_can_generate_false_for_insufficient_data(client: Tes
     assert response.status_code == 200
     assert response.json()["can_generate"] is False
 
-    ledger_count = _with_api_db(lambda db: db.scalar(select(func.count(UsageLedger.id)).where(UsageLedger.bucket == "analysis_report")))
+    ledger_count = _with_api_db(lambda db: db.scalar(select(func.count(UsageLedger.id)).where(UsageLedger.bucket == "credits")))
     assert ledger_count == 0
 
 
@@ -308,19 +308,19 @@ def test_create_report_api_below_minimum_does_not_call_model(client: TestClient)
 
     balance = client.get("/api/usage/balance", headers={"Authorization": f"Bearer {token}"})
     assert balance.status_code == 200
-    assert balance.json()["buckets"]["analysis_report"]["remaining"] == 5
+    assert balance.json()["buckets"]["credits"]["remaining"] == 100
     operations = _with_api_db(
         lambda db: [
             row.operation
             for row in db.scalars(
-                select(UsageLedger).where(UsageLedger.bucket == "analysis_report").order_by(UsageLedger.id)
+                select(UsageLedger).where(UsageLedger.bucket == "credits").order_by(UsageLedger.id)
             ).all()
         ]
     )
     assert operations == ["reserve", "refund"]
 
 
-def test_create_report_api_completed_commits_analysis_report_quota(client: TestClient):
+def test_create_report_api_completed_commits_credits(client: TestClient):
     from backend.app.api.platforms.xhs import analysis_center
 
     token = _register_and_get_access_token(client, username="analysis-success")
@@ -343,10 +343,10 @@ def test_create_report_api_completed_commits_analysis_report_quota(client: TestC
 
     balance = client.get("/api/usage/balance", headers={"Authorization": f"Bearer {token}"})
     assert balance.status_code == 200
-    assert balance.json()["buckets"]["analysis_report"]["remaining"] == 4
+    assert balance.json()["buckets"]["credits"]["remaining"] == 90
     rows = _with_api_db(
         lambda db: db.scalars(
-            select(UsageLedger).where(UsageLedger.bucket == "analysis_report").order_by(UsageLedger.id)
+            select(UsageLedger).where(UsageLedger.bucket == "credits").order_by(UsageLedger.id)
         ).all()
     )
     assert [(row.feature_key, row.operation, row.model_config_id) for row in rows] == [
@@ -361,7 +361,7 @@ def test_create_report_api_completed_commits_analysis_report_quota(client: TestC
     }
 
 
-def test_create_report_api_quota_shortage_returns_402_without_calling_provider(client: TestClient):
+def test_create_report_api_credit_shortage_returns_402_without_calling_provider(client: TestClient):
     from backend.app.api.platforms.xhs import analysis_center
 
     token = _register_and_get_access_token(client, username="analysis-limit")
@@ -373,7 +373,7 @@ def test_create_report_api_quota_shortage_returns_402_without_calling_provider(c
         user = db.scalar(select(User).where(User.username == "analysis-limit"))
         assert user is not None
         context = get_or_create_default_tenant_context(db, user.id)
-        UsageQuotaService(db).adjust_bucket(context.tenant.id, "analysis_report", total=0, reason="test exhausts analysis report quota")
+        UsageQuotaService(db).adjust_bucket(context.tenant.id, "credits", total=0, reason="test exhausts analysis report credits")
 
     _with_api_db(exhaust_quota)
     app.dependency_overrides[analysis_center.get_text_ai_client] = lambda: trap_client
@@ -387,11 +387,11 @@ def test_create_report_api_quota_shortage_returns_402_without_calling_provider(c
         app.dependency_overrides.pop(analysis_center.get_text_ai_client, None)
 
     assert response.status_code == 402
-    assert response.json()["bucket"] == "analysis_report"
+    assert response.json()["bucket"] == "credits"
     assert trap_client.called is False
 
 
-def test_rerun_report_api_commits_analysis_report_quota(client: TestClient):
+def test_rerun_report_api_commits_credits(client: TestClient):
     from backend.app.api.platforms.xhs import analysis_center
 
     token = _register_and_get_access_token(client, username="analysis-rerun")
@@ -436,12 +436,12 @@ def test_rerun_report_api_commits_analysis_report_quota(client: TestClient):
 
     balance = client.get("/api/usage/balance", headers={"Authorization": f"Bearer {token}"})
     assert balance.status_code == 200
-    assert balance.json()["buckets"]["analysis_report"]["remaining"] == 4
+    assert balance.json()["buckets"]["credits"]["remaining"] == 90
     operations = _with_api_db(
         lambda db: [
             (row.feature_key, row.operation)
             for row in db.scalars(
-                select(UsageLedger).where(UsageLedger.bucket == "analysis_report").order_by(UsageLedger.id)
+                select(UsageLedger).where(UsageLedger.bucket == "credits").order_by(UsageLedger.id)
             ).all()
         ]
     )

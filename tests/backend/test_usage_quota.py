@@ -82,11 +82,30 @@ def test_register_creates_default_tenant_membership_and_beta_credit_balance(tmp_
         balance = balance_response.json()
         assert balance["tenant"]["name"] == "tenant-beta-owner 的工作空间"
         assert balance["membership"]["role"] == "owner"
-        assert balance["buckets"]["image_generation"]["remaining"] == 20
-        assert balance["buckets"]["ai_rewrite"]["remaining"] == 20
-        assert balance["buckets"]["text_action"]["remaining"] == 30
-        assert balance["buckets"]["draft_score"]["remaining"] == 20
-        assert balance["buckets"]["analysis_report"]["remaining"] == 5
+        assert balance["buckets"]["credits"]["remaining"] == 100
+        assert set(balance["buckets"]) == {"credits"}
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_usage_balance_hides_legacy_feature_buckets(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        registered = _register("legacy-bucket-owner")
+        models, service_module = _usage_contract()
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
+            db.add(models.BetaCreditAccount(tenant_id=context.tenant.id, bucket="image_generation", total=20, remaining=20, status="active"))
+            db.commit()
+        finally:
+            db.close()
+
+        balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
+
+        assert balance_response.status_code == 200
+        assert set(balance_response.json()["buckets"]) == {"credits"}
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 100
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 
@@ -105,29 +124,29 @@ def test_usage_quota_reserve_commit_refund_and_idempotency_are_ledgered(tmp_path
                 tenant_id=context.tenant.id,
                 user_id=registered["user"]["id"],
                 feature_key="ai.rewrite_note",
-                bucket="ai_rewrite",
-                amount=1,
+                bucket="credits",
+                amount=2,
                 idempotency_key="rewrite-once",
                 request_summary={"body_length": 128},
             )
             assert reservation.status == "reserved"
-            assert reservation.balance_after == 19
+            assert reservation.balance_after == 98
 
             duplicate_reservation = service.reserve(
                 tenant_id=context.tenant.id,
                 user_id=registered["user"]["id"],
                 feature_key="ai.rewrite_note",
-                bucket="ai_rewrite",
-                amount=1,
+                bucket="credits",
+                amount=2,
                 idempotency_key="rewrite-once",
                 request_summary={"body_length": 128},
             )
             assert duplicate_reservation.id == reservation.id
-            assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 19
+            assert service.get_balance(context.tenant.id)["credits"].remaining == 98
 
             committed = service.commit(reservation.id)
             assert committed.status == "committed"
-            assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 19
+            assert service.get_balance(context.tenant.id)["credits"].remaining == 98
 
             try:
                 service.refund(reservation.id, failure_reason="provider failed after reservation")
@@ -135,7 +154,7 @@ def test_usage_quota_reserve_commit_refund_and_idempotency_are_ledgered(tmp_path
                 assert "committed" in str(exc)
             else:  # pragma: no cover - the assertion above is the contract.
                 raise AssertionError("committed reservations must not be refunded")
-            assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 19
+            assert service.get_balance(context.tenant.id)["credits"].remaining == 98
 
             ledger_rows = db.scalars(
                 select(models.UsageLedger)
@@ -159,25 +178,25 @@ def test_usage_quota_insufficient_balance_raises_structured_error(tmp_path):
         try:
             context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
             service = service_module.UsageQuotaService(db)
-            service.adjust_bucket(context.tenant.id, "image_generation", total=0, reason="test exhausts image quota")
+            service.adjust_bucket(context.tenant.id, "credits", total=0, reason="test exhausts credits")
 
             try:
                 service.reserve(
                     tenant_id=context.tenant.id,
                     user_id=registered["user"]["id"],
                     feature_key="ai.image_generate",
-                    bucket="image_generation",
-                    amount=1,
+                    bucket="credits",
+                    amount=5,
                     idempotency_key="image-over-limit",
                 )
             except service_module.UsageQuotaInsufficientError as exc:
                 assert exc.status_code == 402
                 assert exc.payload == {
                     "code": "usage_quota_insufficient",
-                    "message": "图片生成额度不足，本次需要 1 次，当前剩余 0 次。",
+                    "message": "积分不足，本次需要 5 积分，当前剩余 0 积分。",
                     "feature_key": "ai.image_generate",
-                    "bucket": "image_generation",
-                    "required": 1,
+                    "bucket": "credits",
+                    "required": 5,
                     "remaining": 0,
                 }
             else:  # pragma: no cover - the assertion above is the contract.
@@ -188,7 +207,7 @@ def test_usage_quota_insufficient_balance_raises_structured_error(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_ai_rewrite_quota_shortage_returns_402_without_calling_provider(tmp_path):
+def test_ai_rewrite_credit_shortage_returns_402_without_calling_provider(tmp_path):
     from backend.app.api.ai import get_text_ai_client
 
     class TrapTextAiClient:
@@ -196,7 +215,7 @@ def test_ai_rewrite_quota_shortage_returns_402_without_calling_provider(tmp_path
 
         def rewrite_note(self, **kwargs):
             self.called = True
-            raise AssertionError("provider must not be called when ai_rewrite quota is exhausted")
+            raise AssertionError("provider must not be called when credits are exhausted")
 
     db_dependency = _override_database(tmp_path)
     trap_client = TrapTextAiClient()
@@ -208,9 +227,9 @@ def test_ai_rewrite_quota_shortage_returns_402_without_calling_provider(tmp_path
             context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
             service_module.UsageQuotaService(db).adjust_bucket(
                 context.tenant.id,
-                "ai_rewrite",
+                "credits",
                 total=0,
-                reason="test exhausts rewrite quota",
+                reason="test exhausts credits",
             )
             draft = AiDraft(user_id=registered["user"]["id"], platform="xhs", title="原标题", body="原正文")
             db.add(draft)
@@ -240,14 +259,15 @@ def test_ai_rewrite_quota_shortage_returns_402_without_calling_provider(tmp_path
 
         assert response.status_code == 402
         assert response.json()["code"] == "usage_quota_insufficient"
-        assert response.json()["bucket"] == "ai_rewrite"
+        assert response.json()["bucket"] == "credits"
+        assert response.json()["required"] == 2
         assert trap_client.called is False
     finally:
         app.dependency_overrides.pop(get_text_ai_client, None)
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_text_generation_endpoints_reserve_and_commit_text_action_quota(tmp_path):
+def test_text_generation_endpoints_reserve_and_commit_credits(tmp_path):
     from backend.app.api.ai import get_text_ai_client
 
     class FakeTextClient:
@@ -305,19 +325,19 @@ def test_text_generation_endpoints_reserve_and_commit_text_action_quota(tmp_path
 
         balance_response = client.get("/api/usage/balance", headers=headers)
         assert balance_response.status_code == 200
-        assert balance_response.json()["buckets"]["text_action"]["remaining"] == 27
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 94
 
         db = next(app.dependency_overrides[get_db]())
         try:
             rows = db.scalars(select(UsageLedger).where(UsageLedger.tenant_id == tenant_id).order_by(UsageLedger.id)).all()
-            text_ops = [(row.feature_key, row.operation, row.bucket) for row in rows if row.bucket == "text_action"]
+            text_ops = [(row.feature_key, row.operation, row.bucket, row.amount) for row in rows if row.bucket == "credits"]
             assert text_ops == [
-                ("ai.generate_note", "reserve", "text_action"),
-                ("ai.generate_note.commit", "commit", "text_action"),
-                ("ai.generate_title", "reserve", "text_action"),
-                ("ai.generate_title.commit", "commit", "text_action"),
-                ("ai.generate_tags", "reserve", "text_action"),
-                ("ai.generate_tags.commit", "commit", "text_action"),
+                ("ai.generate_note", "reserve", "credits", 2),
+                ("ai.generate_note.commit", "commit", "credits", 2),
+                ("ai.generate_title", "reserve", "credits", 2),
+                ("ai.generate_title.commit", "commit", "credits", 2),
+                ("ai.generate_tags", "reserve", "credits", 2),
+                ("ai.generate_tags.commit", "commit", "credits", 2),
             ]
         finally:
             db.close()
@@ -326,7 +346,7 @@ def test_text_generation_endpoints_reserve_and_commit_text_action_quota(tmp_path
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_polish_provider_failure_refunds_ai_rewrite_quota(tmp_path):
+def test_polish_provider_failure_refunds_credits(tmp_path):
     from backend.app.api.ai import get_text_ai_client
 
     class FailingPolishClient:
@@ -364,13 +384,13 @@ def test_polish_provider_failure_refunds_ai_rewrite_quota(tmp_path):
         assert response.status_code == 502
         balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
         assert balance_response.status_code == 200
-        assert balance_response.json()["buckets"]["ai_rewrite"]["remaining"] == 20
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 100
 
         db = next(app.dependency_overrides[get_db]())
         try:
             rows = db.scalars(
                 select(UsageLedger)
-                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "ai_rewrite")
+                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits")
                 .order_by(UsageLedger.id)
             ).all()
             assert [(row.feature_key, row.operation) for row in rows] == [
@@ -384,7 +404,7 @@ def test_polish_provider_failure_refunds_ai_rewrite_quota(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_generate_cover_quota_shortage_returns_402_without_calling_provider(tmp_path):
+def test_generate_cover_credit_shortage_returns_402_without_calling_provider(tmp_path):
     from backend.app.api.ai import get_image_ai_client
 
     class TrapImageClient:
@@ -392,7 +412,7 @@ def test_generate_cover_quota_shortage_returns_402_without_calling_provider(tmp_
 
         def generate_cover(self, **kwargs):
             self.called = True
-            raise AssertionError("provider must not be called when image_generation quota is exhausted")
+            raise AssertionError("provider must not be called when credits are exhausted")
 
     db_dependency = _override_database(tmp_path)
     trap_client = TrapImageClient()
@@ -404,9 +424,9 @@ def test_generate_cover_quota_shortage_returns_402_without_calling_provider(tmp_
             context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
             service_module.UsageQuotaService(db).adjust_bucket(
                 context.tenant.id,
-                "image_generation",
+                "credits",
                 total=0,
-                reason="test exhausts image quota",
+                reason="test exhausts credits",
             )
             db.add(
                 ModelConfig(
@@ -433,14 +453,15 @@ def test_generate_cover_quota_shortage_returns_402_without_calling_provider(tmp_
 
         assert response.status_code == 402
         assert response.json()["code"] == "usage_quota_insufficient"
-        assert response.json()["bucket"] == "image_generation"
+        assert response.json()["bucket"] == "credits"
+        assert response.json()["required"] == 5
         assert trap_client.called is False
     finally:
         app.dependency_overrides.pop(get_image_ai_client, None)
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_generate_image_success_commits_image_generation_quota(tmp_path):
+def test_generate_image_success_commits_credits(tmp_path):
     from backend.app.api.ai import get_image_ai_client
 
     class FakeImageClient:
@@ -482,18 +503,18 @@ def test_generate_image_success_commits_image_generation_quota(tmp_path):
         assert response.json()["url"] == "https://example.test/generated.png"
         balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
         assert balance_response.status_code == 200
-        assert balance_response.json()["buckets"]["image_generation"]["remaining"] == 19
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 95
 
         db = next(app.dependency_overrides[get_db]())
         try:
             rows = db.scalars(
                 select(UsageLedger)
-                .where(UsageLedger.tenant_id == tenant_id, UsageLedger.bucket == "image_generation")
+                .where(UsageLedger.tenant_id == tenant_id, UsageLedger.bucket == "credits")
                 .order_by(UsageLedger.id)
             ).all()
-            assert [(row.feature_key, row.operation) for row in rows] == [
-                ("ai.image_generate", "reserve"),
-                ("ai.image_generate.commit", "commit"),
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("ai.image_generate", "reserve", 5),
+                ("ai.image_generate.commit", "commit", 5),
             ]
         finally:
             db.close()
@@ -502,7 +523,7 @@ def test_generate_image_success_commits_image_generation_quota(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_describe_image_failure_refunds_text_action_quota(tmp_path):
+def test_describe_image_failure_refunds_credits(tmp_path):
     from backend.app.api.ai import get_image_ai_client
 
     class FailingDescribeClient:
@@ -540,13 +561,13 @@ def test_describe_image_failure_refunds_text_action_quota(tmp_path):
         assert response.status_code == 502
         balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
         assert balance_response.status_code == 200
-        assert balance_response.json()["buckets"]["text_action"]["remaining"] == 30
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 100
 
         db = next(app.dependency_overrides[get_db]())
         try:
             rows = db.scalars(
                 select(UsageLedger)
-                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "text_action")
+                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits")
                 .order_by(UsageLedger.id)
             ).all()
             assert [(row.feature_key, row.operation) for row in rows] == [
@@ -560,7 +581,7 @@ def test_describe_image_failure_refunds_text_action_quota(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_async_image_create_reserves_quota_and_worker_success_commits(tmp_path, monkeypatch):
+def test_async_image_create_reserves_credits_and_worker_success_commits(tmp_path, monkeypatch):
     from backend.app.api import ai as ai_module
     from backend.app.api.ai import _run_async_image_generate_task, get_image_ai_client
 
@@ -609,15 +630,15 @@ def test_async_image_create_reserves_quota_and_worker_success_commits(tmp_path, 
             task_payload = task.payload or {}
             assert task_payload["usage_reservation_id"]
             assert task_payload["feature_key"] == "ai.image_generate_async"
-            assert task_payload["usage_bucket"] == "image_generation"
+            assert task_payload["usage_bucket"] == "credits"
             rows = db.scalars(
                 select(UsageLedger)
-                .where(UsageLedger.tenant_id == tenant_id, UsageLedger.bucket == "image_generation")
+                .where(UsageLedger.tenant_id == tenant_id, UsageLedger.bucket == "credits")
                 .order_by(UsageLedger.id)
             ).all()
-            assert [(row.feature_key, row.operation) for row in rows] == [
-                ("ai.image_generate_async", "reserve"),
-                ("ai.image_generate_async.commit", "commit"),
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("ai.image_generate_async", "reserve", 5),
+                ("ai.image_generate_async.commit", "commit", 5),
             ]
         finally:
             db.close()
@@ -666,7 +687,7 @@ def test_async_image_worker_failure_refunds_reserved_quota(tmp_path, monkeypatch
         assert response.status_code == 200
         balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
         assert balance_response.status_code == 200
-        assert balance_response.json()["buckets"]["image_generation"]["remaining"] == 20
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 100
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -674,7 +695,7 @@ def test_async_image_worker_failure_refunds_reserved_quota(tmp_path, monkeypatch
             assert task.status == "failed"
             rows = db.scalars(
                 select(UsageLedger)
-                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "image_generation")
+                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits")
                 .order_by(UsageLedger.id)
             ).all()
             assert [(row.feature_key, row.operation) for row in rows] == [
@@ -688,7 +709,7 @@ def test_async_image_worker_failure_refunds_reserved_quota(tmp_path, monkeypatch
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_async_image_quota_shortage_returns_402_without_creating_task(tmp_path):
+def test_async_image_credit_shortage_returns_402_without_creating_task(tmp_path):
     from backend.app.api.ai import get_image_ai_client
 
     class TrapImageClient:
@@ -696,7 +717,7 @@ def test_async_image_quota_shortage_returns_402_without_creating_task(tmp_path):
 
         def generate_image(self, **kwargs):
             self.called = True
-            raise AssertionError("provider must not be called when async quota is exhausted")
+            raise AssertionError("provider must not be called when async credits are exhausted")
 
     db_dependency = _override_database(tmp_path)
     trap_client = TrapImageClient()
@@ -706,7 +727,7 @@ def test_async_image_quota_shortage_returns_402_without_creating_task(tmp_path):
         db = next(app.dependency_overrides[get_db]())
         try:
             context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
-            service_module.UsageQuotaService(db).adjust_bucket(context.tenant.id, "image_generation", total=0, reason="test exhausts async image quota")
+            service_module.UsageQuotaService(db).adjust_bucket(context.tenant.id, "credits", total=0, reason="test exhausts async image credits")
             db.add(
                 ModelConfig(
                     user_id=registered["user"]["id"],
@@ -731,7 +752,7 @@ def test_async_image_quota_shortage_returns_402_without_creating_task(tmp_path):
         )
 
         assert response.status_code == 402
-        assert response.json()["bucket"] == "image_generation"
+        assert response.json()["bucket"] == "credits"
         assert trap_client.called is False
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -743,7 +764,7 @@ def test_async_image_quota_shortage_returns_402_without_creating_task(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_draft_ai_score_success_commits_draft_score_quota(tmp_path):
+def test_draft_ai_score_success_commits_credits(tmp_path):
     from backend.app.api.ai import get_text_ai_client
 
     class FakeDraftScoreClient:
@@ -752,7 +773,7 @@ def test_draft_ai_score_success_commits_draft_score_quota(tmp_path):
 
     db_dependency = _override_database(tmp_path)
     try:
-        registered = _register("draft-score-quota-owner")
+        registered = _register("draft-score-credit-owner")
         _, service_module = _usage_contract()
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -791,18 +812,18 @@ def test_draft_ai_score_success_commits_draft_score_quota(tmp_path):
         assert response.json()["overall_score"] == 88
         balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
         assert balance_response.status_code == 200
-        assert balance_response.json()["buckets"]["draft_score"]["remaining"] == 19
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 98
 
         db = next(app.dependency_overrides[get_db]())
         try:
             rows = db.scalars(
                 select(UsageLedger)
-                .where(UsageLedger.tenant_id == tenant_id, UsageLedger.bucket == "draft_score")
+                .where(UsageLedger.tenant_id == tenant_id, UsageLedger.bucket == "credits")
                 .order_by(UsageLedger.id)
             ).all()
-            assert [(row.feature_key, row.operation) for row in rows] == [
-                ("draft.ai_score", "reserve"),
-                ("draft.ai_score.commit", "commit"),
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("draft.ai_score", "reserve", 2),
+                ("draft.ai_score.commit", "commit", 2),
             ]
         finally:
             db.close()
@@ -937,7 +958,7 @@ def test_model_config_test_ignores_previous_day_attempts(tmp_path, monkeypatch):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_draft_ai_score_quota_shortage_returns_402_without_calling_provider(tmp_path):
+def test_draft_ai_score_credit_shortage_returns_402_without_calling_provider(tmp_path):
     from backend.app.api.ai import get_text_ai_client
 
     class TrapDraftScoreClient:
@@ -945,7 +966,7 @@ def test_draft_ai_score_quota_shortage_returns_402_without_calling_provider(tmp_
 
         def complete_json_prompt(self, **kwargs):
             self.called = True
-            raise AssertionError("provider must not be called when draft_score quota is exhausted")
+            raise AssertionError("provider must not be called when credits are exhausted")
 
     db_dependency = _override_database(tmp_path)
     trap_client = TrapDraftScoreClient()
@@ -957,9 +978,9 @@ def test_draft_ai_score_quota_shortage_returns_402_without_calling_provider(tmp_
             context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
             service_module.UsageQuotaService(db).adjust_bucket(
                 context.tenant.id,
-                "draft_score",
+                "credits",
                 total=0,
-                reason="test exhausts draft score quota",
+                reason="test exhausts credits",
             )
             model = ModelConfig(
                 user_id=registered["user"]["id"],
@@ -986,7 +1007,8 @@ def test_draft_ai_score_quota_shortage_returns_402_without_calling_provider(tmp_
         )
 
         assert response.status_code == 402
-        assert response.json()["bucket"] == "draft_score"
+        assert response.json()["bucket"] == "credits"
+        assert response.json()["required"] == 2
         assert trap_client.called is False
     finally:
         app.dependency_overrides.pop(get_text_ai_client, None)

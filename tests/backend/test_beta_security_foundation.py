@@ -201,8 +201,8 @@ def test_usage_reservation_commit_and_refund_are_terminal(tmp_path):
                 tenant_id=context.tenant.id,
                 user_id=registered["user"]["id"],
                 feature_key="ai.rewrite_note",
-                bucket="ai_rewrite",
-                amount=1,
+                bucket="credits",
+                amount=2,
                 idempotency_key="terminal-reservation",
             )
 
@@ -210,7 +210,7 @@ def test_usage_reservation_commit_and_refund_are_terminal(tmp_path):
             assert committed.status == "committed"
             with pytest.raises(ValueError):
                 service.refund(reservation.id, failure_reason="must not refund after commit")
-            assert service.get_balance(context.tenant.id)["ai_rewrite"].remaining == 19
+            assert service.get_balance(context.tenant.id)["credits"].remaining == 98
             rows = db.scalars(select(UsageLedger).where(UsageLedger.reservation_id == reservation.id).order_by(UsageLedger.id)).all()
             assert [row.operation for row in rows] == ["commit"]
         finally:
@@ -234,8 +234,8 @@ def test_usage_reserve_hashes_long_idempotency_keys_and_does_not_store_prompt_te
                 tenant_id=context.tenant.id,
                 user_id=registered["user"]["id"],
                 feature_key="ai.generate_title",
-                bucket="text_action",
-                amount=1,
+                bucket="credits",
+                amount=2,
                 idempotency_key=f"ai.generate_title:{registered['user']['id']}:{long_prompt}",
                 request_summary={"body_length": len(long_prompt)},
             )
@@ -258,7 +258,7 @@ def test_inactive_usage_bucket_cannot_reserve(tmp_path):
         try:
             context = get_or_create_default_tenant_context(db, registered["user"]["id"])
             service = UsageQuotaService(db)
-            account = service._get_account(context.tenant.id, "image_generation")
+            account = service._get_account(context.tenant.id, "credits")
             account.status = "inactive"
             db.commit()
 
@@ -267,8 +267,8 @@ def test_inactive_usage_bucket_cannot_reserve(tmp_path):
                     tenant_id=context.tenant.id,
                     user_id=registered["user"]["id"],
                     feature_key="ai.image_generate",
-                    bucket="image_generation",
-                    amount=1,
+                    bucket="credits",
+                    amount=5,
                     idempotency_key="inactive-bucket",
                 )
         finally:
@@ -321,11 +321,11 @@ def test_async_image_asset_save_failure_refunds_reserved_quota(tmp_path, monkeyp
 
         balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
         assert balance_response.status_code == 200
-        assert balance_response.json()["buckets"]["image_generation"]["remaining"] == 20
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 100
 
         db = next(app.dependency_overrides[get_db]())
         try:
-            rows = db.scalars(select(UsageLedger).where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "image_generation").order_by(UsageLedger.id)).all()
+            rows = db.scalars(select(UsageLedger).where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits").order_by(UsageLedger.id)).all()
             assert [(row.feature_key, row.operation) for row in rows] == [
                 ("ai.image_generate_async", "reserve"),
                 ("ai.image_generate_async.refund", "refund"),

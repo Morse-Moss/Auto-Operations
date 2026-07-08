@@ -45,6 +45,7 @@ import {
   restoreDataAcquisitionCandidates,
   retryDataAcquisitionRun,
 } from "../../../lib/api";
+import { useUsageBalance } from "../../../hooks/use-usage-balance";
 import type { DataAcquisitionCandidate, DataAcquisitionReadiness, DataAcquisitionRun } from "../../../types";
 import { XhsCrawlerPage } from "./crawler-page";
 
@@ -115,6 +116,8 @@ export function XhsDataAcquisitionPage() {
   const [running, setRunning] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [readiness, setReadiness] = useState<DataAcquisitionReadiness>(defaultReadiness);
+  const usage = useUsageBalance();
+  const creditsRemaining = usage.bucketRemaining("credits");
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId), [runs, selectedRunId]);
   const selectableCandidateIds = useMemo(
@@ -177,6 +180,10 @@ export function XhsDataAcquisitionPage() {
   async function handleCreateRun(values: { keyword: string; limit: number; sort: string; note_type: string }) {
     if (!readiness.available) {
       message.warning(readiness.message || "数据获取服务未就绪，请联系管理员。");
+      return;
+    }
+    if (creditsRemaining !== null && creditsRemaining < 2) {
+      message.warning("积分不足，本次数据获取需要 2 积分。");
       return;
     }
     setRunning(true);
@@ -337,6 +344,13 @@ export function XhsDataAcquisitionPage() {
 
       <Card title={<Space><SearchOutlined />获取笔记数据</Space>} style={{ marginBottom: 20 }}>
         <Alert
+          type="info"
+          showIcon
+          message={`积分余额：${creditsRemaining ?? "加载中"} 积分`}
+          description="获取笔记数据每次消耗 2 积分；任务失败会由后端自动退回。"
+          style={{ marginBottom: 16 }}
+        />
+        <Alert
           type={readiness.available ? "info" : "warning"}
           showIcon
           message={readiness.available ? "新数据会进入待确认候选，不会自动进入内容库。" : readiness.message}
@@ -376,9 +390,9 @@ export function XhsDataAcquisitionPage() {
             htmlType="submit"
             icon={<CloudDownloadOutlined />}
             loading={running}
-            disabled={!readiness.available}
+            disabled={!readiness.available || (creditsRemaining !== null && creditsRemaining < 2)}
           >
-            创建获取任务
+            创建获取任务（消耗 2 积分）
           </Button>
         </Form>
       </Card>

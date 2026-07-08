@@ -151,7 +151,7 @@ def test_note_search_run_creates_candidates_without_exposing_internal_source(tmp
     )
     app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
     try:
-        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
 
         response = client.post(
             "/api/xhs/data-acquisition/runs",
@@ -193,7 +193,7 @@ def test_note_search_uses_platform_data_account_without_user_account_id(tmp_path
     fake = FakeNoteSource([sample_note_row("note-platform", "Platform account result")])
     app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
     try:
-        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
 
         response = client.post(
             "/api/xhs/data-acquisition/runs",
@@ -221,7 +221,7 @@ def test_note_search_uses_platform_data_account_without_user_account_id(tmp_path
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_note_search_daily_user_limit_returns_429_without_calling_source(tmp_path):
+def test_note_search_ignores_legacy_daily_count_and_charges_credits(tmp_path):
     SessionLocal = override_database(tmp_path)
     fake = FakeNoteSource([sample_note_row()])
     app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
@@ -257,8 +257,56 @@ def test_note_search_daily_user_limit_returns_429_without_calling_source(tmp_pat
             },
         )
 
-        assert response.status_code == 429
-        assert response.json()["detail"]["code"] == "data_acquisition_daily_limit_exceeded"
+        assert response.status_code == 200
+        assert response.json()["status"] == "completed"
+        assert fake.calls == [("session=ok", "rate limit", 5, {"sort": "interaction", "note_type": "all"})]
+        db = SessionLocal()
+        try:
+            rows = db.scalars(
+                select(UsageLedger)
+                .where(UsageLedger.user_id == user_id, UsageLedger.bucket == "credits")
+                .order_by(UsageLedger.id)
+            ).all()
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("xhs.data_acquisition.note_search", "reserve", 2),
+                ("xhs.data_acquisition.note_search.commit", "commit", 2),
+            ]
+            assert rows[-1].balance_after == 98
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_note_search_credit_shortage_returns_402_without_calling_source(tmp_path):
+    from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
+
+    SessionLocal = override_database(tmp_path)
+    fake = FakeNoteSource([sample_note_row()])
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    try:
+        user_id, _account_id, headers = create_user_account_and_headers(SessionLocal)
+        db = SessionLocal()
+        try:
+            context = get_or_create_default_tenant_context(db, user_id)
+            UsageQuotaService(db).adjust_bucket(context.tenant.id, "credits", total=1, reason="test insufficient note search credits")
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "params": {"keyword": "credits low", "limit": 5},
+            },
+        )
+
+        assert response.status_code == 402
+        assert response.json()["code"] == "usage_quota_insufficient"
+        assert response.json()["bucket"] == "credits"
+        assert response.json()["required"] == 2
         assert fake.calls == []
         db = SessionLocal()
         try:
@@ -276,7 +324,7 @@ def test_rerun_creates_new_run_without_overwriting_failed_original(tmp_path):
     failing = FakeNoteSource(error="temporary upstream failure")
     app.dependency_overrides[get_data_acquisition_note_source] = lambda: failing
     try:
-        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
         failed_response = client.post(
             "/api/xhs/data-acquisition/runs",
             headers=headers,
@@ -403,7 +451,7 @@ def test_cancel_pending_and_running_runs_keep_task_state_consistent(tmp_path):
 def test_exclude_and_restore_candidates_update_filters_and_decision_reason(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:
-        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
         run_payload, _fake = create_successful_run(
             SessionLocal=SessionLocal,
             headers=headers,
@@ -458,7 +506,7 @@ def test_exclude_and_restore_candidates_update_filters_and_decision_reason(tmp_p
 def test_list_runs_reports_candidate_count_and_task_center_links_to_run(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:
-        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
         run_payload, _fake = create_successful_run(
             SessionLocal=SessionLocal,
             headers=headers,
@@ -593,7 +641,7 @@ def test_note_search_failure_records_failed_run_without_fallback_candidates(tmp_
     fake = FakeNoteSource(error="search structure changed")
     app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
     try:
-        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
 
         response = client.post(
             "/api/xhs/data-acquisition/runs",
@@ -619,6 +667,16 @@ def test_note_search_failure_records_failed_run_without_fallback_candidates(tmp_
             assert run.error_code == "note_search_failed"
             assert task.status == "failed"
             assert db.scalars(select(DataAcquisitionCandidate)).all() == []
+            ledgers = db.scalars(
+                select(UsageLedger)
+                .where(UsageLedger.user_id == user_id, UsageLedger.bucket == "credits")
+                .order_by(UsageLedger.id)
+            ).all()
+            assert [(row.feature_key, row.operation, row.amount) for row in ledgers] == [
+                ("xhs.data_acquisition.note_search", "reserve", 2),
+                ("xhs.data_acquisition.note_search.refund", "refund", 2),
+            ]
+            assert ledgers[-1].balance_after == 100
         finally:
             db.close()
     finally:

@@ -22,11 +22,7 @@ from backend.app.services.data_acquisition_service import (
     serialize_candidate,
     serialize_run,
 )
-from backend.app.services.platform_data_account_service import (
-    enforce_note_search_daily_limit,
-    ensure_data_account_ready,
-    get_data_account_readiness,
-)
+from backend.app.services.platform_data_account_service import ensure_data_account_ready, get_data_account_readiness
 
 router = APIRouter(prefix="/xhs/data-acquisition", tags=["xhs-data-acquisition"])
 
@@ -90,7 +86,6 @@ def create_data_acquisition_run(
             detail="该获取方式仍在验证中，暂不可创建任务。",
         )
     ensure_data_account_ready(db, payload.account_id, current_user=current_user)
-    enforce_note_search_daily_limit(db, user_id=current_user.id)
     run, candidates = create_note_search_run(
         db=db,
         current_user=current_user,

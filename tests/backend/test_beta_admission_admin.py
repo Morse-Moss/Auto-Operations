@@ -296,19 +296,19 @@ def test_admin_api_controls_users_tenants_and_credit_balance(tmp_path):
         adjusted = client.post(
             f"/api/admin/tenants/{target_tenant_id}/credits/adjust",
             headers=_auth_headers(admin_token),
-            json={"bucket": "image_generation", "total": 7, "reason": "beta grant"},
+            json={"bucket": "credits", "total": 700, "reason": "beta grant"},
         )
         assert adjusted.status_code == 200
-        assert adjusted.json()["bucket"] == "image_generation"
-        assert adjusted.json()["total"] == 7
-        assert adjusted.json()["remaining"] == 7
+        assert adjusted.json()["bucket"] == "credits"
+        assert adjusted.json()["total"] == 700
+        assert adjusted.json()["remaining"] == 700
 
         db = next(app.dependency_overrides[get_db]())
         try:
             ledger = db.scalar(
                 select(UsageLedger).where(
                     UsageLedger.tenant_id == target_tenant_id,
-                    UsageLedger.bucket == "image_generation",
+                    UsageLedger.bucket == "credits",
                     UsageLedger.operation == "adjust",
                 )
             )

@@ -13,11 +13,7 @@ type UsageBalanceState = {
 };
 
 const BUCKET_LABELS: Record<string, string> = {
-  image_generation: "图片生成",
-  ai_rewrite: "AI 改写",
-  text_action: "文本 AI",
-  draft_score: "草稿评分",
-  analysis_report: "分析报告",
+  credits: "积分",
 };
 
 export function usageBucketLabel(bucket: UsageBucketKey): string {
@@ -36,7 +32,7 @@ export function useUsageBalance(): UsageBalanceState {
       const next = await fetchUsageBalance();
       setBalance(next);
     } catch {
-      setError("额度余额加载失败");
+      setError("积分余额加载失败");
     } finally {
       setIsLoading(false);
     }

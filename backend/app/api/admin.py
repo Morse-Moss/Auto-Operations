@@ -11,7 +11,7 @@ from backend.app.core.deps import require_admin_user
 from backend.app.core.security import hash_password
 from backend.app.models import InviteCode, InviteCodeUse, Tenant, TenantMember, User
 from backend.app.services.invite_service import create_invite_code, normalize_invite_code
-from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, get_or_create_default_tenant_context
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -22,7 +22,7 @@ class InviteCodeCreateRequest(BaseModel):
 
 
 class CreditAdjustRequest(BaseModel):
-    bucket: str = Field(min_length=1, max_length=64)
+    bucket: str = Field(default=CREDITS_BUCKET, min_length=1, max_length=64)
     total: int = Field(ge=0, le=100_000)
     reason: str = Field(default="", max_length=512)
 
@@ -134,6 +134,8 @@ def adjust_tenant_credit(
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if payload.bucket != CREDITS_BUCKET:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only credits can be adjusted")
     account = UsageQuotaService(db).adjust_bucket(tenant_id, payload.bucket, total=payload.total, reason=payload.reason)
     return {"bucket": account.bucket, "total": account.total, "remaining": account.remaining, "status": account.status}
 
