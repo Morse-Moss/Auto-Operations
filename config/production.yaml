@@ -26,8 +26,10 @@ security:
   fernet_key: ""
 
 scheduler:
-  enabled: true
-  interval_seconds: 30
+  # Keep background jobs off by default for public production.
+  # Enable only after ALLOW_PRODUCTION_EXTERNAL_ACTIONS=true and publish idempotency has been verified.
+  enabled: false
+  interval_seconds: 60
 
 frontend:
   serve_static: true

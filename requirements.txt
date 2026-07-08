@@ -11,6 +11,7 @@ qrcode
 fastapi
 uvicorn
 sqlalchemy>=2.0
+pymysql
 alembic
 pydantic
 pydantic-settings

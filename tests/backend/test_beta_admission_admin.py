@@ -68,16 +68,23 @@ def _register(username: str, invite_code: str | None = None):
     return client.post("/api/auth/register", json=payload)
 
 
-def test_register_requires_invite_code_and_records_usage(tmp_path):
+def test_register_allows_missing_invite_code_and_records_usage_when_present(tmp_path):
     db_dependency = _override_database(tmp_path)
     try:
         missing = _register("no-invite-user")
-        assert missing.status_code == 400
-        assert missing.json()["detail"] == "Invitation code is required"
+        assert missing.status_code == 200
+        missing_payload = missing.json()
+        assert missing_payload["user"]["username"] == "no-invite-user"
+        assert missing_payload["user"]["role"] == "user"
+        assert missing_payload["user"]["status"] == "active"
 
         db = next(app.dependency_overrides[get_db]())
         try:
             invite = _create_invite(db, code="BETA-JOIN", max_uses=2)
+            missing_usage = db.scalar(
+                select(InviteCodeUse).where(InviteCodeUse.used_by_user_id == missing_payload["user"]["id"])
+            )
+            assert missing_usage is None
         finally:
             db.close()
 
@@ -100,6 +107,32 @@ def test_register_requires_invite_code_and_records_usage(tmp_path):
         finally:
             db.close()
     finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_production_register_requires_invite_code_unless_public_registration_is_enabled(tmp_path, monkeypatch):
+    from backend.app.core.config import get_settings
+
+    db_dependency = _override_database(tmp_path)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "production-secret-with-enough-length")
+    monkeypatch.setenv("DATABASE_TYPE", "mysql")
+    monkeypatch.setenv("DATABASE_MYSQL_PASSWORD", "strong-db-password")
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://ops.example.com")
+    monkeypatch.delenv("ALLOW_PUBLIC_REGISTRATION", raising=False)
+    get_settings.cache_clear()
+    try:
+        missing = _register("prod-no-invite-user")
+        assert missing.status_code == 400
+        assert missing.json()["detail"] == "Invitation code is required"
+
+        monkeypatch.setenv("ALLOW_PUBLIC_REGISTRATION", "true")
+        get_settings.cache_clear()
+        allowed = _register("prod-public-user")
+        assert allowed.status_code == 200
+        assert allowed.json()["user"]["username"] == "prod-public-user"
+    finally:
+        get_settings.cache_clear()
         app.dependency_overrides.pop(db_dependency, None)
 
 
@@ -264,6 +297,101 @@ def test_first_admin_bootstrap_refuses_after_admin_exists(tmp_path, monkeypatch)
         assert response.json()["detail"] == "Admin bootstrap is already completed"
     finally:
         get_settings.cache_clear()
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_admin_bootstrap_can_rescue_when_no_active_admin_can_login(tmp_path, monkeypatch):
+    db_dependency = _override_database(tmp_path)
+    monkeypatch.setenv("BETA_ADMIN_BOOTSTRAP_TOKEN", "bootstrap-secret")
+    get_settings.cache_clear()
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            _create_user(db, "disabled-admin", role="admin", status="disabled")
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/admin/bootstrap",
+            json={"username": "rescue-admin", "password": "secret123", "bootstrap_token": "bootstrap-secret"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["username"] == "rescue-admin"
+        assert response.json()["role"] == "admin"
+        login = client.post("/api/auth/login", json={"username": "rescue-admin", "password": "secret123"})
+        assert login.status_code == 200
+    finally:
+        get_settings.cache_clear()
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_auth_and_admin_bootstrap_rate_limits_abuse(tmp_path, monkeypatch):
+    from backend.app.services.rate_limit_service import clear_rate_limit_state
+
+    clear_rate_limit_state()
+    db_dependency = _override_database(tmp_path)
+    monkeypatch.setenv("BETA_ADMIN_BOOTSTRAP_TOKEN", "bootstrap-secret")
+    get_settings.cache_clear()
+    try:
+        for _ in range(8):
+            response = client.post("/api/auth/login", json={"username": "missing-user", "password": "secret123"})
+        assert response.status_code == 429
+        assert response.json()["detail"] == "Too many requests"
+
+        for _ in range(8):
+            bootstrap = client.post(
+                "/api/admin/bootstrap",
+                json={"username": "first-admin", "password": "secret123", "bootstrap_token": "wrong"},
+            )
+        assert bootstrap.status_code == 429
+        assert bootstrap.json()["detail"] == "Too many requests"
+    finally:
+        clear_rate_limit_state()
+        get_settings.cache_clear()
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_admin_guards_prevent_self_lockout_and_last_admin_disable(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = _create_user(db, "solo-admin", role="admin")
+            member = _create_user(db, "lockout-member", role="user")
+            admin_context = get_or_create_default_tenant_context(db, admin.id)
+            admin_token = create_access_token(admin.id)
+            admin_id = admin.id
+            admin_tenant_id = admin_context.tenant.id
+            member_id = member.id
+        finally:
+            db.close()
+
+        self_disable = client.post(f"/api/admin/users/{admin_id}/disable", headers=_auth_headers(admin_token))
+        assert self_disable.status_code == 400
+        assert self_disable.json()["detail"] == "Admin cannot disable their own account"
+
+        suspend_own_tenant = client.post(f"/api/admin/tenants/{admin_tenant_id}/suspend", headers=_auth_headers(admin_token))
+        assert suspend_own_tenant.status_code == 400
+        assert suspend_own_tenant.json()["detail"] == "Cannot suspend the last active admin tenant"
+
+        member_disabled = client.post(f"/api/admin/users/{member_id}/disable", headers=_auth_headers(admin_token))
+        assert member_disabled.status_code == 200
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            second_admin = _create_user(db, "second-admin", role="admin")
+            second_admin_id = second_admin.id
+        finally:
+            db.close()
+
+        first_admin_disabled = client.post(f"/api/admin/users/{admin_id}/disable", headers=_auth_headers(admin_token))
+        assert first_admin_disabled.status_code == 400
+        assert first_admin_disabled.json()["detail"] == "Admin cannot disable their own account"
+
+        second_admin_disabled = client.post(f"/api/admin/users/{second_admin_id}/disable", headers=_auth_headers(admin_token))
+        assert second_admin_disabled.status_code == 200
+    finally:
         app.dependency_overrides.pop(db_dependency, None)
 
 

@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -41,6 +42,7 @@ def _load_yaml_config() -> Dict[str, Any]:
         "database.mysql_database": "database_mysql_database",
         "security.secret_key": "secret_key",
         "security.fernet_key": "fernet_key",
+        "auth.allow_public_registration": "allow_public_registration",
         "scheduler.enabled": "scheduler_enabled",
         "scheduler.interval_seconds": "scheduler_interval_seconds",
         "frontend.serve_static": "frontend_serve_static",
@@ -97,6 +99,7 @@ class Settings(BaseSettings):
     secret_key: str = "dev-only-change-me"
     fernet_key: str = ""
     beta_admin_bootstrap_token: str = ""
+    allow_public_registration: bool = False
 
     # Server
     server_host: str = "0.0.0.0"
@@ -108,6 +111,7 @@ class Settings(BaseSettings):
     # Scheduler
     scheduler_enabled: bool = False
     scheduler_interval_seconds: int = 60
+    allow_production_external_actions: bool = False
 
     # Asset storage
     asset_storage_type: str = "local"
@@ -146,10 +150,36 @@ class Settings(BaseSettings):
                     "database_url",
                     f"sqlite:///{sqlite_path}",
                 )
+        self._validate_production_settings()
 
     @property
     def storage_dir(self) -> Path:
         return Path("backend/app/storage")
+
+    def _validate_production_settings(self) -> None:
+        if self.environment.lower() != "production":
+            return
+
+        secret = self.secret_key.strip()
+        if secret in {"", "dev-only-change-me", "CHANGE_ME_VIA_ENV_VAR"} or len(secret) < 24:
+            raise ValueError("SECRET_KEY must be set to a non-placeholder value in production")
+
+        if self.database_type.lower() == "sqlite" or self.database_url.startswith("sqlite:"):
+            raise ValueError("SQLite is not allowed in production; configure MySQL or another server database")
+        if self.database_mysql_password in {"", "change_me", "CHANGE_ME_VIA_ENV_VAR"}:
+            raise ValueError("DATABASE_MYSQL_PASSWORD must be set to a non-placeholder value in production")
+
+        origins = [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
+        if not origins:
+            raise ValueError("CORS origins must be explicitly configured in production")
+        for origin in origins:
+            parsed = urlparse(origin)
+            host = parsed.netloc.lower()
+            if origin == "*" or parsed.scheme != "https" or host in {"", "localhost", "127.0.0.1", "your-domain.com"}:
+                raise ValueError("CORS origins must be real HTTPS domains in production")
+
+        if self.scheduler_enabled and not self.allow_production_external_actions:
+            raise ValueError("ALLOW_PRODUCTION_EXTERNAL_ACTIONS must be true before enabling the scheduler in production")
 
 
 def _load_environment_overrides() -> Dict[str, str]:

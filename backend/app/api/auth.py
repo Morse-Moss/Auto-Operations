@@ -3,14 +3,16 @@ from __future__ import annotations
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
+from backend.app.core.config import get_settings
 from backend.app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
 from backend.app.models import User
+from backend.app.services.rate_limit_service import check_rate_limit, record_rate_limit_failure
 from backend.app.services.usage_quota_service import get_or_create_default_tenant_context
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -60,15 +62,20 @@ def _ensure_user_tenant_active(user: User, db: Session) -> None:
 
 
 @router.post("/register")
-def register(credentials: AuthCredentials, db: Session = Depends(get_db)):
+def register(credentials: AuthCredentials, request: Request, db: Session = Depends(get_db)):
     from backend.app.services.invite_service import consume_invite_code
 
-    if not credentials.invite_code or not credentials.invite_code.strip():
+    check_rate_limit(request, "auth-register", credentials.username)
+    settings = get_settings()
+    invite_code = credentials.invite_code.strip() if credentials.invite_code else None
+    if settings.environment.lower() == "production" and not settings.allow_public_registration and not invite_code:
+        record_rate_limit_failure(request, "auth-register", credentials.username)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invitation code is required")
 
     username = credentials.username.strip()
     existing_user = db.scalar(select(User).where(User.username == username))
     if existing_user is not None:
+        record_rate_limit_failure(request, "auth-register", username)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
 
     try:
@@ -76,37 +83,46 @@ def register(credentials: AuthCredentials, db: Session = Depends(get_db)):
         db.add(user)
         db.flush()
         get_or_create_default_tenant_context(db, user.id, commit=False)
-        consume_invite_code(db, code=credentials.invite_code, user_id=user.id)
+        if invite_code:
+            consume_invite_code(db, code=invite_code, user_id=user.id)
         db.commit()
         db.refresh(user)
         return _token_response(user)
     except HTTPException:
+        record_rate_limit_failure(request, "auth-register", username)
         db.rollback()
         raise
 
 
 @router.post("/login")
-def login(credentials: AuthCredentials, db: Session = Depends(get_db)):
+def login(credentials: AuthCredentials, request: Request, db: Session = Depends(get_db)):
+    check_rate_limit(request, "auth-login", credentials.username)
     username = credentials.username.strip()
     user = db.scalar(select(User).where(User.username == username))
     if user is None or not verify_password(credentials.password, user.password_hash):
+        record_rate_limit_failure(request, "auth-login", username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
     if user.status == "disabled":
+        record_rate_limit_failure(request, "auth-login", username)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
     _ensure_user_tenant_active(user, db)
     return _token_response(user)
 
 
 @router.post("/refresh")
-def refresh_token(payload: RefreshRequest, db: Session = Depends(get_db)):
+def refresh_token(payload: RefreshRequest, request: Request, db: Session = Depends(get_db)):
+    check_rate_limit(request, "auth-refresh")
     decoded = decode_token(payload.refresh_token)
     if decoded.get("token_type") != "refresh":
+        record_rate_limit_failure(request, "auth-refresh")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
     user = db.get(User, decoded["user_id"])
     if user is None:
+        record_rate_limit_failure(request, "auth-refresh")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if user.status == "disabled":
+        record_rate_limit_failure(request, "auth-refresh")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
     _ensure_user_tenant_active(user, db)
     return {"access_token": create_access_token(user.id), "token_type": "bearer"}

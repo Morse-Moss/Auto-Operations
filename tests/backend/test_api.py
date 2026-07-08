@@ -5390,6 +5390,64 @@ def test_xhs_creator_direct_publish_accepts_optional_publish_parameters(tmp_path
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_xhs_creator_direct_external_actions_are_blocked_in_production_without_opt_in(tmp_path, monkeypatch):
+    from backend.app.api.platforms.xhs.creator import get_creator_api_adapter_factory
+    from backend.app.core.config import get_settings
+
+    class TrapCreatorRoutesAdapter:
+        upload_called = False
+        publish_called = False
+
+        def __init__(self, cookies):
+            self.cookies = cookies
+
+        def upload_media(self, file_path, media_type):
+            TrapCreatorRoutesAdapter.upload_called = True
+            raise AssertionError("upload_media should not be called")
+
+        def post_note(self, note_info):
+            TrapCreatorRoutesAdapter.publish_called = True
+            raise AssertionError("post_note should not be called")
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "production-secret-with-enough-length")
+    monkeypatch.setenv("DATABASE_TYPE", "mysql")
+    monkeypatch.setenv("DATABASE_MYSQL_PASSWORD", "strong-db-password")
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://ops.example.com")
+    monkeypatch.delenv("ALLOW_PRODUCTION_EXTERNAL_ACTIONS", raising=False)
+    get_settings.cache_clear()
+    db_dependency, owner_token, creator_account_id = _create_creator_account_with_cookie(
+        tmp_path, "creator-prod-block-owner"
+    )
+    TrapCreatorRoutesAdapter.upload_called = False
+    TrapCreatorRoutesAdapter.publish_called = False
+    app.dependency_overrides[get_creator_api_adapter_factory] = lambda: TrapCreatorRoutesAdapter
+    try:
+        upload_response = client.post(
+            "/api/xhs/creator/assets/upload",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"account_id": creator_account_id, "file_path": "/api/files/media/xhs-upload-u1-cover.png", "media_type": "image"},
+        )
+        publish_response = client.post(
+            "/api/xhs/creator/publish/image",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "account_id": creator_account_id,
+                "title": "Blocked direct title",
+                "image_file_infos": [{"fileIds": "file-blocked", "width": 1080, "height": 1440}],
+            },
+        )
+
+        assert upload_response.status_code == 403
+        assert publish_response.status_code == 403
+        assert TrapCreatorRoutesAdapter.upload_called is False
+        assert TrapCreatorRoutesAdapter.publish_called is False
+    finally:
+        get_settings.cache_clear()
+        app.dependency_overrides.pop(get_creator_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_monitoring_targets_crud_are_user_scoped(tmp_path):
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("monitoring-owner")

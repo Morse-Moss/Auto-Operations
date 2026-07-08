@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.xhs.creator_api_adapter import XhsCreatorApiAdapter
@@ -236,6 +236,53 @@ def _get_latest_account_cookies(db: Session, account_id: int) -> str:
     if cookie_version is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator 账号缺少 Cookie，请在账号矩阵重新登录后再发布")
     return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+
+
+def _claim_publish_job_for_external_action(db: Session, job: PublishJob) -> None:
+    if job.status == "publishing":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Publish job is already being processed")
+    if job.status in {"published", "scheduled"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish job is already completed")
+    if job.status not in {"pending", "failed"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish job cannot be published")
+
+    updated = db.execute(
+        update(PublishJob)
+        .where(PublishJob.id == job.id, PublishJob.status.in_(("pending", "failed")))
+        .values(status="publishing", publish_error="")
+    )
+    if updated.rowcount != 1:
+        db.refresh(job)
+        if job.status == "publishing":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Publish job is already being processed")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish job cannot be published")
+    db.commit()
+    db.refresh(job)
+
+
+def _claim_publish_asset_for_upload(db: Session, asset: PublishAsset) -> bool:
+    if asset.upload_status == "uploaded":
+        return False
+    if asset.upload_status == "uploading":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Publish asset is already being uploaded")
+    if asset.upload_status not in {"pending", "failed"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish asset cannot be uploaded")
+
+    updated = db.execute(
+        update(PublishAsset)
+        .where(PublishAsset.id == asset.id, PublishAsset.upload_status.in_(("pending", "failed")))
+        .values(upload_status="uploading", upload_error="")
+    )
+    if updated.rowcount != 1:
+        db.refresh(asset)
+        if asset.upload_status == "uploaded":
+            return False
+        if asset.upload_status == "uploading":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Publish asset is already being uploaded")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish asset cannot be uploaded")
+    db.commit()
+    db.refresh(asset)
+    return True
 
 
 def _ensure_creator_account_publishable(account: PlatformAccount) -> None:
@@ -471,11 +518,10 @@ def upload_publish_asset(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator account required")
     _ensure_creator_account_publishable(account)
 
-    cookies = _get_latest_account_cookies(db, account.id)
-    asset.upload_status = "uploading"
-    asset.upload_error = ""
-    db.commit()
+    if not _claim_publish_asset_for_upload(db, asset):
+        return serialize_publish_asset(asset)
 
+    cookies = _get_latest_account_cookies(db, account.id)
     file_path = _owned_media_path_or_404(asset.file_path, current_user)
     try:
         payload = adapter_factory(cookies).upload_media(file_path, asset.asset_type)
@@ -514,8 +560,6 @@ def publish_job_to_creator(
     if account.platform != "xhs" or account.sub_type != "creator":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator account required")
     _ensure_creator_account_publishable(account)
-    if job.status in {"publishing", "published", "scheduled"}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish job is already completed")
     if not job.title.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish title is required")
     if job.publish_mode == "scheduled":
@@ -529,6 +573,8 @@ def publish_job_to_creator(
     ).all()
     if not assets:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="至少需要一个素材")
+
+    _claim_publish_job_for_external_action(db, job)
 
     cookies = _get_latest_account_cookies(db, account.id)
     adapter = adapter_factory(cookies)
@@ -588,8 +634,6 @@ def publish_job_to_creator(
         },
     )
     db.add(task)
-    job.status = "publishing"
-    job.publish_error = ""
     db.commit()
 
     try:

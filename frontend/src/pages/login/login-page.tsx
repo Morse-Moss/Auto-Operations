@@ -78,11 +78,11 @@ export function LoginPage() {
       if (mode === "login") {
         await auth.login(parsed.data);
       } else {
-        if (!inviteCode.trim()) {
-          setError("请输入体验官邀请码。");
-          return;
-        }
-        await auth.register({ ...parsed.data, invite_code: inviteCode.trim() });
+        const trimmedInviteCode = inviteCode.trim();
+        await auth.register({
+          ...parsed.data,
+          ...(trimmedInviteCode ? { invite_code: trimmedInviteCode } : {})
+        });
       }
       const from = (
         location.state as { from?: { pathname?: string } } | null
@@ -296,7 +296,7 @@ export function LoginPage() {
                     <Form.Item label="邀请码" style={{ marginBottom: 16 }}>
                       <Input
                         prefix={<SafetyCertificateOutlined />}
-                        placeholder="请输入体验官邀请码"
+                        placeholder="请输入管理员发放的邀请码"
                         value={inviteCode}
                         onChange={(e) => setInviteCode(e.target.value)}
                         size="large"

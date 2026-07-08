@@ -8,7 +8,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.xhs.creator_api_adapter import XhsCreatorApiAdapter
@@ -118,7 +118,25 @@ def _apply_publish_options(note_info: dict[str, Any], options: dict[str, Any]) -
         note_info["type"] = options["privacy_type"]
 
 
+def _claim_due_publish_job(db: Session, job: PublishJob) -> bool:
+    updated = db.execute(
+        update(PublishJob)
+        .where(PublishJob.id == job.id, PublishJob.status == "pending")
+        .values(status="publishing", publish_error="")
+    )
+    if updated.rowcount != 1:
+        db.rollback()
+        db.refresh(job)
+        return False
+    db.commit()
+    db.refresh(job)
+    return True
+
+
 def _run_one_due_publish_job(db: Session, current_user: User, job: PublishJob, adapter_factory) -> tuple[bool, dict[str, Any]]:
+    if not _claim_due_publish_job(db, job):
+        return False, {}
+
     account = db.get(PlatformAccount, job.platform_account_id)
     if account is None or account.user_id != current_user.id:
         raise RuntimeError("Account not found")
@@ -134,8 +152,6 @@ def _run_one_due_publish_job(db: Session, current_user: User, job: PublishJob, a
         payload={"publish_job_id": job.id, "platform_account_id": account.id, "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None},
     )
     db.add(task)
-    job.status = "publishing"
-    job.publish_error = ""
     db.commit()
 
     try:
@@ -206,6 +222,8 @@ def run_due_publish_jobs(
     failed_count = 0
     for job in due_jobs:
         succeeded, item = _run_one_due_publish_job(db, current_user, job, adapter_factory)
+        if not item:
+            continue
         items.append(item)
         if not succeeded:
             failed_count += 1

@@ -309,7 +309,7 @@ function renderTable(context: ContentLibraryRenderContext<SavedNote>) {
 
 function renderSystemAnalysisDetail(note: SavedNote) {
   const analysis = note.analysis_result;
-  return h(Card, { size: "small", title: "系统分析结果", style: { marginBottom: 16, background: "#1f1f1f" } },
+  return h(Card, { size: "small", title: "飞书分析结果", style: { marginBottom: 16, background: "#1f1f1f" } },
     h(Descriptions, { column: 1, size: "small" },
       h(Descriptions.Item, { label: "分析来源" }, analysis?.source || (analysis ? "system" : "-")),
       h(Descriptions.Item, { label: "飞书同步状态" }, note.feishu_sync?.push_status || "not_synced"),

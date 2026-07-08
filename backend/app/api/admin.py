@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import secrets
+
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -11,6 +13,7 @@ from backend.app.core.deps import require_admin_user
 from backend.app.core.security import hash_password
 from backend.app.models import InviteCode, InviteCodeUse, Tenant, TenantMember, User
 from backend.app.services.invite_service import create_invite_code, normalize_invite_code
+from backend.app.services.rate_limit_service import check_rate_limit, record_rate_limit_failure
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, get_or_create_default_tenant_context
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -79,18 +82,48 @@ def _serialize_invite(invite: InviteCode, uses: list[tuple[InviteCodeUse, User]]
     }
 
 
+def _active_admin_ids(db: Session, *, excluding_user_id: int | None = None, excluding_tenant_id: int | None = None) -> set[int]:
+    rows = db.execute(
+        select(User.id, Tenant.status)
+        .join(TenantMember, TenantMember.user_id == User.id)
+        .join(Tenant, Tenant.id == TenantMember.tenant_id)
+        .where(User.role == "admin", User.status == "active")
+    ).all()
+    admin_ids: set[int] = set()
+    for user_id, tenant_status in rows:
+        if excluding_user_id is not None and user_id == excluding_user_id:
+            continue
+        if excluding_tenant_id is not None and tenant_status == "active":
+            membership = db.scalar(
+                select(TenantMember).where(TenantMember.user_id == user_id, TenantMember.tenant_id == excluding_tenant_id)
+            )
+            if membership is not None:
+                continue
+        if tenant_status == "active":
+            admin_ids.add(user_id)
+    return admin_ids
+
+
+def _has_active_admin(db: Session) -> bool:
+    return bool(_active_admin_ids(db))
+
+
 @router.post("/bootstrap")
-def bootstrap_first_admin(payload: AdminBootstrapRequest, db: Session = Depends(get_db)):
+def bootstrap_first_admin(payload: AdminBootstrapRequest, request: Request, db: Session = Depends(get_db)):
+    check_rate_limit(request, "admin-bootstrap", payload.username)
     settings = get_settings()
     if not settings.beta_admin_bootstrap_token:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin bootstrap is not configured")
-    if payload.bootstrap_token != settings.beta_admin_bootstrap_token:
+    if not secrets.compare_digest(payload.bootstrap_token, settings.beta_admin_bootstrap_token):
+        record_rate_limit_failure(request, "admin-bootstrap", payload.username)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin bootstrap token")
-    if db.scalar(select(User.id).where(User.role == "admin")) is not None:
+    if _has_active_admin(db):
+        record_rate_limit_failure(request, "admin-bootstrap", payload.username)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Admin bootstrap is already completed")
 
     username = payload.username.strip()
     if db.scalar(select(User.id).where(User.username == username)) is not None:
+        record_rate_limit_failure(request, "admin-bootstrap", username)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
 
     try:
@@ -102,6 +135,7 @@ def bootstrap_first_admin(payload: AdminBootstrapRequest, db: Session = Depends(
         db.refresh(user)
         return _serialize_user(user, tenant_count=1)
     except HTTPException:
+        record_rate_limit_failure(request, "admin-bootstrap", username)
         db.rollback()
         raise
 
@@ -145,6 +179,8 @@ def suspend_tenant(tenant_id: int, _admin: User = Depends(require_admin_user), d
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if not _active_admin_ids(db, excluding_tenant_id=tenant_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot suspend the last active admin tenant")
     tenant.status = "suspended"
     db.commit()
     db.refresh(tenant)
@@ -167,6 +203,10 @@ def disable_user(user_id: int, _admin: User = Depends(require_admin_user), db: S
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.id == _admin.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Admin cannot disable their own account")
+    if user.role == "admin" and not _active_admin_ids(db, excluding_user_id=user.id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot disable the last active admin")
     user.status = "disabled"
     db.commit()
     db.refresh(user)

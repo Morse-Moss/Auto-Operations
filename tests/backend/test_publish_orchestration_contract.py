@@ -14,6 +14,7 @@ from backend.app.core.time import shanghai_now
 from backend.app.main import app
 from backend.app.models import AccountCookieVersion, PlatformAccount, PublishAsset, PublishJob, User
 from backend.app.services.publish_orchestration_service import PublishOrchestrationService
+from backend.app.services.scheduler_service import run_due_publish_jobs
 
 client = TestClient(app)
 
@@ -333,6 +334,156 @@ def test_real_publish_without_confirmation_returns_403_before_adapter_instantiat
         with TestingSessionLocal() as db:
             job = db.get(PublishJob, job_id)
             assert job.status == "pending"
+            assert job.external_note_id == ""
+    finally:
+        app.dependency_overrides.pop(get_db_override, None)
+        app.dependency_overrides.pop(adapter_override, None)
+
+
+def test_asset_upload_refuses_already_claimed_asset_before_adapter_instantiation(tmp_path):
+    get_db_override, TestingSessionLocal = _override_database(tmp_path)
+    adapter_override = _override_adapter()
+    try:
+        with TestingSessionLocal() as db:
+            user = _create_user(db, "publish-orchestration-uploading-asset-user")
+            account = _create_account(db, user)
+            job = _create_job(db, user, account)
+            asset = _add_asset(
+                db,
+                job,
+                upload_status="uploading",
+                file_path=f"/api/files/media/xhs-upload-u{user.id}-already-uploading.jpg",
+            )
+            db.commit()
+            asset_id = asset.id
+            headers = _auth_headers(user)
+
+        response = client.post(f"/api/publish/assets/{asset_id}/upload", headers=headers)
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Publish asset is already being uploaded"
+        assert TrapCreatorAdapter.init_called is False
+        assert TrapCreatorAdapter.upload_called is False
+        assert TrapCreatorAdapter.post_called is False
+        with TestingSessionLocal() as db:
+            asset = db.get(PublishAsset, asset_id)
+            assert asset.upload_status == "uploading"
+            assert asset.creator_media_id == ""
+    finally:
+        app.dependency_overrides.pop(get_db_override, None)
+        app.dependency_overrides.pop(adapter_override, None)
+
+
+def test_scheduler_refuses_already_claimed_due_job_before_adapter_instantiation(tmp_path):
+    _reset_traps()
+    _, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        with TestingSessionLocal() as db:
+            user = _create_user(db, "publish-orchestration-scheduler-claimed-user")
+            account = _create_account(db, user)
+            job = _create_job(
+                db,
+                user,
+                account,
+                publish_mode="scheduled",
+                scheduled_at=shanghai_now() - timedelta(minutes=1),
+                status="publishing",
+            )
+            _add_asset(db, job, upload_status="uploaded", file_path="/api/files/media/already-uploaded.jpg")
+            db.commit()
+            job_id = job.id
+
+            result = run_due_publish_jobs(
+                db=db,
+                current_user=user,
+                now=shanghai_now(),
+                platform="xhs",
+                adapter_factory=TrapCreatorAdapter,
+            )
+
+            assert result["executed_count"] == 0
+            assert result["failed_count"] == 0
+            assert result["items"] == []
+            assert TrapCreatorAdapter.init_called is False
+            assert TrapCreatorAdapter.upload_called is False
+            assert TrapCreatorAdapter.post_called is False
+            job = db.get(PublishJob, job_id)
+            assert job.status == "publishing"
+            assert job.external_note_id == ""
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_scheduler_claims_due_job_before_adapter_instantiation(tmp_path):
+    _reset_traps()
+    _, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        with TestingSessionLocal() as db:
+            user = _create_user(db, "publish-orchestration-scheduler-claim-user")
+            account = _create_account(db, user)
+            job = _create_job(
+                db,
+                user,
+                account,
+                publish_mode="scheduled",
+                scheduled_at=shanghai_now() - timedelta(minutes=1),
+                status="pending",
+            )
+            _add_asset(
+                db,
+                job,
+                upload_status="uploaded",
+                file_path=f"/api/files/media/xhs-upload-u{user.id}-uploaded.jpg",
+            ).creator_upload_info = json.dumps({"fileIds": ["file-id"], "height": 100, "width": 100})
+            db.commit()
+            job_id = job.id
+
+            def adapter_factory(_cookies: str):
+                claimed_job = db.get(PublishJob, job_id)
+                assert claimed_job.status == "publishing"
+                return TrapCreatorAdapter(_cookies)
+
+            result = run_due_publish_jobs(
+                db=db,
+                current_user=user,
+                now=shanghai_now(),
+                platform="xhs",
+                adapter_factory=adapter_factory,
+            )
+
+            assert result["executed_count"] == 1
+            assert result["failed_count"] == 1
+            assert TrapCreatorAdapter.init_called is True
+            assert TrapCreatorAdapter.post_called is True
+            job = db.get(PublishJob, job_id)
+            assert job.status == "failed"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_real_publish_refuses_already_claimed_job_before_adapter_instantiation(tmp_path):
+    get_db_override, TestingSessionLocal = _override_database(tmp_path)
+    adapter_override = _override_adapter()
+    try:
+        with TestingSessionLocal() as db:
+            user = _create_user(db, "publish-orchestration-claimed-user")
+            account = _create_account(db, user)
+            job = _create_job(db, user, account, status="publishing")
+            _add_asset(db, job, upload_status="uploaded")
+            db.commit()
+            job_id = job.id
+            headers = _auth_headers(user)
+
+        response = client.post(f"/api/publish/jobs/{job_id}/publish?confirm_real_publish=true", headers=headers)
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Publish job is already being processed"
+        assert TrapCreatorAdapter.init_called is False
+        assert TrapCreatorAdapter.upload_called is False
+        assert TrapCreatorAdapter.post_called is False
+        with TestingSessionLocal() as db:
+            job = db.get(PublishJob, job_id)
+            assert job.status == "publishing"
             assert job.external_note_id == ""
     finally:
         app.dependency_overrides.pop(get_db_override, None)

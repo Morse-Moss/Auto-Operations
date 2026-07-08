@@ -16,6 +16,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
 from backend.app.models import AccountCookieVersion, PlatformAccount, Task, User
 from backend.app.services.asset_storage_policy import owned_media_api_path
+from backend.app.services.production_safety import ensure_production_external_actions_allowed
 
 router = APIRouter(prefix="/xhs/creator", tags=["xhs-creator"])
 
@@ -215,6 +216,7 @@ def upload_asset(
     db: Session = Depends(get_db),
     adapter_factory=Depends(get_creator_api_adapter_factory),
 ):
+    ensure_production_external_actions_allowed()
     account, adapter = _adapter_for_account(db, current_user, payload.account_id, adapter_factory)
     try:
         file_path = owned_media_api_path(payload.file_path, current_user.id)
@@ -242,6 +244,7 @@ def publish_image(
     db: Session = Depends(get_db),
     adapter_factory=Depends(get_creator_api_adapter_factory),
 ):
+    ensure_production_external_actions_allowed()
     account, adapter = _adapter_for_account(db, current_user, payload.account_id, adapter_factory)
     note_info = {
         "title": payload.title,
@@ -274,6 +277,7 @@ def publish_video(
     db: Session = Depends(get_db),
     adapter_factory=Depends(get_creator_api_adapter_factory),
 ):
+    ensure_production_external_actions_allowed()
     account, adapter = _adapter_for_account(db, current_user, payload.account_id, adapter_factory)
     note_info = {
         "title": payload.title,

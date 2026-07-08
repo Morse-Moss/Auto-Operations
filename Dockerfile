@@ -62,9 +62,10 @@ RUN mkdir -p /app/data /app/backend/app/storage/media /app/backend/app/storage/e
 
 # Set environment defaults
 ENV PYTHONUNBUFFERED=1 \
+    ENVIRONMENT=production \
     NODE_ENV=production \
     FRONTEND_SERVE_STATIC=true \
-    CONFIG_FILE=/app/config/default.yaml
+    CONFIG_FILE=/app/config/production.yaml
 
 EXPOSE 18081
 
