@@ -214,6 +214,6 @@ class WechatOfficialContentLibraryTombstone(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    article_url: Mapped[str] = mapped_column(Text, index=True)
+    article_url: Mapped[str] = mapped_column(String(512), index=True)
     article_title: Mapped[str] = mapped_column(String(512), default="")
     deleted_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)

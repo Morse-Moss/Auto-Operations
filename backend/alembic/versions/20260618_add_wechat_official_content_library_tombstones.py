@@ -22,7 +22,7 @@ def upgrade() -> None:
         "wechat_official_content_library_tombstones",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
-        sa.Column("article_url", sa.Text(), nullable=False),
+        sa.Column("article_url", sa.String(length=512), nullable=False),
         sa.Column("article_title", sa.String(length=512), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
