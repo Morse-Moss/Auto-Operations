@@ -40,7 +40,7 @@ def upgrade() -> None:
             sa.Column("task_id", sa.Integer(), sa.ForeignKey("tasks.id"), nullable=True),
             sa.Column("expires_at", sa.DateTime(), nullable=False),
             sa.Column("released_at", sa.DateTime(), nullable=True),
-            sa.Column("release_reason", sa.Text(), nullable=False, server_default=""),
+            sa.Column("release_reason", sa.Text(), nullable=False),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.UniqueConstraint("active_key", name="uq_beta_concurrency_leases_active_key"),
         )

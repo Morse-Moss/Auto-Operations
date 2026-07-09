@@ -90,7 +90,7 @@ def upgrade() -> None:
             sa.Column("model_config_id", sa.Integer(), sa.ForeignKey("model_configs.id"), nullable=True),
             sa.Column("external_request_id", sa.String(length=128), nullable=False, server_default=""),
             sa.Column("request_summary", sa.JSON(), nullable=True),
-            sa.Column("failure_reason", sa.Text(), nullable=False, server_default=""),
+            sa.Column("failure_reason", sa.Text(), nullable=False),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.UniqueConstraint("tenant_id", "feature_key", "idempotency_key", name="uq_usage_ledgers_tenant_feature_idempotency"),
         )
