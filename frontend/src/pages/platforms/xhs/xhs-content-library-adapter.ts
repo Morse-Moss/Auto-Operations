@@ -75,6 +75,7 @@ function getNotePublishTime(note: SavedNote): string {
 }
 
 function getNoteUrl(note: SavedNote): string {
+  if (typeof note.source_url === "string" && note.source_url.startsWith("http")) return note.source_url;
   const raw = note.raw_json ?? {};
   for (const key of ["note_url", "url", "share_url"]) {
     const value = raw[key];
@@ -95,7 +96,28 @@ function getNoteUrl(note: SavedNote): string {
       if (typeof value === "string" && value.startsWith("http")) return value;
     }
   }
-  return `https://www.xiaohongshu.com/explore/${note.note_id}`;
+  return "";
+}
+
+function isLegacyDataAcquisitionShortLink(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const segments = url.pathname.split("/").filter(Boolean);
+    return url.hostname.toLowerCase().endsWith("xiaohongshu.com")
+      && segments.length === 2
+      && segments[0] === "explore"
+      && /^\d+$/.test(segments[1])
+      && !url.search;
+  } catch {
+    return false;
+  }
+}
+
+function isOpenableNoteUrl(value: string): boolean {
+  if (!value.startsWith("http")) return false;
+  // legacy data-acquisition short links are resolver inputs, not user-openable note links.
+  if (isLegacyDataAcquisitionShortLink(value)) return false;
+  return true;
 }
 
 function getAuthorProfileUrl(note: SavedNote): string {
@@ -309,7 +331,7 @@ function renderTable(context: ContentLibraryRenderContext<SavedNote>) {
 
 function renderSystemAnalysisDetail(note: SavedNote) {
   const analysis = note.analysis_result;
-  return h(Card, { size: "small", title: "飞书分析结果", style: { marginBottom: 16, background: "#1f1f1f" } },
+  return h(Card, { size: "small", title: "系统分析结果", style: { marginBottom: 16, background: "#1f1f1f" } },
     h(Descriptions, { column: 1, size: "small" },
       h(Descriptions.Item, { label: "分析来源" }, analysis?.source || (analysis ? "system" : "-")),
       h(Descriptions.Item, { label: "飞书同步状态" }, note.feishu_sync?.push_status || "not_synced"),
@@ -438,6 +460,36 @@ function renderSaveImagesButton(controller: ContentLibraryRenderContext<SavedNot
   }, missingCount ? `保存图片 (${missingCount})` : "图片已保存");
 }
 
+function renderPageImageImportAssistButton(
+  controller: ContentLibraryRenderContext<SavedNote>["controller"],
+  selectedNote: SavedNote,
+  noteUrl: string,
+) {
+  const canImport = noteUrl.startsWith("http");
+
+  async function copyPageImportScript() {
+    try {
+      const scriptPayload = await createSavedNoteSourceImageImportScript(selectedNote.id);
+      await copyTextWithFallback(scriptPayload.script);
+      const hint = "已复制原文导入脚本。打开作品链接后，在地址栏粘贴并回车，系统会接收并保存页面里的图片。";
+      controller.setDetailError(null);
+      controller.setDetailActionMessage(hint);
+      message.success(hint);
+    } catch (error) {
+      const errorMessage = `原文导入脚本复制失败：${getActionErrorMessage(error)}`;
+      controller.setDetailError(errorMessage);
+      message.error(errorMessage);
+    }
+  }
+
+  return h(Button, {
+    icon: h(CopyOutlined),
+    disabled: !canImport,
+    onClick: () => void copyPageImportScript(),
+    size: "small",
+  }, "打开原文导入图片");
+}
+
 function renderImportSourceImagesButton(
   controller: ContentLibraryRenderContext<SavedNote>["controller"],
   selectedNote: SavedNote,
@@ -446,12 +498,13 @@ function renderImportSourceImagesButton(
   const isLoading = importingSourceImageNoteIds.has(selectedNote.id);
   const canImport = noteUrl.startsWith("http");
 
-  async function copyPageImportScript() {
+  async function preparePageImportScript(reason: string) {
     const scriptPayload = await createSavedNoteSourceImageImportScript(selectedNote.id);
     await copyTextWithFallback(scriptPayload.script);
-    const hint = "已复制当前页面导入脚本。打开作品链接后，在地址栏粘贴并回车，图片会自动保存到本系统。";
+    const hint = `${reason}，已复制原文导入脚本。打开作品链接后，在地址栏粘贴并回车，系统会接收并保存页面里的图片。`;
+    controller.setDetailError(null);
     controller.setDetailActionMessage(hint);
-    message.success(hint);
+    message.warning(hint);
   }
 
   async function importSourceImages() {
@@ -462,15 +515,21 @@ function renderImportSourceImagesButton(
       return;
     }
     importingSourceImageNoteIds.add(selectedNote.id);
-    controller.setDetailActionMessage("正在补全原文图片...");
+    controller.setDetailError(null);
+    controller.setDetailActionMessage("正在自动补全原文图片...");
     try {
       const result = await importSavedNoteSourceImages(selectedNote.id, { source_url: noteUrl, download: true });
       await controller.refreshSelectedItem();
       if (result.total_source_image_count === 0) {
-        await copyPageImportScript();
+        await preparePageImportScript("自动补全未识别到新增图片");
         return;
       }
-      const summary = `原文图片补全完成：新增 ${result.imported_count} 张，已存在 ${result.skipped_count} 张，已保存 ${result.downloaded_count} 张，失败 ${result.failed_count} 张。`;
+      if (result.imported_count === 0 && result.downloaded_count === 0 && result.failed_count === 0) {
+        await preparePageImportScript("自动补全只识别到已存在图片");
+        return;
+      }
+      const summary = `可自动补全的原文图片已处理：新增 ${result.imported_count} 张，已存在 ${result.skipped_count} 张，已保存 ${result.downloaded_count} 张，失败 ${result.failed_count} 张。`;
+      controller.setDetailError(result.failed_count > 0 ? "部分图片保存失败，请稍后重试或使用原文导入脚本继续处理。" : null);
       controller.setDetailActionMessage(summary);
       if (result.failed_count > 0) {
         message.warning(summary);
@@ -479,10 +538,11 @@ function renderImportSourceImagesButton(
       }
     } catch (error) {
       try {
-        await copyPageImportScript();
+        await preparePageImportScript(`自动补全原文图片失败：${getActionErrorMessage(error)}`);
       } catch (scriptError) {
-        const errorMessage = `补全原文图片失败：${getActionErrorMessage(error)}；当前页面导入脚本复制失败：${getActionErrorMessage(scriptError)}`;
+        const errorMessage = `自动补全原文图片失败：${getActionErrorMessage(error)}；原文导入脚本复制失败：${getActionErrorMessage(scriptError)}`;
         controller.setDetailError(errorMessage);
+        controller.setDetailActionMessage(null);
         message.error(errorMessage);
       }
     } finally {
@@ -496,7 +556,7 @@ function renderImportSourceImagesButton(
     disabled: isLoading || !canImport,
     onClick: () => void importSourceImages(),
     size: "small",
-  }, "补全原文图片");
+  }, "自动补全原文图片");
 }
 
 function renderSystemAnalysisButton(controller: ContentLibraryRenderContext<SavedNote>["controller"], selectedNote: SavedNote) {
@@ -719,6 +779,7 @@ function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<
 
 function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibraryAdapter<SavedNote>["renderDetail"]>[0]) {
   const noteUrl = getNoteUrl(selectedNote);
+  const canOpenSource = isOpenableNoteUrl(noteUrl);
   const authorProfileUrl = getAuthorProfileUrl(selectedNote);
   const platformTags = getNoteTags(selectedNote);
   const engagement = getNoteEngagement(selectedNote);
@@ -730,17 +791,18 @@ function renderDetail({ controller, item: selectedNote }: Parameters<ContentLibr
       h(Descriptions.Item, { label: "笔记 ID" }, selectedNote.note_id),
       h(Descriptions.Item, { label: "保存时间" }, formatSavedTime(selectedNote.created_at)),
       publishTime ? h(Descriptions.Item, { label: "发布时间" }, publishTime) : null,
-      h(Descriptions.Item, { label: "作品链接" }, h(Typography.Link, { href: noteUrl, target: "_blank", rel: "noreferrer", style: { fontSize: 12, wordBreak: "break-all" } }, noteUrl)),
+      h(Descriptions.Item, { label: "作品链接" }, canOpenSource ? h(Typography.Link, { href: noteUrl, target: "_blank", rel: "noreferrer", style: { fontSize: 12, wordBreak: "break-all" } }, noteUrl) : h(Text, { type: "secondary" }, "未返回可访问链接")),
     ),
     platformTags.length > 0 ? h("div", { style: { marginBottom: 12 } }, platformTags.map((tag) => h(Tag, { key: tag, color: "blue" }, `#${tag}`))) : null,
     renderSystemAnalysisDetail(selectedNote),
-    h(Button, { type: "link", icon: h(LinkOutlined), href: noteUrl, target: "_blank", rel: "noreferrer", style: { padding: 0, marginBottom: 16 } }, "查看原文"),
+    canOpenSource ? h(Button, { type: "link", icon: h(LinkOutlined), href: noteUrl, target: "_blank", rel: "noreferrer", style: { padding: 0, marginBottom: 16 } }, "查看原文") : null,
     h(Space, { wrap: true, style: { marginBottom: 16 } },
       h(Button, { icon: h(CopyOutlined), onClick: controller.copySelectedItem, size: "small" }, "复制内容"),
       renderSystemAnalysisButton(controller, selectedNote),
       h(Button, { icon: h(FileAddOutlined), onClick: controller.addToDrafts, loading: controller.isCreatingDraft, size: "small" }, "加入草稿工坊"),
       h(Button, { icon: h(EditOutlined), onClick: () => void controller.createDraft("rewrite"), loading: controller.isCreatingDraft, size: "small" }, "AI 改写"),
       renderImportSourceImagesButton(controller, selectedNote, noteUrl),
+      renderPageImageImportAssistButton(controller, selectedNote, noteUrl),
       h(Popconfirm, { title: "确定删除？", onConfirm: () => void controller.deleteItem(selectedNote) }, h(Button, { danger: true, icon: h(DeleteOutlined), size: "small" }, "删除")),
     ),
     controller.selectedAssets.length > 0 ? h("div", { style: { marginBottom: 16 } },

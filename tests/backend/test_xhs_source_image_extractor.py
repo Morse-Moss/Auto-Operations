@@ -53,6 +53,38 @@ def test_canonical_image_key_dedupes_xhs_cdn_variants_by_note_image_token():
     assert canonical_xhs_image_key(older_webpic_url) == canonical_xhs_image_key(raw_url)
 
 
+def test_canonical_image_key_keeps_note_pre_post_uhdr_tokens_distinct():
+    first = "http://sns-webpic-qc.xhscdn.com/202607091612/a/note_pre_post_uhdr/1040g3r8321khfii9n0805n3cklqkba4lsql93j8!nd_dft_wlteh_webp_3"
+    second = "http://sns-webpic-qc.xhscdn.com/202607091612/b/note_pre_post_uhdr/1040g3r8321khfii9n0b05n3cklqkba4l5f2camo!nd_dft_wlteh_webp_3"
+
+    assert canonical_xhs_image_key(first) == "note_pre_post_uhdr/1040g3r8321khfii9n0805n3cklqkba4lsql93j8"
+    assert canonical_xhs_image_key(second) == "note_pre_post_uhdr/1040g3r8321khfii9n0b05n3cklqkba4l5f2camo"
+    assert canonical_xhs_image_key(first) != canonical_xhs_image_key(second)
+
+
+def test_extract_does_not_promote_plain_state_ids_to_image_urls():
+    note = {
+        "note": {
+            "noteDetailMap": {
+                "6a361fc400000000110175cd": {
+                    "note": {
+                        "id": "6a361fc400000000110175cd",
+                        "imageList": [
+                            {"id": "6a361fc400000000110175cd"},
+                            {"traceId": "notes_pre_post/real-image-token"},
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    html = f"<html><script>window.__INITIAL_STATE__={json.dumps(note, ensure_ascii=False)}</script></html>"
+
+    urls = extract_xhs_note_image_urls_from_html(html)
+
+    assert urls == ["https://sns-img-bd.xhscdn.com/notes_pre_post/real-image-token"]
+
+
 def test_extracts_initial_state_with_spaced_assignment_and_url_list_objects():
     note = {
         "noteData": {

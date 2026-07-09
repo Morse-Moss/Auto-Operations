@@ -369,7 +369,16 @@ def test_import_source_images_accepts_page_payload_token_and_downloads(monkeypat
         assert "cookie" not in script_payload["script"].lower()
         assert "__INITIAL_STATE__" in script_payload["script"]
         assert "imageList" in script_payload["script"]
-        assert "if(!urls.length)" in script_payload["script"]
+        assert "if(!urls.length)" not in script_payload["script"]
+        assert "walk(window.__INITIAL_STATE__" in script_payload["script"]
+        assert "document.querySelectorAll('img,source')" in script_payload["script"]
+        assert "const keyOf=(u)=>" in script_payload["script"]
+        assert "note_pre_post_uhdr" in script_payload["script"]
+        assert "await fetch(target" not in script_payload["script"]
+        assert "navigator.sendBeacon" in script_payload["script"]
+        assert "status:'sent'" in script_payload["script"]
+        assert "keepalive:true" in script_payload["script"]
+        assert "__xhsSourceImageImportStatus" in script_payload["script"]
         token = script_payload["script"].split("token=")[1].split(";", 1)[0].strip("'\"")
 
         response = client.post(
@@ -408,6 +417,64 @@ def test_import_source_images_accepts_page_payload_token_and_downloads(monkeypat
             assert "secret-token" not in str(note.raw_json)
             assets = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note_id).order_by(NoteAsset.sort_order.asc())).all()
             assert [asset.local_path for asset in assets] == ["page-payload-1.jpg", "page-payload-2.jpg"]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_localize_images_refreshes_source_import_failure_summary(monkeypatch):
+    SessionLocal = override_database()
+    download_calls: list[tuple[str, int, str]] = []
+    try:
+        user_id, note_id, headers = create_user_headers(SessionLocal, username="source-image-refresh-summary")
+        first_url = "https://sns-webpic-qc.xhscdn.com/202607071002/a/notes_pre_post/one"
+        second_url = "https://sns-webpic-qc.xhscdn.com/202607071002/b/notes_pre_post/two"
+
+        def fail_download(url: str, owner_id: int, asset_type: str) -> str | None:
+            download_calls.append((url, owner_id, asset_type))
+            return None
+
+        monkeypatch.setattr("backend.app.api.notes._download_asset", fail_download, raising=False)
+
+        script_response = client.post(f"/api/notes/{note_id}/assets/import-source-images/page-script", headers=headers)
+        assert script_response.status_code == 200
+        token = script_response.json()["script"].split("token=")[1].split(";", 1)[0].strip("'\"")
+        import_response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images/page-payload",
+            content=json.dumps(
+                {
+                    "token": token,
+                    "source_url": "https://www.xiaohongshu.com/explore/note-1?xsec_token=secret-token",
+                    "image_urls": [first_url, second_url],
+                    "download": True,
+                }
+            ),
+            headers={"Content-Type": "text/plain;charset=UTF-8"},
+        )
+        assert import_response.status_code == 200
+        assert import_response.json()["failed_count"] == 2
+
+        def recover_download(url: str, owner_id: int, asset_type: str) -> str | None:
+            download_calls.append((url, owner_id, asset_type))
+            return f"recovered-{len(download_calls)}.webp"
+
+        monkeypatch.setattr("backend.app.api.notes._download_asset", recover_download, raising=False)
+
+        response = client.post(f"/api/notes/{note_id}/assets/localize-images", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["downloaded_count"] == 2
+        assert payload["failed_count"] == 0
+
+        db = SessionLocal()
+        try:
+            note = db.get(Note, note_id)
+            assert note is not None
+            assert note.raw_json["source_image_import"]["total_source_image_count"] == 2
+            assert note.raw_json["source_image_import"]["downloaded_count"] == 2
+            assert note.raw_json["source_image_import"]["failed_count"] == 0
         finally:
             db.close()
     finally:
@@ -486,5 +553,57 @@ def test_import_source_images_rejects_bad_page_payload_token_without_importing(m
             assert assets == []
         finally:
             db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_source_images_reports_existing_raw_images_when_page_fetch_returns_empty(monkeypatch):
+    SessionLocal = override_database()
+    try:
+        _user_id, note_id, headers = create_user_headers(SessionLocal, username="source-image-existing-raw")
+        existing_url = "https://sns-img-hw.xhscdn.com/notes_pre_post/existing-image"
+        db = SessionLocal()
+        try:
+            note = db.get(Note, note_id)
+            assert note is not None
+            note.raw_json = {
+                "source": "data_acquisition",
+                "note_url": "https://www.xiaohongshu.com/explore/note-1?xsec_token=token",
+                "asset_urls": [existing_url],
+            }
+            db.add(NoteAsset(note_id=note_id, asset_type="image", url=existing_url, local_path="existing.jpg", sort_order=0))
+            db.commit()
+        finally:
+            db.close()
+
+        monkeypatch.setattr("backend.app.api.notes.fetch_xhs_note_image_urls", lambda _source_url: [], raising=False)
+        monkeypatch.setattr(
+            "backend.app.api.notes._download_asset",
+            lambda *_args: (_ for _ in ()).throw(AssertionError("existing image should not be downloaded again")),
+            raising=False,
+        )
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images",
+            headers=headers,
+            json={"source_url": "https://www.xiaohongshu.com/explore/note-1?xsec_token=token", "download": True},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total_source_image_count"] == 1
+        assert payload["imported_count"] == 0
+        assert payload["skipped_count"] == 1
+        assert payload["downloaded_count"] == 0
+        assert payload["failed_count"] == 0
+        assert payload["items"] == [
+            {
+                "url": existing_url,
+                "status": "skipped",
+                "asset_id": payload["items"][0]["asset_id"],
+                "local_path": "existing.jpg",
+                "error": "",
+            }
+        ]
     finally:
         app.dependency_overrides.pop(get_db, None)

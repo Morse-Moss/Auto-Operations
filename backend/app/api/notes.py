@@ -33,6 +33,8 @@ from backend.app.services.asset_storage_policy import create_signed_media_url, e
 from backend.app.services.feishu_bitable_service import get_or_create_analysis_result
 from backend.app.services.note_analysis_service import analyze_note_system
 from backend.app.services.note_exclusion_service import build_current_cleanup_candidates, mark_notes_excluded
+from backend.app.services import huitun_live_note_source
+from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
 from backend.app.services.xhs_source_image_extractor import (
     XhsSourceImageExtractionError,
     canonical_xhs_image_key,
@@ -282,11 +284,38 @@ def _serialize_feishu_sync(result: NoteAnalysisResult | None) -> dict:
     }
 
 
+def _note_source_url(raw: dict[str, Any], fallback_note_id: str) -> str:
+    for key in ("note_url", "url", "share_url"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+    acquisition = raw.get("data_acquisition")
+    if isinstance(acquisition, dict):
+        value = acquisition.get("original_url")
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+    data = raw.get("data")
+    items = data.get("items") if isinstance(data, dict) else None
+    item = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+    card = item.get("note_card") if isinstance(item.get("note_card"), dict) else {}
+    for source in (card, item):
+        xsec_token = source.get("xsec_token") if isinstance(source, dict) else None
+        if isinstance(xsec_token, str) and xsec_token:
+            xsec_source = source.get("xsec_source") if isinstance(source.get("xsec_source"), str) else "pc_feed"
+            return f"https://www.xiaohongshu.com/explore/{fallback_note_id}?xsec_token={xsec_token}&xsec_source={xsec_source}"
+        for key in ("note_url", "url", "share_url"):
+            value = source.get(key) if isinstance(source, dict) else None
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value
+    return ""
+
+
 def _serialize_note(
     db: Session,
     note: Note,
     top20_marks: dict[int, list[str]] | None = None,
     mapping_cache: dict[int, XhsContentMapping | None] | None = None,
+    include_raw: bool = False,
 ) -> dict:
     assets = _get_note_assets(db, note)
     image_assets = [asset for asset in assets if asset.asset_type == "image"]
@@ -304,7 +333,7 @@ def _serialize_note(
     marks = (top20_marks or {}).get(note.id, [])
     feishu_analysis = _get_feishu_analysis_result(db, note.id)
     effective_analysis = _get_effective_analysis_result(db, note.id)
-    return {
+    payload = {
         "id": note.id,
         "platform": note.platform,
         "platform_account_id": note.platform_account_id,
@@ -312,7 +341,7 @@ def _serialize_note(
         "title": note.title,
         "content": note.content,
         "author_name": note.author_name,
-        "raw_json": note.raw_json,
+        "source_url": _note_source_url(raw, note.note_id),
         "asset_urls": response_asset_urls,
         "cover_url": response_cover_url,
         "video_url": response_video_url,
@@ -324,6 +353,9 @@ def _serialize_note(
         "feishu_sync": _serialize_feishu_sync(feishu_analysis),
         "analysis_result": _serialize_analysis_result(effective_analysis),
     }
+    if include_raw:
+        payload["raw_json"] = note.raw_json
+    return payload
 
 
 def _serialize_note_with_tags(
@@ -331,8 +363,9 @@ def _serialize_note_with_tags(
     note: Note,
     top20_marks: dict[int, list[str]] | None = None,
     mapping_cache: dict[int, XhsContentMapping | None] | None = None,
+    include_raw: bool = False,
 ) -> dict:
-    serialized = _serialize_note(db, note, top20_marks, mapping_cache)
+    serialized = _serialize_note(db, note, top20_marks, mapping_cache, include_raw)
     serialized["tags"] = _get_note_tags(db, note.id)
     return serialized
 
@@ -370,8 +403,8 @@ def _serialize_asset(asset: NoteAsset, user_id: int | None = None) -> dict:
     }
 
 
-def _serialize_comment(comment: NoteComment) -> dict:
-    return {
+def _serialize_comment(comment: NoteComment, *, include_raw: bool = False) -> dict:
+    payload = {
         "id": comment.id,
         "note_id": comment.note_id,
         "comment_id": comment.comment_id,
@@ -381,8 +414,10 @@ def _serialize_comment(comment: NoteComment) -> dict:
         "like_count": comment.like_count,
         "parent_comment_id": comment.parent_comment_id,
         "created_at_remote": comment.created_at_remote,
-        "raw_json": comment.raw_json,
     }
+    if include_raw:
+        payload["raw_json"] = comment.raw_json
+    return payload
 
 
 def _serialize_draft(draft: AiDraft) -> dict:
@@ -689,7 +724,8 @@ def get_notes(
     top20_marks = _top20_marks(notes, mapping_cache)
     if sort_by != "latest":
         notes = sorted(notes, key=lambda note: (_note_metric(note, sort_by, mapping_cache), note.created_at, note.id), reverse=True)
-    return paginated([_serialize_note_with_tags(db, note, top20_marks, mapping_cache) for note in notes], page, page_size)
+    include_raw = current_user.role == "admin"
+    return paginated([_serialize_note_with_tags(db, note, top20_marks, mapping_cache, include_raw=include_raw) for note in notes], page, page_size)
 
 
 @router.post("/{note_id}/analysis")
@@ -797,7 +833,7 @@ def get_note(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return _serialize_note_with_tags(db, _get_owned_note(db, current_user, note_id))
+    return _serialize_note_with_tags(db, _get_owned_note(db, current_user, note_id), include_raw=current_user.role == "admin")
 
 
 @router.delete("/{note_id}")
@@ -846,6 +882,83 @@ def _safe_source_image_import_url(source_url: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         return ""
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
+def _legacy_data_acquisition_note_id(source_url: str) -> str:
+    parsed = urlparse(str(source_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc.lower().endswith("xiaohongshu.com"):
+        return ""
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) != 2 or segments[0] != "explore" or not segments[1].isdigit():
+        return ""
+    if parsed.query:
+        return ""
+    return segments[1]
+
+
+def _resolve_source_image_import_url(
+    db: Session,
+    note: Note,
+    source_url: str,
+    *,
+    fail_on_unresolved: bool = False,
+) -> str:
+    note_id = _legacy_data_acquisition_note_id(source_url)
+    if not note_id:
+        return source_url
+    raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
+    acquisition = raw_json.get("data_acquisition")
+    if raw_json.get("source") != "data_acquisition" and not isinstance(acquisition, dict):
+        return source_url
+    try:
+        _account, cookie_text = get_platform_data_account_cookie_text(db)
+        resolved_url = huitun_live_note_source.resolve_note_url(cookie_text, note_id)
+    except Exception as exc:
+        if fail_on_unresolved:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="source_url_unavailable") from exc
+        return source_url
+    if not resolved_url:
+        if fail_on_unresolved:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="source_url_unavailable")
+        return source_url
+    next_raw = dict(raw_json)
+    next_raw["note_url"] = resolved_url
+    if isinstance(acquisition, dict):
+        next_raw["data_acquisition"] = {**acquisition, "original_url": resolved_url}
+    else:
+        next_raw["data_acquisition"] = {"original_url": resolved_url}
+    note.raw_json = next_raw
+    return resolved_url
+
+
+def _note_known_source_image_urls(db: Session, note: Note) -> list[str]:
+    values: list[str] = []
+
+    def collect(value: Any, *, depth: int = 0) -> None:
+        if depth > 8 or len(values) >= 100:
+            return
+        if isinstance(value, str):
+            if is_xhs_note_image_url(value):
+                values.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item, depth=depth + 1)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                collect(item, depth=depth + 1)
+
+    raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
+    collect(raw_json)
+    asset_urls = db.scalars(
+        select(NoteAsset.url)
+        .where(NoteAsset.note_id == note.id, NoteAsset.asset_type == "image")
+        .order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())
+    ).all()
+    for asset_url in asset_urls:
+        collect(asset_url)
+    return _unique_source_image_urls(values)
 
 
 def _source_import_base64_encode(value: bytes) -> str:
@@ -1025,6 +1138,20 @@ def _import_source_image_urls(
     }
 
 
+def _refresh_source_image_import_summary(note: Note, image_assets: list[NoteAsset]) -> None:
+    raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
+    summary = raw_json.get("source_image_import")
+    if not isinstance(summary, dict):
+        return
+    next_summary = {
+        **summary,
+        "total_source_image_count": int(summary.get("total_source_image_count") or len(image_assets)),
+        "downloaded_count": sum(1 for asset in image_assets if asset.local_path),
+        "failed_count": sum(1 for asset in image_assets if not asset.local_path),
+    }
+    note.raw_json = {**raw_json, "source_image_import": next_summary}
+
+
 def _source_image_import_target_url(request: Request, note_id: int) -> str:
     origin = str(request.headers.get("origin") or "").rstrip("/")
     if origin.startswith(("http://127.0.0.1", "http://localhost")):
@@ -1041,21 +1168,32 @@ def _build_source_image_import_script(*, target_url: str, token: str) -> str:
         "javascript:(async()=>{"
         f"const target={target_json},token={token_json};"
         "const urls=[],seen=new Set();"
-        "const noteRe=/(\\/notes_pre_post\\/|\\/note_pre_post_|\\/notes_uhdr\\/|\\/[A-Za-z0-9_-]{20,}(?:[!?]|$))/;"
+        "const noteRe=/(\\/notes_pre_post\\/|\\/note_pre_post_|\\/notes_uhdr\\/)/;"
+        "const keyOf=(u)=>{try{const p=new URL(u).pathname.split('!')[0].split('/').filter(Boolean);for(const m of ['notes_pre_post','notes_uhdr','note_pre_post_uhdr']){const i=p.indexOf(m);if(i>=0&&p[i+1])return m+'/'+p[i+1];}const mm=new URL(u).pathname.match(/(note_pre_post_[^/]+)\\/([^/!?]+)/);if(mm)return mm[1]+'/'+mm[2];return u.split('!')[0];}catch(e){return String(u||'').split('!')[0];}};"
         "const add=(u)=>{u=String(u||'').trim().replace(/\\\\u002F/g,'/').replace(/\\\\\\//g,'/');"
         "if(!/^https?:\\/\\//.test(u)&&noteRe.test('/'+u.replace(/^\\/+/,'')))u='https://sns-img-bd.xhscdn.com/'+u.replace(/^\\/+/, '');"
-        "if(/^https?:\\/\\/(sns-[^/]+\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\//.test(u)&&noteRe.test(new URL(u).pathname)){const k=u.split('!')[0];if(!seen.has(k)){seen.add(k);urls.push(u);}}};"
+        "if(/^https?:\\/\\/(sns-[^/]+\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\//.test(u)&&noteRe.test(new URL(u).pathname)){const k=keyOf(u);if(!seen.has(k)){seen.add(k);urls.push(u);}}};"
         "const addList=(list)=>{if(Array.isArray(list))list.forEach(i=>{if(!i)return;[i.urlDefault,i.url,i.traceId,i.fileId,i.id].forEach(add);if(Array.isArray(i.urlList))i.urlList.forEach(x=>typeof x==='string'?add(x):x&&[x.urlDefault,x.url,x.traceId,x.fileId,x.id].forEach(add));});};"
-        "try{const s=window.__INITIAL_STATE__||{},id=(location.pathname.match(/\\/explore\\/([^/?#]+)/)||[])[1]||'';addList(s.noteData&&s.noteData.data&&s.noteData.data.noteData&&s.noteData.data.noteData.imageList);const m=s.note&&s.note.noteDetailMap;if(m){addList(m[id]&&m[id].note&&m[id].note.imageList);Object.values(m).forEach(v=>addList(v&&v.note&&v.note.imageList));}}catch(e){}"
-        "if(!urls.length){const scan=(s)=>{String(s||'').replace(/https?:\\/\\/(?:sns-[^\\\"'<>\\s]+?\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\/[^\\\"'<>\\s)]+/g,add);};"
+        "const walk=(v,d=0)=>{if(!v||d>8)return;if(typeof v==='string'){add(v);return;}if(Array.isArray(v)){v.forEach(x=>walk(x,d+1));return;}if(typeof v==='object'){if(Array.isArray(v.imageList))addList(v.imageList);['urlDefault','url','urlPre','url_pre','traceId','trace_id','fileId','file_id','id'].forEach(k=>add(v[k]));Object.values(v).forEach(x=>walk(x,d+1));}};"
+        "try{const s=window.__INITIAL_STATE__||{},id=(location.pathname.match(/\\/(?:explore|discovery\\/item)\\/([^/?#]+)/)||[])[1]||'';addList(s.noteData&&s.noteData.data&&s.noteData.data.noteData&&s.noteData.data.noteData.imageList);const m=s.note&&s.note.noteDetailMap;if(m){addList(m[id]&&m[id].note&&m[id].note.imageList);Object.values(m).forEach(v=>addList(v&&v.note&&v.note.imageList));}walk(window.__INITIAL_STATE__);}catch(e){}"
+        "const scan=(s)=>{String(s||'').replace(/https?:\\/\\/(?:sns-[^\\\"'<>\\s]+?\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)\\/[^\\\"'<>\\s)]+/g,add);};"
         "document.querySelectorAll('img,source').forEach(i=>{add(i.currentSrc||i.src||i.getAttribute('src'));scan(i.getAttribute('srcset'));});"
         "document.querySelectorAll('[style],[data-src],[data-original],[data-url]').forEach(e=>{scan(e.getAttribute('style'));add(e.getAttribute('data-src'));add(e.getAttribute('data-original'));add(e.getAttribute('data-url'));});"
         "scan(document.documentElement.innerHTML.slice(0,200000));"
-        "try{performance.getEntriesByType('resource').slice(-200).forEach(e=>add(e.name));}catch(e){}}"
+        "try{performance.getEntriesByType('resource').slice(-300).forEach(e=>add(e.name));}catch(e){}"
         "const body={token,source_url:location.href,image_urls:urls.slice(0,50),download:true};"
-        "try{await fetch(target,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify(body)});"
-        "alert(`已发送 ${body.image_urls.length} 张图片，返回系统刷新详情查看。`);}"
-        "catch(e){alert('发送失败：'+(e&&e.message?e.message:e));}"
+        "const payload=JSON.stringify(body);"
+        "const mark=(extra)=>{window.__xhsSourceImageImportStatus={status:'sent',count:body.image_urls.length,source_url:body.source_url,...(extra||{})};};"
+        "let sent=false;try{if(navigator.sendBeacon){sent=navigator.sendBeacon(target,new Blob([payload],{type:'text/plain;charset=UTF-8'}));}}catch(e){}"
+        "if(sent){mark({transport:'beacon'});}"
+        "else{window.__xhsSourceImageImportStatus={status:'sending',count:body.image_urls.length,source_url:body.source_url,transport:'fetch'};"
+        "fetch(target,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:payload,keepalive:true})"
+        ".then(async r=>{const t=await r.text();let data={};try{data=JSON.parse(t);}catch(e){data={text:t};}"
+        "window.__xhsSourceImageImportStatus={status:r.ok?'done':'failed',http_status:r.status,count:body.image_urls.length,result:data};"
+        "console.log('[xhs-image-import]',window.__xhsSourceImageImportStatus);})"
+        ".catch(e=>{window.__xhsSourceImageImportStatus={status:'failed',count:body.image_urls.length,error:e&&e.message?e.message:String(e)};"
+        "console.error('[xhs-image-import]',e);});}"
+        "try{console.log(`[xhs-image-import] sent ${body.image_urls.length} images, return to system and refresh detail.`);}catch(e){}"
         "})()"
     )
 
@@ -1101,17 +1239,21 @@ def import_source_image_assets(
     else:
         if not payload.source_url:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="source_url_or_image_urls_required")
+        source_url = _resolve_source_image_import_url(db, note, payload.source_url, fail_on_unresolved=True)
         try:
-            source_urls = fetch_xhs_note_image_urls(payload.source_url)
+            source_urls = fetch_xhs_note_image_urls(source_url)
         except XhsSourceImageExtractionError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        if not source_urls:
+            source_urls = _note_known_source_image_urls(db, note)
+    source_url = _resolve_source_image_import_url(db, note, payload.source_url) if payload.image_urls else source_url
 
     return _import_source_image_urls(
         db=db,
         note=note,
         user_id=current_user.id,
         source_urls=source_urls,
-        source_url=payload.source_url,
+        source_url=source_url,
         download=payload.download,
     )
 
@@ -1224,6 +1366,7 @@ def localize_note_image_assets(
         })
 
     if downloaded_count:
+        _refresh_source_image_import_summary(note, assets)
         db.commit()
 
     return {
@@ -1286,7 +1429,7 @@ def get_note_comments(
     comments = db.scalars(
         select(NoteComment).where(NoteComment.note_id == note.id).order_by(NoteComment.id.asc())
     ).all()
-    return paginated([_serialize_comment(comment) for comment in comments], page, page_size)
+    return paginated([_serialize_comment(comment, include_raw=current_user.role == "admin") for comment in comments], page, page_size)
 
 
 def _download_asset(url: str, user_id: int, asset_type: str) -> str | None:
@@ -1404,7 +1547,7 @@ def batch_save_notes(
         "saved_count": len(saved_notes),
         "skipped_count": len(skipped_items),
         "skipped_items": skipped_items,
-        "items": [_serialize_note_with_tags(db, note) for note in saved_notes],
+        "items": [_serialize_note_with_tags(db, note, include_raw=current_user.role == "admin") for note in saved_notes],
     }
 
 
@@ -1451,7 +1594,7 @@ def batch_tag_notes(
     db.commit()
     return {
         "updated_count": len(notes),
-        "items": [_serialize_note_with_tags(db, note) for note in notes],
+        "items": [_serialize_note_with_tags(db, note, include_raw=current_user.role == "admin") for note in notes],
     }
 
 
@@ -1475,7 +1618,7 @@ def export_notes(
             "format": payload.format,
             "exported_at": exported_at.isoformat(),
             "total": len(notes),
-            "items": [_serialize_note_with_tags(db, note) for note in notes],
+            "items": [_serialize_note_with_tags(db, note, include_raw=current_user.role == "admin") for note in notes],
         }
         file_path.write_text(json.dumps(export_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return {

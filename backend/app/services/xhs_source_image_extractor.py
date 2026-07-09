@@ -152,7 +152,8 @@ def _image_url_from_value(value: str) -> str:
         return ""
     if value.startswith(("http://", "https://")):
         return _normalize_image_url(value)
-    if "/" in value or re.fullmatch(r"[A-Za-z0-9_-]{12,}", value):
+    cleaned = value.lstrip("/")
+    if _is_explicit_note_image_path(cleaned):
         return f"https://sns-img-bd.xhscdn.com/{value.lstrip('/')}"
     return ""
 
@@ -178,7 +179,7 @@ def _canonical_image_key(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path.strip("/")
     parts = path.split("/")
-    for marker in ("notes_pre_post", "notes_uhdr"):
+    for marker in ("notes_pre_post", "notes_uhdr", "note_pre_post_uhdr"):
         if marker in parts:
             index = parts.index(marker)
             if index + 1 < len(parts):
@@ -220,6 +221,10 @@ def is_xhs_note_image_url(url: str) -> bool:
     if not ((host.startswith("sns-") and host.endswith(".xhscdn.com")) or host == "ci.xiaohongshu.com"):
         return False
     path = parsed.path.lower()
-    if any(segment in path for segment in ("/notes_pre_post/", "/note_pre_post_", "/notes_uhdr/")):
+    if _is_explicit_note_image_path(path.lstrip("/")):
         return True
     return bool(re.fullmatch(r"/[a-z0-9_-]{20,}", path))
+
+
+def _is_explicit_note_image_path(path: str) -> bool:
+    return any(segment in f"/{path.lower()}" for segment in ("/notes_pre_post/", "/note_pre_post_", "/notes_uhdr/"))
