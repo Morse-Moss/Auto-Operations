@@ -7,6 +7,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, event, pool, text
 
 from backend.app.core.database import Base
+from backend.app.core.alembic_compat import ensure_mysql_alembic_version_table
 import backend.app.models  # noqa: F401
 
 config = context.config
@@ -47,6 +48,7 @@ def run_migrations_online() -> None:
             cursor.close()
 
     with connectable.connect() as connection:
+        ensure_mysql_alembic_version_table(connection)
         context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
         with context.begin_transaction():
             context.run_migrations()
