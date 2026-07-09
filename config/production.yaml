@@ -10,7 +10,7 @@
 server:
   host: "0.0.0.0"
   port: 18081
-  cors_origins: "https://your-domain.com"
+  cors_origins: "https://aitavix.com,https://www.aitavix.com"
 
 database:
   type: "mysql"

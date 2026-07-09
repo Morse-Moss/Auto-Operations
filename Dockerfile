@@ -27,15 +27,16 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2: Python application
 # ---------------------------------------------------------------------------
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
 # Install system dependencies required by some Python packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends --fix-missing \
     curl \
     build-essential \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -71,6 +72,6 @@ EXPOSE 18081
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:18081/api/health || exit 1
+    CMD curl -f "http://localhost:${PORT:-18081}/api/health" || exit 1
 
-CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "18081"]
+CMD ["sh", "-c", "python main.py --host 0.0.0.0 --port ${PORT:-18081}"]

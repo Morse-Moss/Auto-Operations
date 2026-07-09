@@ -49,5 +49,14 @@ Thumbs.db
 
 # Test artifacts
 tests/
+test-results/
+compare-shots/
+.tmp/
+.tmp-codex/
+pytest_tmp_backend/
 htmlcov/
 .coverage
+
+# Local logs and office documents
+*.log
+*.docx

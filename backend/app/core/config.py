@@ -127,6 +127,21 @@ class Settings(BaseSettings):
         # Build database_url from component fields if not explicitly set
         if not self.database_url:
             if self.database_type == "mysql":
+                mysql_host = os.environ.get("MYSQLHOST")
+                mysql_port = os.environ.get("MYSQLPORT")
+                mysql_user = os.environ.get("MYSQLUSER")
+                mysql_password = os.environ.get("MYSQLPASSWORD")
+                mysql_database = os.environ.get("MYSQLDATABASE")
+                if mysql_host and self.database_mysql_host in {"localhost", "mysql"}:
+                    object.__setattr__(self, "database_mysql_host", mysql_host)
+                if mysql_port and self.database_mysql_port == 3306:
+                    object.__setattr__(self, "database_mysql_port", int(mysql_port))
+                if mysql_user and self.database_mysql_user == "spider_xhs":
+                    object.__setattr__(self, "database_mysql_user", mysql_user)
+                if mysql_password and self.database_mysql_password in {"", "change_me", "CHANGE_ME_VIA_ENV_VAR"}:
+                    object.__setattr__(self, "database_mysql_password", mysql_password)
+                if mysql_database and self.database_mysql_database == "spider_xhs":
+                    object.__setattr__(self, "database_mysql_database", mysql_database)
                 object.__setattr__(
                     self,
                     "database_url",
