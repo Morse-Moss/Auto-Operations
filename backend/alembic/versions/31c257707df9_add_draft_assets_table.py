@@ -24,8 +24,8 @@ def upgrade() -> None:
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('draft_id', sa.Integer(), sa.ForeignKey('ai_drafts.id'), nullable=False, index=True),
         sa.Column('asset_type', sa.String(32), nullable=False),
-        sa.Column('url', sa.Text(), server_default='', nullable=False),
-        sa.Column('local_path', sa.Text(), server_default='', nullable=False),
+        sa.Column('url', sa.Text(), nullable=False),
+        sa.Column('local_path', sa.Text(), nullable=False),
         sa.Column('sort_order', sa.Integer(), server_default='0', nullable=False),
     )
 
