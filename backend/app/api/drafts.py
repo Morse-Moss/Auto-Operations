@@ -21,7 +21,7 @@ from backend.app.services.ai_service import TextAiClient
 from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.asset_storage_policy import create_signed_media_url, valid_media_owner_prefixes
 from backend.app.services.draft_ai_scoring_service import DraftAiScoringService
-from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
@@ -608,7 +608,7 @@ def score_draft_with_ai(
         feature_key="draft.ai_score",
         bucket=CREDITS_BUCKET,
         amount=credit_cost_for_feature("draft.ai_score"),
-        idempotency_key=request.headers.get("Idempotency-Key") or f"draft.ai_score:{current_user.id}:{draft.id}:{payload.force}",
+        idempotency_key=usage_idempotency_key(request, f"draft.ai_score:{current_user.id}:{draft.id}:{payload.force}"),
         request_summary={"draft_id": draft.id, "title_length": len(draft.title), "body_length": len(draft.body), "asset_count": len(assets), "force": payload.force},
         model_config_id=model_config.id,
         provider=model_config.provider,

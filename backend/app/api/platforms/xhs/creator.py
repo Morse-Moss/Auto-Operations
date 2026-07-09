@@ -119,6 +119,17 @@ def _payload_items(raw_payload: Any) -> list[Any]:
     return []
 
 
+def _is_admin_user(user: User) -> bool:
+    return user.role == "admin"
+
+
+def _items_response(raw_payload: Any, current_user: User) -> dict[str, Any]:
+    response = {"items": _payload_items(raw_payload)}
+    if _is_admin_user(current_user):
+        response["raw"] = raw_payload
+    return response
+
+
 def _create_operation_task(
     db: Session,
     current_user: User,
@@ -192,7 +203,7 @@ def search_topics(
     success, message, raw_payload = adapter.get_topic(payload.keyword)
     if not success:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message or "Creator topic search failed")
-    return {"items": _payload_items(raw_payload), "raw": raw_payload}
+    return _items_response(raw_payload, current_user)
 
 
 @router.post("/locations/search")
@@ -206,7 +217,7 @@ def search_locations(
     success, message, raw_payload = adapter.get_location_info(payload.keyword)
     if not success:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message or "Creator location search failed")
-    return {"items": _payload_items(raw_payload), "raw": raw_payload}
+    return _items_response(raw_payload, current_user)
 
 
 @router.post("/assets/upload")
@@ -314,4 +325,4 @@ def published(
     success, message, raw_payload = adapter.get_published_notes()
     if not success:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message or "Creator published list failed")
-    return {"items": _payload_items(raw_payload), "raw": raw_payload}
+    return _items_response(raw_payload, current_user)

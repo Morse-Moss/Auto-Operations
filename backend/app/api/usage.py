@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_tenant_context
-from backend.app.services.usage_quota_service import TenantContext, UsageQuotaService
+from backend.app.services.usage_quota_service import CREDIT_COSTS, FEATURE_CREDIT_ACTIONS, TenantContext, UsageQuotaService
 
 router = APIRouter(prefix="/usage", tags=["usage"])
 
@@ -32,5 +32,20 @@ def usage_balance(context: TenantContext = Depends(get_current_tenant_context), 
                 "status": balance.status,
             }
             for bucket, balance in buckets.items()
+        },
+    }
+
+
+@router.get("/pricing")
+def usage_pricing(_context: TenantContext = Depends(get_current_tenant_context)):
+    return {
+        "currency": "credits",
+        "actions": CREDIT_COSTS,
+        "features": {
+            feature_key: {
+                "action": action_key,
+                "cost": CREDIT_COSTS[action_key],
+            }
+            for feature_key, action_key in FEATURE_CREDIT_ACTIONS.items()
         },
     }

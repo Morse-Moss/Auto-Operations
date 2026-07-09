@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from dataclasses import dataclass
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -18,7 +19,9 @@ BETA_DEFAULT_BUCKETS: dict[str, int] = {
 
 CREDIT_COSTS: dict[str, int] = {
     "note_search": 2,
+    "keyword_live_seed": 2,
     "ai_text": 2,
+    "model_test": 1,
     "image_generation": 5,
     "analysis_report": 10,
 }
@@ -30,6 +33,8 @@ BUCKET_LABELS: dict[str, str] = {
     "text_action": "文本 AI",
     "draft_score": "草稿评分",
     "analysis_report": "分析报告",
+    "keyword_live_seed": "数据热词发现",
+    "model_test": "模型连接测试",
 }
 
 
@@ -47,6 +52,8 @@ FEATURE_CREDIT_ACTIONS: dict[str, str] = {
     "analysis.report_create": "analysis_report",
     "analysis.report_rerun": "analysis_report",
     "xhs.data_acquisition.note_search": "note_search",
+    "keyword.discovery.live": "keyword_live_seed",
+    "model_config.test": "model_test",
 }
 
 
@@ -118,6 +125,14 @@ def _safe_idempotency_key(value: str) -> str:
     return f"{prefix}:sha256:{digest}"
 
 
+def usage_idempotency_key(request: Request | None, fallback: str) -> str:
+    if request is not None:
+        explicit = request.headers.get("Idempotency-Key")
+        if explicit:
+            return explicit
+    return f"{fallback}:request:{uuid.uuid4().hex}"
+
+
 def get_or_create_default_tenant_context(db: Session, user_id: int, *, commit: bool = True) -> TenantContext:
     membership = db.scalar(
         select(TenantMember)
@@ -180,21 +195,60 @@ class UsageQuotaService:
             for account in accounts
         }
 
-    def adjust_bucket(self, tenant_id: int, bucket: str, *, total: int, reason: str = "") -> BetaCreditAccount:
+    def adjust_bucket(
+        self,
+        tenant_id: int,
+        bucket: str,
+        *,
+        operation: str = "reset",
+        amount: int | None = None,
+        total: int | None = None,
+        reason: str = "",
+    ) -> BetaCreditAccount:
         account = self._get_account(tenant_id, bucket)
-        account.total = total
-        account.remaining = total
+        previous_total = account.total
+        previous_remaining = account.remaining
+        if operation == "grant":
+            if amount is None or amount <= 0:
+                raise ValueError("Credit grant amount must be positive")
+            account.total += amount
+            account.remaining += amount
+            ledger_amount = amount
+        elif operation == "deduct":
+            if amount is None or amount <= 0:
+                raise ValueError("Credit deduction amount must be positive")
+            if account.remaining < amount:
+                raise ValueError("Insufficient remaining credits for manual deduction")
+            account.total = max(0, account.total - amount)
+            account.remaining -= amount
+            ledger_amount = -amount
+        elif operation == "reset":
+            if total is None:
+                raise ValueError("Credit reset total is required")
+            if total < 0:
+                raise ValueError("Credit reset total cannot be negative")
+            account.total = total
+            account.remaining = total
+            ledger_amount = total
+        else:
+            raise ValueError(f"Unsupported credit adjustment operation: {operation}")
         self.db.add(
             UsageLedger(
                 tenant_id=tenant_id,
                 user_id=None,
                 feature_key=f"usage.adjust.{bucket}",
                 bucket=bucket,
-                operation="adjust",
-                amount=total,
+                operation=operation,
+                amount=ledger_amount,
                 balance_after=account.remaining,
                 status="completed",
-                idempotency_key=f"adjust:{bucket}:{account.id}:{total}",
+                idempotency_key=f"adjust:{bucket}:{account.id}:{operation}:{uuid.uuid4().hex}",
+                request_summary={
+                    "previous_total": previous_total,
+                    "previous_remaining": previous_remaining,
+                    "new_total": account.total,
+                    "new_remaining": account.remaining,
+                },
                 failure_reason=reason,
             )
         )

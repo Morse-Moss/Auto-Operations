@@ -14,7 +14,7 @@ from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.user import User
 from backend.app.services.ai_service import TextAiClient
 from backend.app.services.beta_concurrency_service import acquire_analysis_report_lease
-from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
 
 router = APIRouter(prefix="/xhs/analytics/analysis", tags=["xhs-analysis-center"])
@@ -80,7 +80,7 @@ def _text_model_context_or_none(db: Session, current_user: User) -> tuple[Any | 
 
 
 def _quota_idempotency_key(request: Request, fallback: str) -> str:
-    return request.headers.get("Idempotency-Key") or fallback
+    return usage_idempotency_key(request, fallback)
 
 
 def _analysis_request_summary(payload: CreateAnalysisReportPayload) -> dict[str, int]:

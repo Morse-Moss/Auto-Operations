@@ -15,7 +15,7 @@ from backend.app.models import (
     UsageLedger,
     User,
 )
-from backend.app.services.usage_quota_service import get_or_create_default_tenant_context
+from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 
 
 client = TestClient(app)
@@ -421,15 +421,15 @@ def test_admin_api_controls_users_tenants_and_credit_balance(tmp_path):
         assert tenants.status_code == 200
         assert any(item["id"] == target_tenant_id for item in tenants.json()["items"])
 
-        adjusted = client.post(
+        granted = client.post(
             f"/api/admin/tenants/{target_tenant_id}/credits/adjust",
             headers=_auth_headers(admin_token),
-            json={"bucket": "credits", "total": 700, "reason": "beta grant"},
+            json={"bucket": "credits", "operation": "grant", "amount": 700, "reason": "beta grant"},
         )
-        assert adjusted.status_code == 200
-        assert adjusted.json()["bucket"] == "credits"
-        assert adjusted.json()["total"] == 700
-        assert adjusted.json()["remaining"] == 700
+        assert granted.status_code == 200
+        assert granted.json()["bucket"] == "credits"
+        assert granted.json()["total"] == 800
+        assert granted.json()["remaining"] == 800
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -437,7 +437,7 @@ def test_admin_api_controls_users_tenants_and_credit_balance(tmp_path):
                 select(UsageLedger).where(
                     UsageLedger.tenant_id == target_tenant_id,
                     UsageLedger.bucket == "credits",
-                    UsageLedger.operation == "adjust",
+                    UsageLedger.operation == "grant",
                 )
             )
             assert ledger is not None
@@ -464,6 +464,58 @@ def test_admin_api_controls_users_tenants_and_credit_balance(tmp_path):
         assert enabled.status_code == 200
         assert enabled.json()["status"] == "active"
         assert client.get("/api/auth/me", headers=_auth_headers(target_token)).status_code == 200
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_admin_credit_adjustment_does_not_restore_spent_credits_unless_reset(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = _create_user(db, "credit-admin", role="admin")
+            target = _create_user(db, "credit-member", role="user")
+            target_context = get_or_create_default_tenant_context(db, target.id)
+            reservation = UsageQuotaService(db).reserve(
+                tenant_id=target_context.tenant.id,
+                user_id=target.id,
+                feature_key="ai.image_generate",
+                bucket="credits",
+                amount=20,
+                idempotency_key="admin-credit-spend",
+            )
+            UsageQuotaService(db).commit(reservation.id)
+            db.commit()
+            admin_token = create_access_token(admin.id)
+            target_tenant_id = target_context.tenant.id
+        finally:
+            db.close()
+
+        granted = client.post(
+            f"/api/admin/tenants/{target_tenant_id}/credits/adjust",
+            headers=_auth_headers(admin_token),
+            json={"bucket": "credits", "operation": "grant", "amount": 50, "reason": "top up"},
+        )
+        deducted = client.post(
+            f"/api/admin/tenants/{target_tenant_id}/credits/adjust",
+            headers=_auth_headers(admin_token),
+            json={"bucket": "credits", "operation": "deduct", "amount": 30, "reason": "correction"},
+        )
+        reset = client.post(
+            f"/api/admin/tenants/{target_tenant_id}/credits/adjust",
+            headers=_auth_headers(admin_token),
+            json={"bucket": "credits", "operation": "reset", "total": 300, "reason": "new package"},
+        )
+
+        assert granted.status_code == 200
+        assert granted.json()["total"] == 150
+        assert granted.json()["remaining"] == 130
+        assert deducted.status_code == 200
+        assert deducted.json()["total"] == 120
+        assert deducted.json()["remaining"] == 100
+        assert reset.status_code == 200
+        assert reset.json()["total"] == 300
+        assert reset.json()["remaining"] == 300
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 

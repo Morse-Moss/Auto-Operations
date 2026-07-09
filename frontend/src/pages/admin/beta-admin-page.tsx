@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Form,
   Input,
@@ -34,6 +35,12 @@ const bucketOptions = [
   { label: "积分", value: "credits" },
 ];
 
+const creditOperationOptions = [
+  { label: "增加积分", value: "grant" },
+  { label: "扣减积分", value: "deduct" },
+  { label: "重置套餐", value: "reset" },
+];
+
 function statusTag(status: string) {
   const color = status === "active" ? "green" : status === "suspended" || status === "disabled" ? "red" : "default";
   return <Tag color={color}>{status}</Tag>;
@@ -48,6 +55,7 @@ export function BetaAdminPage() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [creditForm] = Form.useForm();
   const [inviteForm] = Form.useForm();
+  const creditOperation = Form.useWatch("operation", creditForm);
 
   async function loadAll() {
     setLoading(true);
@@ -92,9 +100,12 @@ export function BetaAdminPage() {
   async function submitCreditAdjustment() {
     const values = await creditForm.validateFields();
     if (!creditTenant) return;
+    const operation = values.operation || "grant";
     await adjustAdminTenantCredit(creditTenant.id, {
       bucket: values.bucket,
-      total: values.total,
+      operation,
+      amount: operation === "reset" ? undefined : values.amount,
+      total: operation === "reset" ? values.total : undefined,
       reason: values.reason || "",
     });
     message.success("积分已调整");
@@ -141,7 +152,15 @@ export function BetaAdminPage() {
                     width: 240,
                     render: (_, tenant) => (
                       <Space>
-                        <Button size="small" onClick={() => setCreditTenant(tenant)}>积分</Button>
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            setCreditTenant(tenant);
+                            creditForm.setFieldsValue({ bucket: "credits", operation: "grant", amount: undefined, total: undefined, reason: "" });
+                          }}
+                        >
+                          积分
+                        </Button>
                         <Popconfirm title="确认切换租户状态？" onConfirm={() => void toggleTenant(tenant)}>
                           <Button size="small" danger={tenant.status !== "suspended"}>
                             {tenant.status === "suspended" ? "解冻" : "冻结"}
@@ -226,13 +245,28 @@ export function BetaAdminPage() {
         onOk={() => void submitCreditAdjustment()}
         destroyOnHidden
       >
-        <Form form={creditForm} layout="vertical">
+        <Form form={creditForm} layout="vertical" initialValues={{ bucket: "credits", operation: "grant" }}>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="增加或扣减只改变当前余额，不会抹平已消费记录；重置套餐会把总积分和剩余积分都设为新值。"
+          />
           <Form.Item name="bucket" label="积分池" rules={[{ required: true }]}>
             <Select options={bucketOptions} />
           </Form.Item>
-          <Form.Item name="total" label="总积分" rules={[{ required: true }]}>
-            <InputNumber min={0} style={{ width: "100%" }} />
+          <Form.Item name="operation" label="调整方式" rules={[{ required: true }]}>
+            <Select options={creditOperationOptions} />
           </Form.Item>
+          {creditOperation === "reset" ? (
+            <Form.Item name="total" label="重置后总积分" rules={[{ required: true }]}>
+              <InputNumber min={0} style={{ width: "100%" }} />
+            </Form.Item>
+          ) : (
+            <Form.Item name="amount" label={creditOperation === "deduct" ? "扣减积分" : "增加积分"} rules={[{ required: true }]}>
+              <InputNumber min={1} style={{ width: "100%" }} />
+            </Form.Item>
+          )}
           <Form.Item name="reason" label="调整原因">
             <Input />
           </Form.Item>

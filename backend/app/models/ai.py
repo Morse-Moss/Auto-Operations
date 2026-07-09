@@ -10,7 +10,7 @@ from backend.app.core.database import Base
 from backend.app.core.time import shanghai_now
 
 
-DEFAULT_TEXT_MODEL_NAME = "gpt-5.4"
+DEFAULT_TEXT_MODEL_NAME = "doubao-seed-2-0-mini-260428"
 
 
 class ModelConfig(Base):

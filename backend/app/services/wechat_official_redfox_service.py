@@ -24,6 +24,9 @@ from backend.app.models import (
     WechatOfficialCrawlAccount,
     WechatOfficialCrawlJob,
     WechatOfficialRedfoxConfig,
+    Tenant,
+    TenantMember,
+    User,
 )
 from backend.app.services.wechat_official_article_page_provider import WechatOfficialArticlePageProvider
 from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
@@ -662,7 +665,7 @@ class WechatOfficialRedfoxService:
         )
 
     def _client(self, user_id: int) -> WechatOfficialRedfoxClient:
-        config = self._require_config(user_id)
+        config = self._require_runtime_config(user_id)
         if not config.encrypted_api_key:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Redfox API Key is not configured")
         try:
@@ -674,8 +677,27 @@ class WechatOfficialRedfoxService:
     def _find_config(self, user_id: int) -> WechatOfficialRedfoxConfig | None:
         return self.db.scalar(select(WechatOfficialRedfoxConfig).where(WechatOfficialRedfoxConfig.user_id == user_id).order_by(WechatOfficialRedfoxConfig.id.desc()))
 
+    def _find_runtime_config(self, user_id: int) -> WechatOfficialRedfoxConfig | None:
+        config = self._find_config(user_id)
+        if config is not None:
+            return config
+        return self.db.scalars(
+            select(WechatOfficialRedfoxConfig)
+            .join(User, User.id == WechatOfficialRedfoxConfig.user_id)
+            .join(TenantMember, TenantMember.user_id == User.id)
+            .join(Tenant, Tenant.id == TenantMember.tenant_id)
+            .where(User.role == "admin", User.status == "active", Tenant.status == "active")
+            .order_by(WechatOfficialRedfoxConfig.id.asc())
+        ).first()
+
     def _require_config(self, user_id: int) -> WechatOfficialRedfoxConfig:
         config = self._find_config(user_id)
+        if config is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Redfox config not found")
+        return config
+
+    def _require_runtime_config(self, user_id: int) -> WechatOfficialRedfoxConfig:
+        config = self._find_runtime_config(user_id)
         if config is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Redfox config not found")
         return config

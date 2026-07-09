@@ -32,11 +32,13 @@ import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "../../components/layout/app-shell";
 import {
+  configureDoubaoMainModels,
   createModelConfig,
   deleteModelConfig,
   fetchModelConfigs,
   setDefaultModelConfig,
   apiErrorMessage,
+  getUsageLimitError,
   testModelConfig,
   updateModelConfig,
 } from "../../lib/api";
@@ -44,27 +46,29 @@ import { useUsageBalance } from "../../hooks/use-usage-balance";
 import type { ModelConfig, ModelConfigPayload, ModelType } from "../../types";
 
 const { Text } = Typography;
+const DOUBAO_MAIN_MODEL = "doubao-seed-2-0-mini-260428";
+const VOLCENGINE_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 
 const emptyForm: ModelConfigPayload = {
   name: "",
   model_type: "text",
-  provider: "openai-compatible",
-  model_name: "gpt-5.4",
-  base_url: "",
+  provider: "volcengine-ark",
+  model_name: DOUBAO_MAIN_MODEL,
+  base_url: VOLCENGINE_ARK_BASE_URL,
   api_key: "",
   is_default: true,
 };
 
 function defaultModelName(type: ModelType): string {
-  return type === "text" ? "gpt-5.4" : "runninghub-image-g";
+  return DOUBAO_MAIN_MODEL;
 }
 
 function defaultProvider(type: ModelType): string {
-  return type === "text" ? "openai-compatible" : "runninghub-ai-app";
+  return "volcengine-ark";
 }
 
 function defaultBaseUrl(type: ModelType): string {
-  return type === "text" ? "" : "https://www.runninghub.cn";
+  return VOLCENGINE_ARK_BASE_URL;
 }
 
 function defaultFormForType(type: ModelType): ModelConfigPayload {
@@ -97,6 +101,8 @@ export function ModelConfigPage() {
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, { status: string; message: string }>>({});
+  const [doubaoApiKey, setDoubaoApiKey] = useState("");
+  const [isConfiguringDoubao, setIsConfiguringDoubao] = useState(false);
   const usage = useUsageBalance();
 
   const grouped = useMemo(
@@ -204,7 +210,8 @@ export function ModelConfigPage() {
       const result = await testModelConfig(configId);
       setTestResults((prev) => ({ ...prev, [configId]: { status: result.status, message: result.message } }));
     } catch (err) {
-      setTestResults((prev) => ({ ...prev, [configId]: { status: "error", message: apiErrorMessage(err, "检查请求失败") } }));
+      const limitError = getUsageLimitError(err);
+      setTestResults((prev) => ({ ...prev, [configId]: { status: "error", message: limitError?.message || apiErrorMessage(err, "检查请求失败") } }));
     } finally {
       setTestingId(null);
     }
@@ -227,6 +234,38 @@ export function ModelConfigPage() {
       );
     } catch {
       setError("默认模型切换失败。");
+    }
+  }
+
+  async function handleConfigureDoubaoMain() {
+    const apiKey = doubaoApiKey.trim();
+    if (!apiKey) {
+      setError("请填写方舟 API Key。");
+      return;
+    }
+    setIsConfiguringDoubao(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await configureDoubaoMainModels(apiKey);
+      setConfigs((current) => {
+        const configured = [result.text, result.vision];
+        const configuredIds = new Set(configured.map((item) => item.id));
+        const updated = current
+          .filter((item) => !configuredIds.has(item.id))
+          .map((item) => (
+            item.model_type === result.text.model_type || item.model_type === result.vision.model_type
+              ? { ...item, is_default: false }
+              : item
+          ));
+        return [...configured, ...updated];
+      });
+      setDoubaoApiKey("");
+      setMessage("豆包主力模型已配置为文本和图片分析默认模型。");
+    } catch (err) {
+      setError(apiErrorMessage(err, "豆包主力模型配置失败。"));
+    } finally {
+      setIsConfiguringDoubao(false);
     }
   }
 
@@ -257,9 +296,9 @@ export function ModelConfigPage() {
         style={{ marginBottom: 16 }}
         message="模型配置建议"
         description={<>
-          图片工坊默认推荐 RunningHub：Provider <Typography.Text code>runninghub-ai-app</Typography.Text>，Base URL <Typography.Text code>https://www.runninghub.cn</Typography.Text>，模型名称可填 <Typography.Text code>runninghub-image-g</Typography.Text>。<br />
-          文本模型仍使用 OpenAI 兼容接口：例如 <Typography.Text code>https://api.openai-next.com/v1</Typography.Text>、火山方舟或阿里云百炼兼容模式。<br />
-          模型连接测试首期不扣主额度；每天每个用户免费 3 次，超出后当天不再请求模型服务。
+          主力模型使用火山方舟：Provider <Typography.Text code>volcengine-ark</Typography.Text>，Base URL <Typography.Text code>{VOLCENGINE_ARK_BASE_URL}</Typography.Text>，模型名称 <Typography.Text code>{DOUBAO_MAIN_MODEL}</Typography.Text>。<br />
+          同一个 Doubao 配置可以分别保存为文本模型和图片分析模型；图片生成仍需单独使用支持生成的服务。<br />
+          模型连接测试会按积分计费；余额不足时不会请求模型服务。
         </>}
       />
 
@@ -288,6 +327,36 @@ export function ModelConfigPage() {
 
       <Row gutter={[24, 24]}>
         <Col xs={24} lg={8}>
+          <Card
+            title={
+              <Space>
+                <RobotOutlined />
+                <span>豆包主力模型</span>
+              </Space>
+            }
+            style={{ ...cardStyle, marginBottom: 16 }}
+          >
+            <Space direction="vertical" style={{ width: "100%" }} size="middle">
+              <Text type="secondary">
+                一次保存方舟 API Key，同时创建或更新文本模型和图片分析模型，并设为默认。图片生成配置保持不变。
+              </Text>
+              <Input.Password
+                value={doubaoApiKey}
+                onChange={(event) => setDoubaoApiKey(event.target.value)}
+                placeholder="ARK_API_KEY / 方舟 API Key"
+              />
+              <Button
+                type="primary"
+                icon={<KeyOutlined />}
+                loading={isConfiguringDoubao}
+                onClick={() => void handleConfigureDoubaoMain()}
+                block
+              >
+                保存为主力模型
+              </Button>
+            </Space>
+          </Card>
+
           <Card
             title={
               <Space>
@@ -343,10 +412,10 @@ export function ModelConfigPage() {
                         provider: e.target.value,
                       }))
                     }
-                    placeholder={form.model_type === "image" ? "runninghub-ai-app" : "openai-compatible"}
+                    placeholder="volcengine-ark"
                   />
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    图片工坊推荐 runninghub-ai-app；OpenAI 兼容服务使用 openai-compatible。
+                    方舟 Doubao 使用 volcengine-ark；其他 OpenAI 兼容服务可按实际 Provider 命名。
                   </Text>
                 </Form.Item>
                 <Form.Item label="模型名称">
@@ -358,7 +427,7 @@ export function ModelConfigPage() {
                         model_name: e.target.value,
                       }))
                     }
-                    placeholder={form.model_type === "text" ? "gpt-5.4" : "runninghub-image-g"}
+                    placeholder={DOUBAO_MAIN_MODEL}
                   />
                 </Form.Item>
                 <Form.Item label="Base URL">
@@ -370,7 +439,7 @@ export function ModelConfigPage() {
                         base_url: e.target.value,
                       }))
                     }
-                    placeholder={form.model_type === "image" && form.provider === "runninghub-ai-app" ? "https://www.runninghub.cn" : "https://api.example.com/v1"}
+                    placeholder={VOLCENGINE_ARK_BASE_URL}
                   />
                 </Form.Item>
                 <Form.Item label="API Key">

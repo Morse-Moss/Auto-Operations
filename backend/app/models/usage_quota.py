@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -27,7 +27,10 @@ class BetaCreditAccount(Base):
 
 class UsageLedger(Base):
     __tablename__ = "usage_ledgers"
-    __table_args__ = (UniqueConstraint("tenant_id", "feature_key", "idempotency_key", name="uq_usage_ledgers_tenant_feature_idempotency"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "feature_key", "idempotency_key", name="uq_usage_ledgers_tenant_feature_idempotency"),
+        Index("uq_usage_ledgers_reservation_operation", "reservation_id", "operation", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)

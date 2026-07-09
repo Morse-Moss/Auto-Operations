@@ -618,6 +618,14 @@ export type AdminCreditAdjustment = {
   status: string;
 };
 
+export type AdminCreditAdjustmentPayload = {
+  bucket: UsageBucketKey;
+  operation: "grant" | "deduct" | "reset";
+  amount?: number;
+  total?: number;
+  reason?: string;
+};
+
 export type AuthTokens = {
   access_token: string;
   refresh_token?: string;
@@ -1249,15 +1257,19 @@ export type UsageBalance = {
   buckets: Record<UsageBucketKey, UsageBucketBalance>;
 };
 
+export type UsagePricing = {
+  currency: "credits" | string;
+  actions: Record<string, number>;
+  features: Record<string, { action: string; cost: number }>;
+};
+
 export type UsageLimitError = {
-  code: "usage_quota_insufficient" | "model_test_daily_limit_exceeded" | string;
+  code: "usage_quota_insufficient" | string;
   message: string;
   feature_key?: string;
   bucket?: UsageBucketKey;
   required?: number;
   remaining?: number;
-  limit?: number;
-  used?: number;
 };
 
 export type AnalysisReportStatus = "pending" | "running" | "completed" | "failed";
@@ -1481,6 +1493,11 @@ export type ModelConfigPayload = {
   base_url: string;
   api_key: string;
   is_default: boolean;
+};
+
+export type DoubaoMainModelConfigResult = {
+  text: ModelConfig;
+  vision: ModelConfig;
 };
 
 export type RewriteDraftPayload = {
@@ -1829,6 +1846,31 @@ export type PublishOptions = {
   privacy_type?: 0 | 1 | number;
   is_private?: boolean;
   draft_tags?: Array<{ id?: string; name?: string }>;
+};
+
+export type PublishAppDraftHandoff = {
+  job_id: number;
+  status: "requires_mobile_app_handoff" | string;
+  draft_saved: boolean;
+  real_publish_blocked: boolean;
+  handoff: {
+    method: "xiaohongshu_app_composer" | string;
+    title: string;
+    suggested_test_title: string;
+    body: string;
+    assets: Array<{
+      id: number;
+      asset_type: "image" | "video" | string;
+      file_path: string;
+    }>;
+    publish_options: PublishOptions;
+  };
+  verification: {
+    verification_code: string;
+    requires_user_app_check: boolean;
+    acceptance: string;
+  };
+  limitations: string[];
 };
 
 export type SendDraftToPublishPayload = {

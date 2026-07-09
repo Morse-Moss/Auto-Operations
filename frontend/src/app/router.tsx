@@ -75,7 +75,7 @@ export function AppRouter() {
           <Route path="/platforms/wechat-official/library" element={<WechatOfficialLibraryPage />} />
           <Route path="/platforms/wechat-official/drafts" element={<WechatOfficialDraftsPage />} />
           <Route path="/platforms/wechat-official/image-studio" element={<XhsImageStudioPage />} />
-          <Route path="/platforms/wechat-official/settings" element={<WechatOfficialSettingsPage />} />
+          <Route path="/platforms/wechat-official/settings" element={<AdminRoute><WechatOfficialSettingsPage /></AdminRoute>} />
           <Route path="/platforms/xhs/dashboard" element={<XhsDashboard />} />
           <Route path="/platforms/xhs/accounts" element={<XhsAccountsPage />} />
           <Route path="/platforms/xhs/analytics" element={<XhsAnalyticsPage />} />
@@ -91,8 +91,8 @@ export function AppRouter() {
           <Route path="/platforms/xhs/auto-ops" element={<AutoOpsPage />} />
           <Route path="/platforms/xhs/:section" element={<XhsSectionPage />} />
           <Route path="/tasks" element={<TaskCenterPage />} />
-          <Route path="/models" element={<ModelConfigPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/models" element={<AdminRoute><ModelConfigPage /></AdminRoute>} />
+          <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
           <Route path="/admin" element={<AdminRoute><BetaAdminPage /></AdminRoute>} />
         </Route>
       </Routes>

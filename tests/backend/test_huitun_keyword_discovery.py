@@ -11,7 +11,8 @@ from backend.app.api.keyword_groups import get_huitun_live_keyword_client
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, encrypt_text, hash_password
 from backend.app.main import app
-from backend.app.models import AccountCookieVersion, KeywordDiscoveryItem, KeywordDiscoveryRun, PlatformAccount, User
+from backend.app.models import AccountCookieVersion, KeywordDiscoveryItem, KeywordDiscoveryRun, PlatformAccount, UsageLedger, User
+from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 
 client = TestClient(app)
 
@@ -241,6 +242,86 @@ def test_live_huitun_batch_discovery_keeps_successful_seed_items_when_one_seed_f
             assert items[0].run_id == run.id
             assert items[0].source_keyword == "低卡早餐"
             assert items[0].keyword == "低卡早餐食谱"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_huitun_live_keyword_client, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_live_huitun_batch_discovery_charges_credits_per_seed(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _account_id, headers = create_user_account_and_headers(SessionLocal)
+        fake = FakeHuitunClient(
+            results={
+                "低卡早餐": [{"source_keyword": "低卡早餐", "keyword": "低卡早餐食谱", "rank_index": 1, "categories": []}],
+                "通勤穿搭": [{"source_keyword": "通勤穿搭", "keyword": "通勤穿搭模板", "rank_index": 1, "categories": []}],
+            }
+        )
+        app.dependency_overrides[get_huitun_live_keyword_client] = lambda: fake
+
+        response = client.post(
+            "/api/keyword-groups/huitun/discovery-runs",
+            headers=headers,
+            json={
+                "source_mode": "live_account",
+                "limit_per_seed": 20,
+                "inputs": [{"source_keyword": "低卡早餐"}, {"source_keyword": "通勤穿搭"}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert fake.calls == [("session=ok", "低卡早餐", 20), ("session=ok", "通勤穿搭", 20)]
+        db = SessionLocal()
+        try:
+            rows = db.scalars(select(UsageLedger).where(UsageLedger.bucket == "credits").order_by(UsageLedger.id)).all()
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("keyword.discovery.live", "reserve", 4),
+                ("keyword.discovery.live.commit", "commit", 4),
+            ]
+            assert rows[0].request_summary == {"seed_count": 2, "limit_per_seed": 20, "source_mode": "live_account"}
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_huitun_live_keyword_client, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_live_huitun_batch_discovery_credit_shortage_returns_402_without_calling_source(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _account_id, headers = create_user_account_and_headers(SessionLocal)
+        fake = FakeHuitunClient(results={"低卡早餐": []})
+        app.dependency_overrides[get_huitun_live_keyword_client] = lambda: fake
+
+        db = SessionLocal()
+        try:
+            user = db.scalar(select(User).where(User.username == "operator"))
+            assert user is not None
+            context = get_or_create_default_tenant_context(db, user.id)
+            UsageQuotaService(db).adjust_bucket(context.tenant.id, "credits", total=1, reason="test shortage")
+        finally:
+            db.close()
+
+        response = client.post(
+            "/api/keyword-groups/huitun/discovery-runs",
+            headers=headers,
+            json={
+                "source_mode": "live_account",
+                "limit_per_seed": 20,
+                "inputs": [{"source_keyword": "低卡早餐"}],
+            },
+        )
+
+        assert response.status_code == 402
+        assert response.json()["code"] == "usage_quota_insufficient"
+        assert response.json()["required"] == 2
+        assert fake.calls == []
+        db = SessionLocal()
+        try:
+            assert db.scalars(select(KeywordDiscoveryRun)).all() == []
+            assert db.scalars(select(KeywordDiscoveryItem)).all() == []
         finally:
             db.close()
     finally:

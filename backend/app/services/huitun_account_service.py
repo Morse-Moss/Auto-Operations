@@ -23,6 +23,15 @@ HUITUN_INVALID_LOGIN_MESSAGE = "数据账号登录态无效或已过期。"
 HUITUN_QR_FAILED_MESSAGE = "数据账号二维码生成失败，请稍后重试。"
 HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE = "数据账号登录失败，请检查账号密码或重新完成验证。"
 HUITUN_PASSWORD_SMS_REQUIRED_MESSAGE = "当前设备需要短信验证，请输入短信验证码后继续。"
+HUITUN_PASSWORD_SMS_KEYWORDS = (
+    "短信",
+    "验证码",
+    "设备",
+    "安全验证",
+    "二次验证",
+    "手机验证",
+    "企业版",
+)
 
 
 def _now_ms() -> int:
@@ -190,7 +199,18 @@ def _huitun_form_headers() -> dict[str, str]:
 def _is_sms_required_payload(payload: dict[str, Any]) -> bool:
     message = _safe_message(payload.get("message") or payload.get("msg"))
     status_code = str(payload.get("status") or payload.get("code") or "").strip()
-    return status_code in {"1006", "1010", "2006", "3006"} or any(word in message for word in ("短信", "验证码", "设备", "安全验证"))
+    return status_code in {"1006", "1010", "2006", "3006"} or any(word in message for word in HUITUN_PASSWORD_SMS_KEYWORDS)
+
+
+def _password_login_diagnostics(payload: dict[str, Any], http_status: int | None = None) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    if http_status is not None:
+        diagnostics["http_status"] = http_status
+    for key in ("status", "code", "message", "msg"):
+        value = payload.get(key)
+        if value is not None:
+            diagnostics[key] = str(value)[:200]
+    return diagnostics
 
 
 def _post_huitun_password_login(
@@ -221,10 +241,15 @@ def _post_huitun_password_login(
         headers=_huitun_form_headers(),
         timeout=20,
     )
-    response.raise_for_status()
-    payload = response.json()
+    try:
+        payload = response.json()
+    except Exception:
+        response.raise_for_status()
+        raise RuntimeError(HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE)
     if not isinstance(payload, dict):
         raise RuntimeError(HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE)
+    if response.status_code >= 400 and not _is_sms_required_payload(payload):
+        response.raise_for_status()
     return payload
 
 
@@ -234,8 +259,12 @@ def login_huitun_with_password(
     ticket: str,
     rand_str: str,
     captcha: str | None = None,
+    initial_cookies_text: str | None = None,
 ) -> dict[str, Any]:
     session = requests.Session()
+    if initial_cookies_text:
+        for key, value in decode_cookie_text(initial_cookies_text).items():
+            session.cookies.set(str(key), str(value), domain=".huitun.com", path="/")
     try:
         payload = _post_huitun_password_login(
             session,
@@ -254,6 +283,7 @@ def login_huitun_with_password(
             "cookies_text": _cookies_text_from_session(session),
             "user_info": None,
             "message": HUITUN_PASSWORD_SMS_REQUIRED_MESSAGE,
+            "diagnostics": _password_login_diagnostics(payload),
         }
 
     status_code = str(payload.get("status") or payload.get("code") or "").strip()

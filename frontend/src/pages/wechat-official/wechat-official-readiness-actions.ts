@@ -1,14 +1,14 @@
 import type { PlatformAction } from "../../platform-core/actions/platform-action-types";
 import type { WechatOfficialReadiness } from "../../types";
 
-export function buildWechatOfficialReadinessActions(readiness: WechatOfficialReadiness): PlatformAction[] {
+export function buildWechatOfficialReadinessActions(readiness: WechatOfficialReadiness, options?: { includeAdminActions?: boolean }): PlatformAction[] {
   const checks = new Map(readiness.checks.map((check) => [check.key, check]));
   const actions: PlatformAction[] = [];
   const pushAction = (action: PlatformAction) => {
     if (!actions.some((item) => item.path === action.path && item.label === action.label)) actions.push(action);
   };
 
-  if (checks.get("redfox.config")?.status !== "ready") {
+  if (options?.includeAdminActions !== false && checks.get("redfox.config")?.status !== "ready") {
     pushAction({ key: "redfox.config", label: "配置 Redfox", description: "先接通公众号爆文数据源", path: "/platforms/wechat-official/settings" });
   }
   if (readiness.content.total === 0) {

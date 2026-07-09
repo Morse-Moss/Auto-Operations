@@ -4,23 +4,29 @@ import re
 from typing import Optional
 
 import requests as http_requests
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_tenant_context, require_admin_user
 from backend.app.core.security import encrypt_text
-from backend.app.core.time import shanghai_now
 from backend.app.models import DEFAULT_TEXT_MODEL_NAME, ApiLog, ModelConfig, User
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import RUNNINGHUB_DEFAULT_BASE_URL
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 
 router = APIRouter(prefix="/model-configs", tags=["model-configs"])
 
-MODEL_TEST_DAILY_FREE_LIMIT = 3
+MODEL_TEST_FEATURE_KEY = "model_config.test"
+MODEL_TEST_IMAGE_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
+VOLCENGINE_ARK_PROVIDER = "volcengine-ark"
+VOLCENGINE_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+DOUBAO_MAIN_MODEL_NAME = DEFAULT_TEXT_MODEL_NAME
 
 
 class ModelConfigCreateRequest(BaseModel):
@@ -42,6 +48,10 @@ class ModelConfigUpdateRequest(BaseModel):
     is_default: Optional[bool] = None
 
 
+class DoubaoMainConfigRequest(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
 def _serialize_config(config: ModelConfig) -> dict:
     return {
         "id": config.id,
@@ -56,12 +66,12 @@ def _serialize_config(config: ModelConfig) -> dict:
 
 
 def _default_model_name(model_type: str) -> str:
-    return DEFAULT_TEXT_MODEL_NAME if model_type == "text" else ""
+    return DEFAULT_TEXT_MODEL_NAME if model_type in {"text", "image"} else ""
 
 
 def _normalize_model_name(model_type: str, model_name: Optional[str]) -> str:
     if model_name == "gpt5.4":
-        return DEFAULT_TEXT_MODEL_NAME
+        return "gpt-5.4"
     cleaned = (model_name or "").strip()
     return cleaned or _default_model_name(model_type)
 
@@ -81,6 +91,31 @@ def _clear_default_for_type(db: Session, user_id: int, model_type: str) -> None:
         config.is_default = False
 
 
+def _upsert_doubao_main_config(db: Session, *, current_user: User, model_type: str, name: str, api_key: str) -> ModelConfig:
+    config = db.scalars(
+        select(ModelConfig)
+        .where(
+            ModelConfig.user_id == current_user.id,
+            ModelConfig.model_type == model_type,
+            ModelConfig.provider == VOLCENGINE_ARK_PROVIDER,
+            ModelConfig.model_name == DOUBAO_MAIN_MODEL_NAME,
+        )
+        .order_by(ModelConfig.id.asc())
+    ).first()
+    if config is None:
+        config = ModelConfig(user_id=current_user.id, model_type=model_type)
+        db.add(config)
+
+    _clear_default_for_type(db, current_user.id, model_type)
+    config.name = name
+    config.provider = VOLCENGINE_ARK_PROVIDER
+    config.model_name = DOUBAO_MAIN_MODEL_NAME
+    config.base_url = VOLCENGINE_ARK_BASE_URL
+    config.encrypted_api_key = encrypt_text(api_key)
+    config.is_default = True
+    return config
+
+
 def _redact_api_key(message: object, api_key: str) -> str:
     redacted = str(message)
     if api_key:
@@ -89,38 +124,7 @@ def _redact_api_key(message: object, api_key: str) -> str:
     return redacted
 
 
-def _model_test_daily_start():
-    now = shanghai_now()
-    return now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-def _model_test_count_today(db: Session, user_id: int) -> int:
-    return int(
-        db.scalar(
-            select(func.count(ApiLog.id)).where(
-                ApiLog.user_id == user_id,
-                ApiLog.endpoint == "model_config.test",
-                ApiLog.created_at >= _model_test_daily_start(),
-            )
-        )
-        or 0
-    )
-
-
-def _model_test_limit_response(used: int) -> JSONResponse:
-    return JSONResponse(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        content={
-            "code": "model_test_daily_limit_exceeded",
-            "message": f"模型连接测试每日免费 {MODEL_TEST_DAILY_FREE_LIMIT} 次，今天已用完。",
-            "feature_key": "model_test",
-            "limit": MODEL_TEST_DAILY_FREE_LIMIT,
-            "used": used,
-        },
-    )
-
-
-def _record_model_test_attempt(db: Session, *, current_user: User, config: ModelConfig, result_status: str, used_before: int) -> None:
+def _record_model_test_attempt(db: Session, *, current_user: User, config: ModelConfig, result_status: str) -> None:
     db.add(
         ApiLog(
             user_id=current_user.id,
@@ -132,8 +136,6 @@ def _record_model_test_attempt(db: Session, *, current_user: User, config: Model
                 "model_config_id": config.id,
                 "model_type": config.model_type,
                 "provider": config.provider,
-                "attempt": used_before + 1,
-                "limit": MODEL_TEST_DAILY_FREE_LIMIT,
             },
         )
     )
@@ -145,7 +147,7 @@ def get_model_configs(
     model_type: Optional[str] = Query(default=None, pattern="^(text|image)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
     statement = select(ModelConfig).where(ModelConfig.user_id == current_user.id)
@@ -158,7 +160,7 @@ def get_model_configs(
 @router.post("")
 def create_model_config(
     payload: ModelConfigCreateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
     if payload.is_default:
@@ -180,10 +182,40 @@ def create_model_config(
     return _serialize_config(config)
 
 
+@router.post("/doubao-main")
+def configure_doubao_main_models(
+    payload: DoubaoMainConfigRequest,
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    text_config = _upsert_doubao_main_config(
+        db,
+        current_user=current_user,
+        model_type="text",
+        name="Doubao Seed 2.0 Mini Text",
+        api_key=payload.api_key,
+    )
+    vision_config = _upsert_doubao_main_config(
+        db,
+        current_user=current_user,
+        model_type="image",
+        name="Doubao Seed 2.0 Mini Vision",
+        api_key=payload.api_key,
+    )
+    db.commit()
+    db.refresh(text_config)
+    db.refresh(vision_config)
+    return {
+        "text": _serialize_config(text_config),
+        "vision": _serialize_config(vision_config),
+    }
+
+
 @router.post("/{config_id}/test")
 def test_model_config(
     config_id: int,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
     from backend.app.core.security import decrypt_text
@@ -207,12 +239,22 @@ def test_model_config(
     else:
         base_url = config.base_url.rstrip("/")
 
-    used_today = _model_test_count_today(db, current_user.id)
-    if used_today >= MODEL_TEST_DAILY_FREE_LIMIT:
-        return _model_test_limit_response(used_today)
+    tenant_context = get_current_tenant_context(current_user=current_user, db=db)
+    usage_reservation = UsageQuotaService(db).reserve(
+        tenant_id=tenant_context.tenant.id,
+        user_id=current_user.id,
+        feature_key=MODEL_TEST_FEATURE_KEY,
+        bucket=CREDITS_BUCKET,
+        amount=credit_cost_for_feature(MODEL_TEST_FEATURE_KEY),
+        idempotency_key=usage_idempotency_key(request, f"{MODEL_TEST_FEATURE_KEY}:{current_user.id}:{config.id}"),
+        request_summary={"model_config_id": config.id, "model_type": config.model_type, "provider": config.provider},
+        model_config_id=config.id,
+        provider=config.provider,
+    )
 
     def finish(result: dict) -> dict:
-        _record_model_test_attempt(db, current_user=current_user, config=config, result_status=result["status"], used_before=used_today)
+        _record_model_test_attempt(db, current_user=current_user, config=config, result_status=result["status"])
+        UsageQuotaService(db).commit(usage_reservation.id)
         return result
 
     try:
@@ -225,9 +267,21 @@ def test_model_config(
             )
         elif config.model_type == "image":
             resp = http_requests.post(
-                f"{base_url}/images/generations",
+                f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": config.model_name, "prompt": "test", "n": 1, "size": "256x256"},
+                json={
+                    "model": config.model_name,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": MODEL_TEST_IMAGE_DATA_URL}},
+                                {"type": "text", "text": "请用一句话描述这张图片。"},
+                            ],
+                        }
+                    ],
+                    "max_tokens": 32,
+                },
                 timeout=15,
             )
         else:
@@ -284,7 +338,7 @@ def test_model_config(
 def update_model_config(
     config_id: int,
     payload: ModelConfigUpdateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
     config = _get_owned_config(db, current_user, config_id)
@@ -312,7 +366,7 @@ def update_model_config(
 @router.delete("/{config_id}")
 def delete_model_config(
     config_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
     config = _get_owned_config(db, current_user, config_id)
@@ -324,7 +378,7 @@ def delete_model_config(
 @router.post("/{config_id}/set-default")
 def set_default_model_config(
     config_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
     config = _get_owned_config(db, current_user, config_id)

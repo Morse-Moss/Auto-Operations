@@ -20,6 +20,7 @@ from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import FeishuIntegrationConfig, ModelConfig, Note, NoteAnalysisResult, NoteAsset, NoteExclusion
 from backend.app.services.ai_service import OpenAICompatibleTextClient
+from backend.app.services.model_config_service import get_default_model_config
 
 ANALYSIS_STATUS_OPTIONS = ["待分析", "分析中", "已完成", "废弃", "已废弃"]
 CONTENT_TYPE_OPTIONS = ["种草", "测评", "避坑", "教程", "合集/清单", "对比", "痛点共鸣", "案例故事", "经验分享", "观点输出", "记录日常"]
@@ -650,7 +651,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 
 
 def _default_text_model(db: Session, user_id: int) -> tuple[ModelConfig, str] | None:
-    model_config = db.scalar(select(ModelConfig).where(ModelConfig.user_id == user_id, ModelConfig.model_type == "text", ModelConfig.is_default.is_(True)))
+    model_config = get_default_model_config(db, user_id=user_id, model_type="text", capability="text")
     if model_config is None:
         return None
     api_key = decrypt_text(model_config.encrypted_api_key) if model_config.encrypted_api_key else ""

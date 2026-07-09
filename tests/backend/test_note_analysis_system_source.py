@@ -10,7 +10,7 @@ from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, hash_password, encrypt_text
 from backend.app.main import app
 from backend.app.models import ModelConfig, Note, NoteAnalysisResult, NoteAsset, User
-from backend.app.services import feishu_bitable_service, note_analysis_service
+from backend.app.services import feishu_bitable_service, note_analysis_service, scheduler_service
 
 client = TestClient(app)
 
@@ -341,6 +341,69 @@ def test_system_note_analysis_uses_default_text_model_and_ignores_text_cover_typ
         assert payload["title_type"] == "清单承诺型"
         assert payload["cover_type"] is None
         assert payload["analysis_note"] == ""
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_text_model_helpers_use_admin_default_doubao_for_regular_user(tmp_path, monkeypatch):
+    SessionLocal = _override_database(tmp_path, "admin-default-text-model-helpers.db")
+    try:
+        user_id = _create_user(SessionLocal, "admin-default-text-owner")
+        admin_id = _create_user(SessionLocal, "admin-default-text-admin")
+        note_id = _create_note(
+            SessionLocal,
+            user_id=user_id,
+            title="Reusable breakfast workflow",
+            content="A short note about low-cost breakfast prep.",
+            raw_json={"liked_count": 10, "collected_count": 5},
+        )
+        db = SessionLocal()
+        try:
+            admin = db.get(User, admin_id)
+            admin.role = "admin"
+            db.add(
+                ModelConfig(
+                    user_id=admin_id,
+                    name="Doubao Text",
+                    model_type="text",
+                    provider="volcengine-ark",
+                    model_name="doubao-seed-2-0-mini-260428",
+                    base_url="https://ark.cn-beijing.volces.com/api/v3",
+                    encrypted_api_key=encrypt_text("sk-doubao-text"),
+                    is_default=True,
+                )
+            )
+            db.commit()
+
+            config, api_key = scheduler_service._get_text_model_for_user(db, user_id)
+            assert config.model_name == "doubao-seed-2-0-mini-260428"
+            assert api_key == "sk-doubao-text"
+
+            calls: list[dict] = []
+
+            class FakeTextClient:
+                def complete_json_prompt(self, **kwargs):
+                    calls.append({"model_name": kwargs["model_config"].model_name, "api_key": kwargs["api_key"]})
+                    return json.dumps(
+                        {
+                            "content_type": "经验分享",
+                            "reusable_models": ["场景种草模型"],
+                            "reuse_values": ["选题参考"],
+                            "search_attribute": "强搜索",
+                        },
+                        ensure_ascii=False,
+                    )
+
+            monkeypatch.setattr(feishu_bitable_service, "OpenAICompatibleTextClient", FakeTextClient)
+            note = db.get(Note, note_id)
+            analysis, warning = feishu_bitable_service.preanalyze_note_for_feishu(db, user_id=user_id, note=note)
+
+            assert warning == ""
+            assert calls == [{"model_name": "doubao-seed-2-0-mini-260428", "api_key": "sk-doubao-text"}]
+            assert analysis["content_type"] == "经验分享"
+            assert analysis["search_attribute"] == "强搜索"
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)
 

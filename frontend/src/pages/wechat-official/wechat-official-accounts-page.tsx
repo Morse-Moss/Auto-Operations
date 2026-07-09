@@ -1,6 +1,7 @@
 import { LockOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
 import { useEffect, useMemo, useState } from "react";
 
+import { useAuth } from "../../hooks/use-auth";
 import { fetchWechatOfficialRedfoxConfig } from "../../lib/api";
 import { PlatformAccountsShell } from "../../platform-core/accounts/platform-accounts-shell";
 import type { PlatformAccountCardItem } from "../../platform-core/accounts/platform-account-types";
@@ -8,6 +9,8 @@ import { PlatformSectionPage } from "../../platform-core/shell/platform-section-
 import type { WechatOfficialRedfoxConfig } from "../../types";
 
 export function WechatOfficialAccountsPage() {
+  const auth = useAuth();
+  const isAdmin = auth.user?.role === "admin";
   const [redfoxConfigured, setRedfoxConfigured] = useState(false);
   const [redfoxConfig, setRedfoxConfig] = useState<WechatOfficialRedfoxConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -19,6 +22,12 @@ export function WechatOfficialAccountsPage() {
     async function loadRedfoxConfig() {
       setIsLoading(true);
       setError(null);
+      if (!isAdmin) {
+        setRedfoxConfigured(false);
+        setRedfoxConfig(null);
+        setIsLoading(false);
+        return;
+      }
       try {
         const response = await fetchWechatOfficialRedfoxConfig();
         if (!isMounted) return;
@@ -41,7 +50,7 @@ export function WechatOfficialAccountsPage() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isAdmin]);
 
   const accountItems = useMemo<PlatformAccountCardItem[]>(() => {
     const redfoxStatus: NonNullable<PlatformAccountCardItem["status"]> = error

@@ -220,6 +220,18 @@ def _normalize_detail_payload(raw_payload: dict[str, Any], source_url: str = "")
     return normalized
 
 
+def _is_admin_user(user: User) -> bool:
+    return user.role == "admin"
+
+
+def _without_raw(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_without_raw(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _without_raw(item) for key, item in value.items() if key != "raw"}
+    return value
+
+
 def _get_owned_pc_account_cookies(db: Session, current_user: User, account_id: int) -> str:
     account = db.get(PlatformAccount, account_id)
     if (
@@ -271,14 +283,16 @@ def search_notes(
         for item in items
         if isinstance(item, dict) and item.get("model_type") not in ("rec_query", "hot_query")
     ]
-    return {
+    response = {
         "total": len(normalized_items),
         "page": payload.page,
         "page_size": data.get("page_size") or 20,
         "has_more": bool(data.get("has_more", False)),
         "items": normalized_items,
-        "raw": raw_payload,
     }
+    if _is_admin_user(current_user):
+        response["raw"] = raw_payload
+    return response if _is_admin_user(current_user) else _without_raw(response)
 
 
 @router.post("/search/users")
@@ -315,7 +329,8 @@ def note_detail(
         )
     normalized = _normalize_detail_payload(raw_payload or {}, source_url=payload.url)
     quality = evaluate_detail_quality(normalized, raw_payload)
-    return {**normalized, **quality}
+    response = {**normalized, **quality}
+    return response if _is_admin_user(current_user) else _without_raw(response)
 
 
 @router.post("/notes/comments")
@@ -333,6 +348,8 @@ def note_comments(
             detail=message or "XHS note comments failed",
         )
     items = normalize_xhs_comment_payload(raw_payload)
+    if not _is_admin_user(current_user):
+        items = _without_raw(items)
     return {"total": len(items), "items": items}
 
 

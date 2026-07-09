@@ -675,6 +675,7 @@ class OpenAICompatibleImageClient:
     ) -> str:
         self._validate(model_config=model_config, api_key=api_key)
         endpoint = f"{model_config.base_url.rstrip('/')}/chat/completions"
+        resolved_image_url = self._resolve_image_ref(image_url)
         response = requests.post(
             endpoint,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -686,7 +687,7 @@ class OpenAICompatibleImageClient:
                         "role": "user",
                         "content": [
                             {"type": "text", "text": instruction or "描述这张图片适合的小红书卖点。"},
-                            {"type": "image_url", "image_url": {"url": image_url}},
+                            {"type": "image_url", "image_url": {"url": resolved_image_url}},
                         ],
                     },
                 ],

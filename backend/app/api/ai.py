@@ -22,14 +22,14 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import get_settings
 from backend.app.core.database import SessionLocal, get_db
 from backend.app.core.deps import get_current_tenant_context, get_current_user
-from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import AiDraft, AiGeneratedAsset, ModelConfig, Task, User
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 from backend.app.services.asset_storage_policy import asset_owner_prefix
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLeaseGuard, BetaConcurrencyService, acquire_image_generation_leases
-from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature
+from backend.app.services.model_config_service import get_default_model_config, require_default_model_context
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -113,41 +113,25 @@ def _serialize_draft(draft: AiDraft) -> dict:
 
 
 def _get_default_text_model(db: Session, current_user: User) -> ModelConfig:
-    config = db.scalars(
-        select(ModelConfig).where(
-            ModelConfig.user_id == current_user.id,
-            ModelConfig.model_type == "text",
-            ModelConfig.is_default.is_(True),
-        )
-    ).first()
+    config = get_default_model_config(db, user_id=current_user.id, model_type="text")
     if config is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Default text model is not configured")
     return config
 
 
 def _get_default_image_model(db: Session, current_user: User) -> ModelConfig:
-    config = db.scalars(
-        select(ModelConfig).where(
-            ModelConfig.user_id == current_user.id,
-            ModelConfig.model_type == "image",
-            ModelConfig.is_default.is_(True),
-        )
-    ).first()
+    config = get_default_model_config(db, user_id=current_user.id, model_type="image")
     if config is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Default image model is not configured")
     return config
 
 
 def _text_model_context(db: Session, current_user: User) -> tuple[ModelConfig, str]:
-    model_config = _get_default_text_model(db, current_user)
-    api_key = decrypt_text(model_config.encrypted_api_key) if model_config.encrypted_api_key else ""
-    return model_config, api_key
+    return require_default_model_context(db, user_id=current_user.id, model_type="text", capability="text")
 
 
-def _image_model_context(db: Session, current_user: User) -> tuple[ModelConfig, str]:
-    model_config = _get_default_image_model(db, current_user)
-    api_key = decrypt_text(model_config.encrypted_api_key) if model_config.encrypted_api_key else ""
-    return model_config, api_key
+def _image_model_context(db: Session, current_user: User, *, capability: str | None = None) -> tuple[ModelConfig, str]:
+    return require_default_model_context(db, user_id=current_user.id, model_type="image", capability=capability)
 
 
 def _image_client_for_model(model_config: ModelConfig, fallback_client: ImageAiClient) -> ImageAiClient:
@@ -423,9 +407,7 @@ def _recorded_text_task(
 
 
 def _quota_idempotency_key(request: Request | None, fallback: str) -> str:
-    if request is None:
-        return fallback
-    return request.headers.get("Idempotency-Key") or fallback
+    return usage_idempotency_key(request, fallback)
 
 
 def _reserve_usage(
@@ -893,7 +875,7 @@ def generate_cover(
         if draft is None or draft.user_id != current_user.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
 
-    model_config, api_key = _image_model_context(db, current_user)
+    model_config, api_key = _image_model_context(db, current_user, capability="image_generation")
     image_client = _image_client_for_model(model_config, image_ai_client)
     feature_key = "ai.image_generate_cover"
     idempotency_key = _quota_idempotency_key(request, f"ai.image_generate_cover:{current_user.id}:{payload.draft_id}:{payload.prompt}:{payload.size}:{payload.style}")
@@ -971,7 +953,7 @@ def generate_image(
     db: Session = Depends(get_db),
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
 ):
-    model_config, api_key = _image_model_context(db, current_user)
+    model_config, api_key = _image_model_context(db, current_user, capability="image_generation")
     image_client = _image_client_for_model(model_config, image_ai_client)
     feature_key = "ai.image_generate"
     idempotency_key = _quota_idempotency_key(request, f"ai.image_generate:{current_user.id}:{payload.prompt}:{payload.reference_images}:{payload.aspect_ratio}")
@@ -1077,7 +1059,7 @@ def generate_image_async(
     db: Session = Depends(get_db),
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
 ):
-    model_config, api_key = _image_model_context(db, current_user)
+    model_config, api_key = _image_model_context(db, current_user, capability="image_generation")
     reference_images = payload.reference_images or []
     if model_config.provider == "runninghub-ai-app":
         for image_ref in reference_images:
@@ -1149,7 +1131,7 @@ def describe_image(
     db: Session = Depends(get_db),
     image_ai_client: ImageAiClient = Depends(get_image_ai_client),
 ):
-    model_config, api_key = _image_model_context(db, current_user)
+    model_config, api_key = _image_model_context(db, current_user, capability="vision")
     image_client = _image_client_for_model(model_config, image_ai_client)
     usage_reservation = _reserve_usage(
         db=db,

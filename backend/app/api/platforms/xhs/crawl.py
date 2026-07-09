@@ -88,8 +88,28 @@ class KeywordGroupCrawlRequest(BaseModel):
     note_time: int = Field(default=0, ge=0, le=3)
 
 
-def _serialize_note(note: Note) -> dict[str, Any]:
-    return {
+def _is_admin_user(user: User) -> bool:
+    return user.role == "admin"
+
+
+def _strip_private_payloads(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_strip_private_payloads(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _strip_private_payloads(item)
+            for key, item in value.items()
+            if key not in {"raw", "raw_json"}
+        }
+    return value
+
+
+def _admin_private_payload(value: Any, current_user: User) -> Any:
+    return value if _is_admin_user(current_user) else _strip_private_payloads(value)
+
+
+def _serialize_note(note: Note, *, include_raw: bool = False) -> dict[str, Any]:
+    payload = {
         "id": note.id,
         "platform": note.platform,
         "platform_account_id": note.platform_account_id,
@@ -97,9 +117,11 @@ def _serialize_note(note: Note) -> dict[str, Any]:
         "title": note.title,
         "content": note.content,
         "author_name": note.author_name,
-        "raw_json": note.raw_json,
         "created_at": note.created_at.isoformat(),
     }
+    if include_raw:
+        payload["raw_json"] = note.raw_json
+    return payload
 
 
 def _create_crawl_task(
@@ -447,15 +469,16 @@ def crawl_search_notes(
             "skipped_low_quality_count": len(skipped_items),
         },
     )
-    return {
+    response = {
         "task": serialize_task(task),
         "result_count": len(normalized_items),
         "saved_count": len(saved_notes),
         "skipped_low_quality_count": len(skipped_items),
         "skipped_items": skipped_items,
-        "items": [_serialize_note(note) for note in saved_notes],
+        "items": [_serialize_note(note, include_raw=_is_admin_user(current_user)) for note in saved_notes],
         "raw": raw_payload,
     }
+    return _admin_private_payload(response, current_user)
 
 
 @router.post("/note-urls")
@@ -541,15 +564,16 @@ def crawl_note_urls(
             "errors": errors,
         },
     )
-    return {
+    response = {
         "task": serialize_task(task),
         "result_count": len(normalized_items),
         "saved_count": len(saved_notes),
         "skipped_low_quality_count": len(skipped_items),
         "skipped_items": skipped_items,
         "errors": errors,
-        "items": [_serialize_note(note) for note in saved_notes],
+        "items": [_serialize_note(note, include_raw=_is_admin_user(current_user)) for note in saved_notes],
     }
+    return _admin_private_payload(response, current_user)
 
 
 @router.post("/user-notes")
@@ -592,19 +616,20 @@ def crawl_user_notes(
             "skipped_low_quality_count": len(skipped_items),
         },
     )
-    return {
+    response = {
         "task": serialize_task(task),
         "result_count": len(normalized_items),
         "saved_count": len(saved_notes),
         "skipped_low_quality_count": len(skipped_items),
         "skipped_items": skipped_items,
-        "items": [_serialize_note(note) for note in saved_notes],
+        "items": [_serialize_note(note, include_raw=_is_admin_user(current_user)) for note in saved_notes],
         "raw": raw_payload,
     }
+    return _admin_private_payload(response, current_user)
 
 
-def _sse_event(data: dict[str, Any]) -> str:
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+def _sse_event(data: dict[str, Any], *, current_user: User) -> str:
+    return f"data: {json.dumps(_admin_private_payload(data, current_user), ensure_ascii=False)}\n\n"
 
 
 @router.post("/keyword-group")
@@ -653,7 +678,7 @@ def crawl_keyword_group(
             for keyword in keywords:
                 if should_stop:
                     break
-                yield _sse_event({"type": "progress", "message": f"正在采集「{keyword}」..."})
+                yield _sse_event({"type": "progress", "message": f"正在采集「{keyword}」..."}, current_user=current_user)
                 success, message, raw_payload = adapter.search_note(
                     keyword,
                     page=1,
@@ -696,7 +721,7 @@ def crawl_keyword_group(
                         user_message=user_message,
                     )
                     items.append(item)
-                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                     continue
 
                 per_keyword_count = 0
@@ -732,7 +757,7 @@ def crawl_keyword_group(
                         )
                         item = _crawl_data_item(source=source, status="failed", note=search_note, error=quality["user_message"], keyword=keyword, **_quality_item_fields(quality))
                         items.append(item)
-                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                         _sleep_between_requests(payload.time_sleep)
                         continue
 
@@ -769,7 +794,7 @@ def crawl_keyword_group(
                         )
                         item = _crawl_data_item(source=source, status="failed", note=search_note, error=detail_message or "detail failed", keyword=keyword, **_quality_item_fields(quality))
                         items.append(item)
-                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                         _sleep_between_requests(payload.time_sleep)
                         continue
 
@@ -797,7 +822,7 @@ def crawl_keyword_group(
                                 comment_status = _comment_failure_status(comment_error)
                                 if comment_status == "rate_limited":
                                     comments_rate_limited = True
-                                    yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
+                                    yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"}, current_user=current_user)
                             _sleep_between_requests(payload.comment_sleep)
 
                     saved = False
@@ -847,11 +872,11 @@ def crawl_keyword_group(
                         **_quality_item_fields(quality, saved=saved),
                     )
                     items.append(item)
-                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                     _sleep_between_requests(payload.time_sleep)
         except Exception as exc:
             error_occurred = True
-            yield _sse_event({"type": "error", "message": str(exc)})
+            yield _sse_event({"type": "error", "message": str(exc)}, current_user=current_user)
 
         success_count = len([item for item in items if item["status"] == "success"])
         failed_count = len(items) - success_count
@@ -890,7 +915,7 @@ def crawl_keyword_group(
             "rate_limited_count": rate_limited_count,
             "missing_detail_count": missing_detail_count,
             "summary_message": summary_message,
-        })
+        }, current_user=current_user)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -953,7 +978,7 @@ def crawl_data(
                             skipped_count += 1
                         item = _crawl_data_item(source=url, status="failed", error=quality["user_message"], **_quality_item_fields(quality))
                         items.append(item)
-                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                         if index < len(payload.urls) - 1:
                             _sleep_between_requests(payload.time_sleep)
                         continue
@@ -984,7 +1009,7 @@ def crawl_data(
                                     comment_status = _comment_failure_status(comment_error)
                                     if comment_status == "rate_limited":
                                         comments_rate_limited = True
-                                        yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
+                                        yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"}, current_user=current_user)
                                 _sleep_between_requests(payload.comment_sleep)
                         if not quality["can_save"]:
                             if excluded_note:
@@ -1063,10 +1088,10 @@ def crawl_data(
                         item = _crawl_data_item(source=url, status="failed", error=message or "detail crawl failed", **_quality_item_fields(quality))
                         if kind == "xhs_rate_limited":
                             items.append(item)
-                            yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                            yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                             break
                     items.append(item)
-                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                     if index < len(payload.urls) - 1:
                         _sleep_between_requests(payload.time_sleep)
 
@@ -1099,16 +1124,16 @@ def crawl_data(
                             item = _crawl_data_item(source=url, status="failed", error=comment_error, comment_status=comment_status, comment_error=comment_error)
                             if comment_status == "rate_limited":
                                 comments_rate_limited = True
-                                yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取。"})
+                                yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取。"}, current_user=current_user)
                         _sleep_between_requests(payload.comment_sleep)
                     items.append(item)
-                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                    yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                     if index < len(payload.urls) - 1:
                         _sleep_between_requests(payload.time_sleep)
 
             else:
                 if not payload.keyword.strip():
-                    yield _sse_event({"type": "error", "message": "Keyword is required"})
+                    yield _sse_event({"type": "error", "message": "Keyword is required"}, current_user=current_user)
                     return
                 seen_urls: list[str] = []
                 stop_search_pages = False
@@ -1127,9 +1152,9 @@ def crawl_data(
                             skipped_count += 1
                         item = _crawl_data_item(source=f"page:{page}", status="failed", error=message or "search failed")
                         items.append(item)
-                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                         break
-                    yield _sse_event({"type": "progress", "message": f"搜索第 {page} 页完成，开始获取详情..."})
+                    yield _sse_event({"type": "progress", "message": f"搜索第 {page} 页完成，开始获取详情..."}, current_user=current_user)
                     for raw_item in _data_items(raw_payload):
                         if len(items) >= payload.max_notes:
                             break
@@ -1173,7 +1198,7 @@ def crawl_data(
                                     skipped_count += 1
                                 item = _crawl_data_item(source=source, status="failed", note=search_note, error=dm or "detail failed", **_quality_item_fields(quality))
                                 items.append(item)
-                                yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                                yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                                 _sleep_between_requests(payload.time_sleep)
                                 if kind == "xhs_rate_limited":
                                     stop_search_pages = True
@@ -1201,7 +1226,7 @@ def crawl_data(
                                     comment_status = _comment_failure_status(comment_error)
                                     if comment_status == "rate_limited":
                                         comments_rate_limited = True
-                                        yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"})
+                                        yield _sse_event({"type": "progress", "message": "评论接口访问频繁，本轮已停止评论抓取，继续抓笔记详情。"}, current_user=current_user)
                                 _sleep_between_requests(payload.comment_sleep)
                         if not quality["can_save"]:
                             if excluded_note:
@@ -1253,7 +1278,7 @@ def crawl_data(
                             **_quality_item_fields(quality, saved=saved),
                         )
                         items.append(item)
-                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item})
+                        yield _sse_event({"type": "item", "index": len(items) - 1, "item": item}, current_user=current_user)
                         _sleep_between_requests(payload.time_sleep)
                     if stop_search_pages or len(items) >= payload.max_notes:
                         break
@@ -1263,7 +1288,7 @@ def crawl_data(
 
         except Exception as exc:
             error_occurred = True
-            yield _sse_event({"type": "error", "message": str(exc)})
+            yield _sse_event({"type": "error", "message": str(exc)}, current_user=current_user)
 
         success_count = len([i for i in items if i["status"] == "success"])
         failed_count = len(items) - success_count
@@ -1301,6 +1326,6 @@ def crawl_data(
             "comment_rate_limited_count": comment_rate_limited_count,
             "comment_skipped_count": comment_skipped_count,
             "summary_message": summary_message,
-        })
+        }, current_user=current_user)
 
     return StreamingResponse(generate(), media_type="text/event-stream")

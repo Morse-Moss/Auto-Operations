@@ -26,7 +26,9 @@ class InviteCodeCreateRequest(BaseModel):
 
 class CreditAdjustRequest(BaseModel):
     bucket: str = Field(default=CREDITS_BUCKET, min_length=1, max_length=64)
-    total: int = Field(ge=0, le=100_000)
+    operation: str = Field(default="reset", pattern="^(grant|deduct|reset)$")
+    amount: int | None = Field(default=None, ge=1, le=100_000)
+    total: int | None = Field(default=None, ge=0, le=100_000)
     reason: str = Field(default="", max_length=512)
 
 
@@ -170,7 +172,17 @@ def adjust_tenant_credit(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     if payload.bucket != CREDITS_BUCKET:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only credits can be adjusted")
-    account = UsageQuotaService(db).adjust_bucket(tenant_id, payload.bucket, total=payload.total, reason=payload.reason)
+    try:
+        account = UsageQuotaService(db).adjust_bucket(
+            tenant_id,
+            payload.bucket,
+            operation=payload.operation,
+            amount=payload.amount,
+            total=payload.total,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return {"bucket": account.bucket, "total": account.total, "remaining": account.remaining, "status": account.status}
 
 

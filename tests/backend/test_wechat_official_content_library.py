@@ -10,6 +10,7 @@ from backend.app.core.security import encrypt_text
 from backend.app.models import (
     ModelConfig,
     Notification,
+    User,
     WechatOfficialArticle,
     WechatOfficialArticleComment,
     WechatOfficialArticleCommentReply,
@@ -47,6 +48,16 @@ def _register(username: str) -> dict:
     response = client.post("/api/auth/register", json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()})
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def _register_admin(username: str, TestingSessionLocal) -> dict:
+    headers = _register(username)
+    with TestingSessionLocal() as db:
+        user = db.scalar(select(User).where(User.username == username))
+        assert user is not None
+        user.role = "admin"
+        db.commit()
+    return headers
 
 
 def _create_session(headers: dict) -> int:
@@ -265,6 +276,70 @@ def test_content_library_list_paginates_searches_author_and_validates_pool_statu
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_hotspot_analysis_uses_admin_default_doubao_for_regular_user(tmp_path, monkeypatch):
+    get_db, TestingSessionLocal = _override_database(tmp_path)
+    try:
+        headers = _register("content-library-doubao-user")
+        article_id = _create_article(headers, title="AI早餐案例", url="https://mp.weixin.qq.com/s/doubao-admin-default", read_count=120000)
+
+        with TestingSessionLocal() as db:
+            owner = db.scalar(select(User).where(User.username == "content-library-doubao-user"))
+            admin = User(username="content-library-doubao-admin", password_hash="hashed", role="admin", status="active")
+            db.add(admin)
+            db.flush()
+            db.add(
+                ModelConfig(
+                    user_id=admin.id,
+                    name="Doubao Text",
+                    model_type="text",
+                    provider="volcengine-ark",
+                    model_name="doubao-seed-2-0-mini-260428",
+                    base_url="https://ark.cn-beijing.volces.com/api/v3",
+                    encrypted_api_key=encrypt_text("sk-doubao-text"),
+                    is_default=True,
+                )
+            )
+            db.add(
+                WechatOfficialArticleSnapshot(
+                    article_id=article_id,
+                    status="captured",
+                    text="这是一篇关于低成本早餐内容运营的公众号文章。",
+                    html="<p>这是一篇关于低成本早餐内容运营的公众号文章。</p>",
+                    images_json=[],
+                )
+            )
+            db.commit()
+
+        calls: list[dict] = []
+
+        class FakeTextClient:
+            def polish_text(self, *, model_config, api_key, text, instruction):
+                calls.append({"model_name": model_config.model_name, "api_key": api_key, "instruction": instruction})
+                return (
+                    '{"hotspot_breakdown":{"hook":"hook","pain_point":"pain","promise":"promise",'
+                    '"credibility":"credibility","structure":"structure","reuse_angle":"reuse"},'
+                    '"viral_factors":["factor"],"core_insight":"insight",'
+                    '"title_type":"list","article_type_label":"case"}'
+                )
+
+        monkeypatch.setattr(wechat_official_content_service, "OpenAICompatibleTextClient", FakeTextClient)
+
+        response = client.post(
+            f"/api/wechat-official/content-library/{article_id}/analyze-hotspots",
+            headers=headers,
+            json={"instruction": "从低成本获客角度分析"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["analysis_mode"] == "ai"
+        assert calls == [{"model_name": "doubao-seed-2-0-mini-260428", "api_key": "sk-doubao-text", "instruction": "只输出 JSON"}]
+        assert payload["analysis"]["core_insight"] == "insight"
+        assert payload["analysis"]["article_type_label"] == "case"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_content_library_filters_by_job_id_for_owned_articles(tmp_path):
     get_db, TestingSessionLocal = _override_database(tmp_path)
     try:
@@ -418,7 +493,8 @@ def test_content_library_auto_refreshes_incomplete_articles_and_notifies(tmp_pat
     try:
         headers = _register("content-library-auto-refresh-user")
         article_id = _create_article(headers, title="待自动补全", url="https://mp.weixin.qq.com/s/auto-refresh", read_count=0)
-        config = client.post("/api/wechat-official/redfox/config", headers=headers, json={"api_key": "refresh-secret"})
+        admin_headers = _register_admin("content-library-auto-refresh-admin", TestingSessionLocal)
+        config = client.post("/api/wechat-official/redfox/config", headers=admin_headers, json={"api_key": "refresh-secret"})
         assert config.status_code == 200
 
         response = client.post("/api/wechat-official/content-library/auto-refresh", headers=headers, json={"article_ids": [article_id]})
@@ -497,7 +573,8 @@ def test_content_library_delete_removes_article_descendants_and_blocks_resave(tm
     try:
         headers = _register("delete-owner")
         article_id = _create_article(headers, title="删除案例", url="https://mp.weixin.qq.com/s/delete-target", read_count=120000)
-        config = client.post("/api/wechat-official/redfox/config", headers=headers, json={"api_key": "refresh-secret"})
+        admin_headers = _register_admin("delete-redfox-admin", TestingSessionLocal)
+        config = client.post("/api/wechat-official/redfox/config", headers=admin_headers, json={"api_key": "refresh-secret"})
         assert config.status_code == 200
         refreshed = client.post(f"/api/wechat-official/content-library/{article_id}/refresh-detail", headers=headers)
         assert refreshed.status_code == 200
@@ -626,7 +703,8 @@ def test_refresh_detail_enriches_existing_article_without_auto_refreshing_get(tm
     try:
         headers = _register("refresh-detail-owner")
         article_id = _create_article(headers, title="待补全文章", url="https://mp.weixin.qq.com/s/refresh-detail", read_count=0)
-        config = client.post("/api/wechat-official/redfox/config", headers=headers, json={"api_key": "refresh-secret"})
+        admin_headers = _register_admin("refresh-detail-redfox-admin", TestingSessionLocal)
+        config = client.post("/api/wechat-official/redfox/config", headers=admin_headers, json={"api_key": "refresh-secret"})
         assert config.status_code == 200
 
         before = client.get(f"/api/wechat-official/content-library/{article_id}", headers=headers)
@@ -687,7 +765,8 @@ def test_refresh_detail_uses_first_detail_image_as_cover_when_redfox_has_no_cove
     try:
         headers = _register("refresh-no-cover-owner")
         article_id = _create_article(headers, title="无封面文章", url="https://mp.weixin.qq.com/s/no-cover", read_count=0)
-        config = client.post("/api/wechat-official/redfox/config", headers=headers, json={"api_key": "refresh-secret"})
+        admin_headers = _register_admin("refresh-no-cover-redfox-admin", TestingSessionLocal)
+        config = client.post("/api/wechat-official/redfox/config", headers=admin_headers, json={"api_key": "refresh-secret"})
         assert config.status_code == 200
 
         response = client.post(f"/api/wechat-official/content-library/{article_id}/refresh-detail", headers=headers)

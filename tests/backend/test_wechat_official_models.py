@@ -124,7 +124,7 @@ def test_wechat_official_alembic_revision_is_single_head():
             referenced_revisions.add(down_revision)
 
     heads = set(revisions) - referenced_revisions
-    assert heads == {"20260708_note_analysis_cover_title"}
+    assert heads == {"20260708_usage_ledger_followup_unique"}
 
 
 def test_wechat_official_models_insert_related_crawl_data_and_defaults():

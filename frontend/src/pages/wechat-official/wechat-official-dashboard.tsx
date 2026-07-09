@@ -18,6 +18,7 @@ import {
 } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useAuth } from "../../hooks/use-auth";
 import { PlatformReadinessPanel } from "../../platform-core/readiness/platform-readiness-panel";
 import { PlatformSectionPage } from "../../platform-core/shell/platform-section-page";
 import {
@@ -79,6 +80,8 @@ function poolStatus(article: WechatOfficialContentLibraryItem): string {
 }
 
 export function WechatOfficialDashboardPage() {
+  const auth = useAuth();
+  const isAdmin = auth.user?.role === "admin";
   const [overview, setOverview] = useState<WechatOfficialOverview>(fallbackOverview);
   const [readiness, setReadiness] = useState<WechatOfficialReadiness>(fallbackReadiness);
   const [configured, setConfigured] = useState(false);
@@ -97,7 +100,7 @@ export function WechatOfficialDashboardPage() {
     [contentItems],
   );
   const configuredText = configured ? `已配置 ${redfoxConfig?.masked_api_key || "****"}` : "未配置";
-  const readinessActions = useMemo(() => buildWechatOfficialReadinessActions(readiness), [readiness]);
+  const readinessActions = useMemo(() => buildWechatOfficialReadinessActions(readiness, { includeAdminActions: isAdmin }), [isAdmin, readiness]);
 
   const refreshWorkspace = useCallback(async () => {
     setIsRefreshing(true);
@@ -109,7 +112,7 @@ export function WechatOfficialDashboardPage() {
           compatibilityMode = true;
           return fallbackReadiness;
         }),
-        fetchWechatOfficialRedfoxConfig(),
+        isAdmin ? fetchWechatOfficialRedfoxConfig() : Promise.resolve({ configured: false, config: null }),
         fetchWechatOfficialContentLibrary(),
       ]);
       setOverview(overviewPayload);
@@ -127,7 +130,7 @@ export function WechatOfficialDashboardPage() {
     } finally {
       setIsRefreshing(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     void refreshWorkspace();

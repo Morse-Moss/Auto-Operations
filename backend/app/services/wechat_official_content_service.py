@@ -18,7 +18,6 @@ from backend.app.core.database import Base
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import (
-    ModelConfig,
     Notification,
     WechatOfficialArticle,
     WechatOfficialArticleComment,
@@ -30,6 +29,7 @@ from backend.app.models import (
 )
 from backend.app.services.ai_service import OpenAICompatibleTextClient
 from backend.app.services.asset_storage_policy import export_owner_prefix
+from backend.app.services.model_config_service import get_default_model_config
 from backend.app.services.wechat_official_content_tombstone_service import WechatOfficialContentTombstoneService
 from backend.app.services.wechat_official_crawl_service import WechatOfficialCrawlService, serialize_article, serialize_metric
 
@@ -323,9 +323,7 @@ class WechatOfficialContentService:
         return {"article_id": article.id, "analysis_mode": mode, "analysis": analysis}
 
     def _analyze_with_ai(self, user_id: int, article: WechatOfficialArticle, source_text: str, instruction: str) -> dict[str, Any]:
-        model_config = self.db.scalar(
-            select(ModelConfig).where(ModelConfig.user_id == user_id, ModelConfig.model_type == "text", ModelConfig.is_default.is_(True))
-        )
+        model_config = get_default_model_config(self.db, user_id=user_id, model_type="text", capability="text")
         if model_config is None:
             raise _NoTextModel()
         api_key = decrypt_text(model_config.encrypted_api_key) if model_config.encrypted_api_key else ""

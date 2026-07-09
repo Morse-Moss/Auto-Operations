@@ -38,6 +38,7 @@ import {
   fetchHuitunKeywordDiscoveryRuns,
   fetchKeywordGroup,
   fetchKeywordGroups,
+  getUsageLimitError,
   importKeywordCandidates,
   importKeywordCandidatesToGroup,
   updateKeywordGroup,
@@ -256,8 +257,9 @@ export function XhsKeywordsPage() {
       } else {
         setMessage(run.items.length ? "已获取候选词，请选择要导入的关键词。" : "没有获取到候选词，可展开手工导入热词临时处理。");
       }
-    } catch {
-      setMessage("候选词获取失败，请检查账号登录态，或使用手工导入热词。");
+    } catch (err) {
+      const limitError = getUsageLimitError(err);
+      setMessage(limitError?.message || "候选词获取失败，请检查账号登录态，或使用手工导入热词。");
     } finally {
       setIsHuitunWorking(false);
     }

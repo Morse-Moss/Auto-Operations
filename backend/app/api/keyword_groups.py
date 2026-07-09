@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
+from backend.app.core.deps import get_current_tenant_context
 from backend.app.core.deps import get_current_user
 from backend.app.core.time import shanghai_now
 from backend.app.models import KeywordDiscoveryItem, KeywordDiscoveryRun, KeywordGroup, Note, User
@@ -22,8 +23,11 @@ from backend.app.services.huitun_keyword_source import (
     prioritize_exact_hotword_rows,
 )
 from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 
 router = APIRouter(prefix="/keyword-groups", tags=["keyword-groups"])
+
+LIVE_KEYWORD_DISCOVERY_FEATURE_KEY = "keyword.discovery.live"
 
 
 class KeywordGroupCreateRequest(BaseModel):
@@ -402,6 +406,7 @@ def create_keyword_group(
 @router.post("/huitun/discovery-runs")
 def create_huitun_discovery_run(
     payload: HuitunDiscoveryRunRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     live_keyword_client=Depends(get_huitun_live_keyword_client),
@@ -412,6 +417,21 @@ def create_huitun_discovery_run(
         if payload.source_mode == "live_account"
         else payload.limit_per_seed
     )
+    usage_reservation = None
+    if payload.source_mode == "live_account":
+        tenant_context = get_current_tenant_context(current_user=current_user, db=db)
+        per_seed_cost = credit_cost_for_feature(LIVE_KEYWORD_DISCOVERY_FEATURE_KEY)
+        usage_reservation = UsageQuotaService(db).reserve(
+            tenant_id=tenant_context.tenant.id,
+            user_id=current_user.id,
+            feature_key=LIVE_KEYWORD_DISCOVERY_FEATURE_KEY,
+            bucket=CREDITS_BUCKET,
+            amount=per_seed_cost * len(seed_keywords),
+            idempotency_key=usage_idempotency_key(request, f"{LIVE_KEYWORD_DISCOVERY_FEATURE_KEY}:{current_user.id}:{':'.join(seed_keywords)}:{effective_limit_per_seed}"),
+            request_summary={"seed_count": len(seed_keywords), "limit_per_seed": effective_limit_per_seed, "source_mode": payload.source_mode},
+            resource_type="keyword_discovery_run",
+            provider="huitun",
+        )
     run = KeywordDiscoveryRun(
         user_id=current_user.id,
         platform="xhs",
@@ -469,6 +489,8 @@ def create_huitun_discovery_run(
     run.status = _status_from_seed_results(seed_results)
     run.error_message = _metadata_text(seed_results, len(items))
     run.finished_at = shanghai_now()
+    if usage_reservation is not None:
+        UsageQuotaService(db).commit(usage_reservation.id)
     db.commit()
     db.refresh(run)
     for item in items:

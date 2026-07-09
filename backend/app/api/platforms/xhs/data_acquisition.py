@@ -209,8 +209,9 @@ def import_data_acquisition_candidates(
     payload: CandidateImportRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    note_source=Depends(get_data_acquisition_note_source),
 ):
-    notes = import_candidates(db=db, current_user=current_user, candidate_ids=payload.candidate_ids)
+    notes = import_candidates(db=db, current_user=current_user, candidate_ids=payload.candidate_ids, note_source=note_source)
     return {
         "imported_count": len(notes),
         "message": f"已入库 {len(notes)} 条笔记，可前往分析中心生成洞察。",

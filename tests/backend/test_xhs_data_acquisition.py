@@ -16,6 +16,7 @@ from backend.app.models import (
     DataAcquisitionRun,
     Note,
     NoteAsset,
+    NoteComment,
     NoteSourceSnapshot,
     PlatformAccount,
     Task,
@@ -32,12 +33,49 @@ class FakeNoteSource:
         self.rows = rows or []
         self.error = error
         self.calls: list[tuple[str, str, int, dict[str, Any]]] = []
+        self.comment_calls: list[tuple[str, str, dict[str, Any]]] = []
 
     def search_notes(self, cookie_text: str, keyword: str, limit: int, **params: Any) -> list[dict[str, Any]]:
         self.calls.append((cookie_text, keyword, limit, params))
         if self.error is not None:
             raise RuntimeError(self.error)
         return self.rows[:limit]
+
+    def resolve_note_url(self, cookie_text: str, note_id: str) -> str:
+        return ""
+
+    def fetch_note_comments(self, cookie_text: str, note_id: str, **params: Any) -> list[dict[str, Any]]:
+        self.comment_calls.append((cookie_text, note_id, params))
+        return []
+
+
+class CommentingFakeNoteSource(FakeNoteSource):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        comments_by_note_id: dict[str, list[dict[str, Any]]] | None = None,
+        comment_error: str | None = None,
+    ) -> None:
+        super().__init__(rows)
+        self.comments_by_note_id = comments_by_note_id or {}
+        self.comment_error = comment_error
+
+    def fetch_note_comments(self, cookie_text: str, note_id: str, **params: Any) -> list[dict[str, Any]]:
+        self.comment_calls.append((cookie_text, note_id, params))
+        if self.comment_error is not None:
+            raise RuntimeError(self.comment_error)
+        return self.comments_by_note_id.get(note_id, [])
+
+
+class ResolvingFakeNoteSource(FakeNoteSource):
+    def __init__(self, rows: list[dict[str, Any]], resolved_urls: dict[str, str]) -> None:
+        super().__init__(rows)
+        self.resolved_urls = resolved_urls
+        self.resolve_calls: list[tuple[str, str]] = []
+
+    def resolve_note_url(self, cookie_text: str, note_id: str) -> str:
+        self.resolve_calls.append((cookie_text, note_id))
+        return self.resolved_urls.get(note_id, "")
 
 
 def sample_note_row(note_id: str = "note-1", title: str = "浴缸收纳") -> dict[str, Any]:
@@ -53,6 +91,12 @@ def sample_note_row(note_id: str = "note-1", title: str = "浴缸收纳") -> dic
         "metrics": {"like_count": 10, "collect_count": 5, "comment_count": 2, "share_count": 1},
         "raw": {"noteId": note_id, "title": title},
     }
+
+
+def sample_unresolved_note_row(note_id: str = "11548571364", title: str = "浴缸收纳") -> dict[str, Any]:
+    row = sample_note_row(note_id, title)
+    row["original_url"] = ""
+    return row
 
 
 def override_database(tmp_path):
@@ -183,6 +227,72 @@ def test_note_search_run_creates_candidates_without_exposing_internal_source(tmp
         assert candidates[0]["metrics"]["like_count"] == 10
         assert "source" not in candidates[0]
         assert "raw_json" not in candidates[0]
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_note_search_caps_single_run_at_fifty_candidates(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    fake = FakeNoteSource([sample_note_row("note-cap", "浴缸收纳")])
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+
+        response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "account_id": account_id,
+                "params": {"keyword": "浴缸", "limit": 100, "sort": "interaction", "note_type": "all"},
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["requested_limit"] == 100
+        assert payload["effective_limit"] == 50
+        assert fake.calls == [("session=ok", "浴缸", 50, {"sort": "interaction", "note_type": "all"})]
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_note_search_keeps_source_rows_without_local_relevance_filtering(tmp_path):
+    SessionLocal = override_database(tmp_path)
+
+    upstream_rows = [
+        sample_note_row("note-weak", "投影仪家电清单"),
+        sample_note_row("note-topic", "卫生间装修避坑"),
+        sample_note_row("note-title", "浴缸尺寸怎么选"),
+    ]
+    upstream_rows[0]["content_excerpt"] = "客厅大屏和音响搭配"
+    upstream_rows[0]["tags"] = ["浴缸"]
+    upstream_rows[0]["raw"] = {
+        "noteId": "note-weak",
+        "title": "投影仪家电清单",
+        "desc": "客厅大屏和音响搭配",
+        "participles": ["浴缸"],
+    }
+
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        run_payload, _fake = create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=upstream_rows,
+            keyword="浴缸",
+            limit=10,
+        )
+
+        assert run_payload["candidate_count"] == 3
+        assert [candidate["title"] for candidate in run_payload["candidates"]] == [
+            "投影仪家电清单",
+            "卫生间装修避坑",
+            "浴缸尺寸怎么选",
+        ]
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
         app.dependency_overrides.pop(get_db, None)
@@ -869,8 +979,9 @@ def test_unverified_acquisition_types_are_rejected_without_creating_task(tmp_pat
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_import_candidates_reuses_existing_note_and_creates_snapshot_without_downloading_assets(tmp_path):
+def test_import_candidates_reuses_existing_note_downloads_images_and_creates_snapshot(tmp_path, monkeypatch):
     SessionLocal = override_database(tmp_path)
+    download_calls: list[tuple[str, int, str]] = []
     fake = FakeNoteSource(
         [
             {
@@ -893,6 +1004,13 @@ def test_import_candidates_reuses_existing_note_and_creates_snapshot_without_dow
     app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
     try:
         user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+
+        def fake_download(url: str, owner_id: int, asset_type: str) -> str | None:
+            download_calls.append((url, owner_id, asset_type))
+            return f"xhs-asset-u{owner_id}-{len(download_calls)}.jpg"
+
+        monkeypatch.setattr("backend.app.services.data_acquisition_service.download_asset_to_local", fake_download)
+
         db = SessionLocal()
         try:
             existing = Note(
@@ -947,7 +1065,14 @@ def test_import_candidates_reuses_existing_note_and_creates_snapshot_without_dow
                 "https://sns-img-hw.xhscdn.com/cover.jpg",
                 "https://sns-img-hw.xhscdn.com/detail.jpg",
             ]
-            assert all(asset.local_path == "" for asset in assets)
+            assert [asset.local_path for asset in assets] == [
+                f"xhs-asset-u{user_id}-1.jpg",
+                f"xhs-asset-u{user_id}-2.jpg",
+            ]
+            assert download_calls == [
+                ("https://sns-img-hw.xhscdn.com/cover.jpg", user_id, "image"),
+                ("https://sns-img-hw.xhscdn.com/detail.jpg", user_id, "image"),
+            ]
             snapshot = db.scalars(select(NoteSourceSnapshot)).one()
             assert snapshot.note_id == note.id
             assert snapshot.snapshot_type == "search_result"
@@ -960,6 +1085,289 @@ def test_import_candidates_reuses_existing_note_and_creates_snapshot_without_dow
             db.close()
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_candidates_fetches_comments_from_data_account(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    fake = CommentingFakeNoteSource(
+        [sample_note_row("note-with-comments", "浴缸评论笔记")],
+        {
+            "note-with-comments": [
+                {
+                    "comment_id": "comment-1",
+                    "user_name": "用户A",
+                    "user_id": "user-a",
+                    "content": "想看更多尺寸",
+                    "like_count": 12,
+                    "parent_comment_id": None,
+                    "created_at_remote": "2026-07-09",
+                    "raw_json": {"commentId": "comment-1"},
+                },
+                {
+                    "comment_id": "comment-2",
+                    "user_name": "用户B",
+                    "content": "收藏了",
+                    "like_count": 3,
+                    "raw_json": {"commentId": "comment-2"},
+                },
+            ]
+        },
+    )
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    monkeypatch.setattr("backend.app.services.data_acquisition_service.download_asset_to_local", lambda *_args: "")
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+
+        run_response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "account_id": account_id,
+                "params": {"keyword": "浴缸", "limit": 10},
+            },
+        )
+        candidate_id = run_response.json()["candidates"][0]["id"]
+
+        import_response = client.post(
+            "/api/xhs/data-acquisition/candidates/import",
+            headers=headers,
+            json={"candidate_ids": [candidate_id]},
+        )
+
+        assert import_response.status_code == 200
+        assert fake.comment_calls == [
+            ("session=ok", "note-with-comments", {"limit": 200})
+        ]
+        db = SessionLocal()
+        try:
+            note = db.scalars(select(Note)).one()
+            comments = db.scalars(select(NoteComment).where(NoteComment.note_id == note.id).order_by(NoteComment.id.asc())).all()
+            assert [(comment.comment_id, comment.user_name, comment.content, comment.like_count) for comment in comments] == [
+                ("comment-1", "用户A", "想看更多尺寸", 12),
+                ("comment-2", "用户B", "收藏了", 3),
+            ]
+            assert comments[0].raw_json == {"commentId": "comment-1"}
+            assert note.raw_json["data_acquisition"]["comments_status"] == "completed"
+            assert note.raw_json["data_acquisition"]["comments_count"] == 2
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_candidates_keeps_note_when_data_account_comments_fail(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    fake = CommentingFakeNoteSource(
+        [sample_note_row("note-comment-denied", "浴缸评论失败笔记")],
+        comment_error="当前版本无请求权限，请升级会员版本查看更多~",
+    )
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    monkeypatch.setattr("backend.app.services.data_acquisition_service.download_asset_to_local", lambda *_args: "")
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+
+        run_response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "account_id": account_id,
+                "params": {"keyword": "浴缸", "limit": 10},
+            },
+        )
+        candidate_id = run_response.json()["candidates"][0]["id"]
+
+        import_response = client.post(
+            "/api/xhs/data-acquisition/candidates/import",
+            headers=headers,
+            json={"candidate_ids": [candidate_id]},
+        )
+
+        assert import_response.status_code == 200
+        assert fake.comment_calls == [
+            ("session=ok", "note-comment-denied", {"limit": 200})
+        ]
+        db = SessionLocal()
+        try:
+            note = db.scalars(select(Note)).one()
+            assert note.title == "浴缸评论失败笔记"
+            assert db.scalars(select(NoteComment)).all() == []
+            assert note.raw_json["data_acquisition"]["comments_status"] == "failed"
+            assert "当前版本无请求权限" in note.raw_json["data_acquisition"]["comments_error"]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_candidates_resolves_original_url_from_data_account_when_missing(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    resolved_url = (
+        "https://www.xiaohongshu.com/discovery/item/6a4a223c0000000006022abe"
+        "?xsec_token=token&xsec_source=pc_feed"
+    )
+    fake = ResolvingFakeNoteSource(
+        [sample_unresolved_note_row("11548571364", "浴缸多图笔记")],
+        {"11548571364": resolved_url},
+    )
+    app.dependency_overrides[get_data_acquisition_note_source] = lambda: fake
+    monkeypatch.setattr("backend.app.services.data_acquisition_service.download_asset_to_local", lambda *_args: "")
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+
+        run_response = client.post(
+            "/api/xhs/data-acquisition/runs",
+            headers=headers,
+            json={
+                "acquisition_type": "note_search",
+                "account_id": account_id,
+                "params": {"keyword": "浴缸", "limit": 10},
+            },
+        )
+        candidate_payload = run_response.json()["candidates"][0]
+        assert candidate_payload["original_url"] == ""
+
+        import_response = client.post(
+            "/api/xhs/data-acquisition/candidates/import",
+            headers=headers,
+            json={"candidate_ids": [candidate_payload["id"]]},
+        )
+
+        assert import_response.status_code == 200
+        imported = import_response.json()["items"][0]
+        assert imported["source_url"] == resolved_url
+        assert fake.resolve_calls == [("session=ok", "11548571364")]
+
+        db = SessionLocal()
+        try:
+            note = db.scalars(select(Note)).one()
+            assert note.raw_json["note_url"] == resolved_url
+            assert note.raw_json["data_acquisition"]["original_url"] == resolved_url
+            snapshot = db.scalars(select(NoteSourceSnapshot)).one()
+            assert snapshot.source_url == resolved_url
+            candidate = db.get(DataAcquisitionCandidate, candidate_payload["id"])
+            assert candidate is not None
+            assert candidate.original_url == resolved_url
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_source_images_resolves_legacy_data_acquisition_short_link(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    bad_url = "https://www.xiaohongshu.com/explore/11548571364"
+    resolved_url = (
+        "https://www.xiaohongshu.com/discovery/item/6a4a223c0000000006022abe"
+        "?xsec_token=token&xsec_source=pc_feed"
+    )
+    resolve_calls: list[tuple[str, str]] = []
+    fetch_calls: list[str] = []
+    monkeypatch.setattr(
+        "backend.app.services.huitun_live_note_source.resolve_note_url",
+        lambda cookie_text, note_id: resolve_calls.append((cookie_text, note_id)) or resolved_url,
+    )
+    monkeypatch.setattr(
+        "backend.app.api.notes.fetch_xhs_note_image_urls",
+        lambda source_url: fetch_calls.append(source_url) or ["https://sns-img-hw.xhscdn.com/notes_pre_post/image-1"],
+    )
+    monkeypatch.setattr("backend.app.api.notes._download_asset", lambda *_args: "")
+    try:
+        user_id, _account_id, headers = create_user_account_and_headers(SessionLocal)
+        db = SessionLocal()
+        try:
+            note = Note(
+                user_id=user_id,
+                platform_account_id=0,
+                platform="xhs",
+                note_id="11548571364",
+                title="legacy data acquisition note",
+                content="",
+                author_name="",
+                raw_json={
+                    "source": "data_acquisition",
+                    "note_url": bad_url,
+                    "data_acquisition": {"original_url": bad_url},
+                },
+            )
+            db.add(note)
+            db.commit()
+            note_id = note.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images",
+            headers=headers,
+            json={"source_url": bad_url, "download": True},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["imported_count"] == 1
+        assert resolve_calls == [("session=ok", "11548571364")]
+        assert fetch_calls == [resolved_url]
+        db = SessionLocal()
+        try:
+            note = db.get(Note, note_id)
+            assert note is not None
+            assert note.raw_json["note_url"] == resolved_url
+            assert note.raw_json["data_acquisition"]["original_url"] == resolved_url
+            asset = db.scalars(select(NoteAsset).where(NoteAsset.note_id == note_id)).one()
+            assert asset.url == "https://sns-img-hw.xhscdn.com/notes_pre_post/image-1"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_import_source_images_fails_closed_when_legacy_short_link_cannot_resolve(tmp_path, monkeypatch):
+    SessionLocal = override_database(tmp_path)
+    bad_url = "https://www.xiaohongshu.com/explore/11548571364"
+    fetch_calls: list[str] = []
+    monkeypatch.setattr("backend.app.services.huitun_live_note_source.resolve_note_url", lambda _cookie_text, _note_id: "")
+    monkeypatch.setattr(
+        "backend.app.api.notes.fetch_xhs_note_image_urls",
+        lambda source_url: fetch_calls.append(source_url) or ["https://sns-img-hw.xhscdn.com/notes_pre_post/image-1"],
+    )
+    try:
+        user_id, _account_id, headers = create_user_account_and_headers(SessionLocal)
+        db = SessionLocal()
+        try:
+            note = Note(
+                user_id=user_id,
+                platform_account_id=0,
+                platform="xhs",
+                note_id="11548571364",
+                title="legacy data acquisition note",
+                content="",
+                author_name="",
+                raw_json={
+                    "source": "data_acquisition",
+                    "note_url": bad_url,
+                    "data_acquisition": {"original_url": bad_url},
+                },
+            )
+            db.add(note)
+            db.commit()
+            note_id = note.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/notes/{note_id}/assets/import-source-images",
+            headers=headers,
+            json={"source_url": bad_url, "download": True},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "source_url_unavailable"
+        assert fetch_calls == []
+    finally:
         app.dependency_overrides.pop(get_db, None)
 
 

@@ -138,6 +138,36 @@ def test_xhs_data_acquisition_page_hides_internal_source_terms_and_keeps_high_ri
         assert forbidden not in source
 
 
+def test_xhs_data_acquisition_keyword_group_links_open_data_account_workbench():
+    source = open("frontend/src/pages/platforms/xhs/data-acquisition-page.tsx", encoding="utf-8").read()
+    keywords_page_source = open("frontend/src/pages/platforms/xhs/keywords-page.tsx", encoding="utf-8").read()
+
+    assert "navigate(`/platforms/xhs/crawler?keyword_group_id=${group.id}`)" in keywords_page_source
+    assert "handleCreateKeywordGroupRuns" in source
+    assert "关键词组获取笔记数据" in source
+    assert "预计消耗" in source
+    assert 'searchParams.get("keyword_group_id")' in source
+    assert "createDataAcquisitionRun" in source
+    assert "shouldShowKeywordGroupCrawler" not in source
+
+
+def test_model_config_page_defaults_to_doubao_seed_main_model():
+    source = open("frontend/src/pages/models/model-config-page.tsx", encoding="utf-8").read()
+    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+
+    assert 'const DOUBAO_MAIN_MODEL = "doubao-seed-2-0-mini-260428"' in source
+    assert 'const VOLCENGINE_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"' in source
+    assert 'provider: "volcengine-ark"' in source
+    assert "同一个 Doubao 配置可以分别保存为文本模型和图片分析模型" in source
+    assert "豆包主力模型" in source
+    assert "保存为主力模型" in source
+    assert "configureDoubaoMainModels" in source
+    assert '"/model-configs/doubao-main"' in api_source
+    assert "DoubaoMainModelConfigResult" in types_source
+    assert "runninghub-image-g" not in source
+
+
 def test_task_center_links_data_acquisition_tasks_back_to_candidate_workbench():
     source = open("frontend/src/pages/tasks/task-center-page.tsx", encoding="utf-8").read()
 
@@ -423,7 +453,7 @@ def test_xhs_content_library_exposes_feishu_filters_and_actions():
     types_source = open("frontend/src/components/content-library/content-library-types.ts", encoding="utf-8").read()
     hook_source = open("frontend/src/components/content-library/use-content-library.ts", encoding="utf-8").read()
 
-    assert "飞书分析筛选" in shell_source
+    assert "系统分析筛选" in shell_source
     assert "飞书同步状态" in shell_source
     assert "分析状态" in shell_source
     assert "核心产品/服务" in shell_source
@@ -451,7 +481,7 @@ def test_xhs_content_library_exposes_feishu_filters_and_actions():
     assert "同步到飞书" in adapter_source
     assert "从飞书回传" in adapter_source
     assert "回传全部分析结果" in adapter_source
-    assert "飞书分析结果" in adapter_source
+    assert "系统分析结果" in adapter_source
     assert "analysis_result" in adapter_source
     assert "score" in adapter_source
     assert "rating" in adapter_source
@@ -653,7 +683,7 @@ def test_wechat_official_routes_use_dedicated_pages():
     assert 'path="/platforms/wechat-official/discovery" element={<WechatOfficialDiscoveryPage />}' in router_source
     assert 'path="/platforms/wechat-official/library" element={<WechatOfficialLibraryPage />}' in router_source
     assert 'path="/platforms/wechat-official/drafts" element={<WechatOfficialDraftsPage />}' in router_source
-    assert 'path="/platforms/wechat-official/settings" element={<WechatOfficialSettingsPage />}' in router_source
+    assert 'path="/platforms/wechat-official/settings" element={<AdminRoute><WechatOfficialSettingsPage /></AdminRoute>}' in router_source
     assert "element={<WechatOfficialDashboard />}" not in router_source
 
 
@@ -1173,6 +1203,17 @@ def _parse_sse_response(response):
     return {"items": events, **done}
 
 
+def _assert_no_private_payload_keys(value):
+    if isinstance(value, dict):
+        assert "raw" not in value
+        assert "raw_json" not in value
+        for item in value.values():
+            _assert_no_private_payload_keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_no_private_payload_keys(item)
+
+
 def _override_database(tmp_path):
     from backend.app.core.database import Base, get_db
 
@@ -1375,12 +1416,13 @@ class FakeHuitunAccountClient:
             },
         }
 
-    def login_huitun_with_password(self, mobile, password, ticket, rand_str, captcha=None):
+    def login_huitun_with_password(self, mobile, password, ticket, rand_str, captcha=None, initial_cookies_text=None):
         assert mobile == "13800138000"
         assert password == "company-pass-123"
         assert ticket == "captcha-ticket"
         assert rand_str == "captcha-rand"
         assert captcha in {None, "123456"}
+        assert initial_cookies_text is None
         return {
             "status": "confirmed",
             "cookies_text": '{"xhsapiToken":"password-token"}',
@@ -1420,6 +1462,22 @@ def _register_and_get_access_token(username: str = "operator") -> str:
     )
     assert response.status_code == 200
     return response.json()["access_token"]
+
+
+def _register_and_get_admin_access_token(username: str = "admin-operator") -> str:
+    from backend.app.core.database import get_db
+    from backend.app.models import User
+
+    token = _register_and_get_access_token(username)
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        user = db.scalar(select(User).where(User.username == username))
+        assert user is not None
+        user.role = "admin"
+        db.commit()
+    finally:
+        db.close()
+    return token
 
 
 def test_huitun_qrcode_login_session_persists_and_confirms_account(tmp_path):
@@ -1600,6 +1658,185 @@ def test_huitun_password_login_persists_cookie_without_storing_plain_password(tm
             cookie_version = db.query(AccountCookieVersion).one()
             assert cookie_version.platform_account_id == account.id
             assert decrypt_text(cookie_version.encrypted_cookies) == '{"xhsapiToken":"password-token"}'
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_huitun_account_client, None)
+
+
+def test_huitun_password_login_returns_sms_verification_required(tmp_path):
+    from backend.app.api.huitun_login_sessions import get_huitun_account_client
+    from backend.app.core.database import get_db
+    from backend.app.core.security import create_access_token, decrypt_text
+    from backend.app.models import LoginSession, User
+
+    class SmsRequiredHuitunAccountClient(FakeHuitunAccountClient):
+        def login_huitun_with_password(self, mobile, password, ticket, rand_str, captcha=None, initial_cookies_text=None):
+            assert mobile == "13800138000"
+            assert password == "company-pass-123"
+            assert ticket == "captcha-ticket"
+            assert rand_str == "captcha-rand"
+            assert captcha is None
+            assert initial_cookies_text is None
+            return {
+                "status": "verification_required",
+                "cookies_text": '{"xhsapiToken":"temporary-token"}',
+                "user_info": None,
+                "message": "当前设备需要短信验证，请输入短信验证码后继续。",
+                "diagnostics": {
+                    "http_status": 403,
+                    "message": "企业版账号当前设备需要短信验证码",
+                },
+            }
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_huitun_account_client] = lambda: SmsRequiredHuitunAccountClient()
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = User(username="huitun-sms-admin", password_hash="hash", role="admin", status="active")
+            db.add(admin)
+            db.commit()
+            admin_id = admin.id
+        finally:
+            db.close()
+        access_token = create_access_token(admin_id)
+
+        response = client.post(
+            "/api/huitun/login-sessions/password/confirm",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "mobile": "13800138000",
+                "password": "company-pass-123",
+                "ticket": "captcha-ticket",
+                "randStr": "captcha-rand",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "verification_required"
+        assert payload["account"] is None
+        assert payload["message"] == "当前设备需要短信验证，请输入短信验证码后继续。"
+        assert "company-pass-123" not in str(payload)
+        assert "captcha-ticket" not in str(payload)
+        assert "captcha-rand" not in str(payload)
+        assert "temporary-token" not in str(payload)
+        assert "企业版" not in str(payload)
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.query(LoginSession).filter(LoginSession.login_method == "password").one()
+            assert stored_session.status == "verification_required"
+            assert stored_session.phone_mask == "138****8000"
+            assert decrypt_text(stored_session.encrypted_temp_cookies) == '{"xhsapiToken":"temporary-token"}'
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_huitun_account_client, None)
+
+
+def test_huitun_password_login_confirms_sms_with_existing_session(tmp_path):
+    from backend.app.api.huitun_login_sessions import get_huitun_account_client
+    from backend.app.core.database import get_db
+    from backend.app.core.security import create_access_token, decrypt_text
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount, User
+
+    class SmsConfirmHuitunAccountClient(FakeHuitunAccountClient):
+        def __init__(self):
+            self.calls = []
+
+        def login_huitun_with_password(self, mobile, password, ticket, rand_str, captcha=None, initial_cookies_text=None):
+            self.calls.append(
+                {
+                    "mobile": mobile,
+                    "password": password,
+                    "ticket": ticket,
+                    "rand_str": rand_str,
+                    "captcha": captcha,
+                    "initial_cookies_text": initial_cookies_text,
+                }
+            )
+            if captcha is None:
+                return {
+                    "status": "verification_required",
+                    "cookies_text": '{"xhsapiToken":"temporary-token"}',
+                    "user_info": None,
+                    "message": "当前设备需要短信验证，请输入短信验证码后继续。",
+                }
+            return {
+                "status": "confirmed",
+                "cookies_text": '{"xhsapiToken":"final-enterprise-token"}',
+                "user_info": {
+                    "external_user_id": "enterprise-user-1",
+                    "nickname": "企业版数据账号",
+                    "avatar_url": "",
+                    "profile": {"source": "huitun", "raw": {"userId": "enterprise-user-1"}},
+                },
+            }
+
+    fake_client = SmsConfirmHuitunAccountClient()
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_huitun_account_client] = lambda: fake_client
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = User(username="huitun-sms-confirm-admin", password_hash="hash", role="admin", status="active")
+            db.add(admin)
+            db.commit()
+            admin_id = admin.id
+        finally:
+            db.close()
+        access_token = create_access_token(admin_id)
+
+        first_response = client.post(
+            "/api/huitun/login-sessions/password/confirm",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "mobile": "13800138000",
+                "password": "company-pass-123",
+                "ticket": "captcha-ticket",
+                "randStr": "captcha-rand",
+            },
+        )
+        assert first_response.status_code == 200
+        first_payload = first_response.json()
+        assert first_payload["status"] == "verification_required"
+
+        second_response = client.post(
+            "/api/huitun/login-sessions/password/confirm",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "mobile": "13800138000",
+                "password": "company-pass-123",
+                "ticket": "captcha-ticket-2",
+                "randStr": "captcha-rand-2",
+                "captcha": "654321",
+                "session_id": first_payload["session_id"],
+            },
+        )
+
+        assert second_response.status_code == 200
+        second_payload = second_response.json()
+        assert second_payload["status"] == "confirmed"
+        assert second_payload["account"]["nickname"] == "企业版数据账号"
+        assert "company-pass-123" not in str(second_payload)
+        assert "temporary-token" not in str(second_payload)
+        assert "final-enterprise-token" not in str(second_payload)
+        assert fake_client.calls[1]["captcha"] == "654321"
+        assert fake_client.calls[1]["initial_cookies_text"] == '{"xhsapiToken":"temporary-token"}'
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.query(LoginSession).filter(LoginSession.login_method == "password").one()
+            assert stored_session.status == "confirmed"
+            assert stored_session.encrypted_temp_cookies in {None, ""}
+            account = db.query(PlatformAccount).one()
+            assert account.external_user_id == "enterprise-user-1"
+            cookie_version = db.query(AccountCookieVersion).one()
+            assert decrypt_text(cookie_version.encrypted_cookies) == '{"xhsapiToken":"final-enterprise-token"}'
         finally:
             db.close()
     finally:
@@ -2801,7 +3038,67 @@ def test_xhs_pc_note_search_uses_owned_account_cookie_and_normalizes_results(tmp
         assert note["comments"] == 78
         assert note["shares"] == 9
         assert note["type"] == "normal"
-        assert note["raw"]["model_type"] == "note"
+        assert "raw" not in note
+        assert "raw" not in payload
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
+def test_xhs_pc_search_keeps_raw_payload_admin_only(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.core.security import encrypt_text
+    from backend.app.models import AccountCookieVersion, PlatformAccount, User
+
+    db_dependency, normal_token, normal_account_id = _create_pc_account_with_cookie(tmp_path, "pc-raw-normal")
+    admin_token = _register_and_get_admin_access_token("pc-raw-admin")
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        admin = db.scalar(select(User).where(User.username == "pc-raw-admin"))
+        assert admin is not None
+        admin_account = PlatformAccount(
+            user_id=admin.id,
+            platform="xhs",
+            sub_type="pc",
+            external_user_id="admin-pc",
+            nickname="admin pc",
+            status="active",
+        )
+        db.add(admin_account)
+        db.flush()
+        db.add(
+            AccountCookieVersion(
+                platform_account_id=admin_account.id,
+                encrypted_cookies=encrypt_text('{"a1":"admin-a1","web_session":"admin-session"}'),
+            )
+        )
+        db.commit()
+        admin_account_id = admin_account.id
+    finally:
+        db.close()
+
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeXhsPcSearchAdapter
+    try:
+        normal_response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {normal_token}"},
+            json={"account_id": normal_account_id, "keyword": "breakfast"},
+        )
+        assert normal_response.status_code == 200
+        normal_payload = normal_response.json()
+        assert "raw" not in normal_payload
+        assert "raw" not in normal_payload["items"][0]
+
+        admin_response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"account_id": admin_account_id, "keyword": "breakfast"},
+        )
+        assert admin_response.status_code == 200
+        admin_payload = admin_response.json()
+        assert admin_payload["raw"]["success"] is True
+        assert admin_payload["items"][0]["raw"]["model_type"] == "note"
     finally:
         app.dependency_overrides.pop(db_dependency, None)
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
@@ -4436,8 +4733,10 @@ def test_xhs_crawl_routes_are_authenticated_task_backed_and_persist_notes(tmp_pa
         assert search_payload["task"]["status"] == "completed"
         assert search_payload["saved_count"] == 0
         assert search_payload["skipped_low_quality_count"] == 1
+        assert "raw" not in search_payload
         assert search_payload["skipped_items"][0]["note_id"] == "crawl-search-001"
         assert search_payload["skipped_items"][0]["save_diagnostic_kind"] == "save_skipped_low_quality"
+        _assert_no_private_payload_keys(search_payload)
 
         url_response = client.post(
             "/api/xhs/crawl/note-urls",
@@ -4445,8 +4744,10 @@ def test_xhs_crawl_routes_are_authenticated_task_backed_and_persist_notes(tmp_pa
             json={"account_id": owner_account_id, "urls": ["https://www.xiaohongshu.com/explore/crawl-url-001?xsec_token=crawl-token"]},
         )
         assert url_response.status_code == 200
-        assert url_response.json()["saved_count"] == 1
-        assert url_response.json()["items"][0]["note_id"] == "crawl-url-001"
+        url_payload = url_response.json()
+        assert url_payload["saved_count"] == 1
+        assert url_payload["items"][0]["note_id"] == "crawl-url-001"
+        assert "raw_json" not in url_payload["items"][0]
 
         user_response = client.post(
             "/api/xhs/crawl/user-notes",
@@ -4454,9 +4755,12 @@ def test_xhs_crawl_routes_are_authenticated_task_backed_and_persist_notes(tmp_pa
             json={"account_id": owner_account_id, "user_url": "https://www.xiaohongshu.com/user/profile/demo"},
         )
         assert user_response.status_code == 200
-        assert user_response.json()["saved_count"] == 0
-        assert user_response.json()["skipped_low_quality_count"] == 1
-        assert user_response.json()["skipped_items"][0]["note_id"] == "crawl-user-001"
+        user_payload = user_response.json()
+        assert user_payload["saved_count"] == 0
+        assert user_payload["skipped_low_quality_count"] == 1
+        assert "raw" not in user_payload
+        assert user_payload["skipped_items"][0]["note_id"] == "crawl-user-001"
+        _assert_no_private_payload_keys(user_payload)
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -4558,6 +4862,7 @@ def test_xhs_keyword_group_crawl_streams_human_summary_and_saves_valid_detail(tm
         assert parsed["summary_message"].startswith("采集完成")
         assert any(item.get("keyword") == "低卡早餐" for item in parsed["items"])
         assert any(item.get("saved") is True for item in parsed["items"])
+        _assert_no_private_payload_keys(parsed["items"])
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -4566,6 +4871,66 @@ def test_xhs_keyword_group_crawl_streams_human_summary_and_saves_valid_detail(tm
             assert notes[0].title == "低卡早餐详情"
         finally:
             db.close()
+    finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_xhs_crawl_raw_payload_is_admin_only(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.core.security import encrypt_text
+    from backend.app.models import AccountCookieVersion, PlatformAccount, User
+
+    class FakeRawCrawlAdapter(FakeXhsPcSearchAdapter):
+        pass
+
+    db_dependency, normal_token, normal_account_id = _create_pc_account_with_cookie(tmp_path, "crawl-raw-normal")
+    admin_token = _register_and_get_admin_access_token("crawl-raw-admin")
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        admin = db.scalar(select(User).where(User.username == "crawl-raw-admin"))
+        assert admin is not None
+        admin_account = PlatformAccount(
+            user_id=admin.id,
+            platform="xhs",
+            sub_type="pc",
+            external_user_id="crawl-admin-pc",
+            nickname="crawl admin pc",
+            status="active",
+        )
+        db.add(admin_account)
+        db.flush()
+        db.add(
+            AccountCookieVersion(
+                platform_account_id=admin_account.id,
+                encrypted_cookies=encrypt_text('{"a1":"admin-a1","web_session":"admin-session"}'),
+            )
+        )
+        db.commit()
+        admin_account_id = admin_account.id
+    finally:
+        db.close()
+
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeRawCrawlAdapter
+    try:
+        normal_response = client.post(
+            "/api/xhs/crawl/search-notes",
+            headers={"Authorization": f"Bearer {normal_token}"},
+            json={"account_id": normal_account_id, "keyword": "breakfast", "save_to_library": False},
+        )
+        assert normal_response.status_code == 200
+        normal_payload = normal_response.json()
+        assert "raw" not in normal_payload
+
+        admin_response = client.post(
+            "/api/xhs/crawl/search-notes",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"account_id": admin_account_id, "keyword": "breakfast", "save_to_library": False},
+        )
+        assert admin_response.status_code == 200
+        admin_payload = admin_response.json()
+        assert admin_payload["raw"]["success"] is True
     finally:
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
         app.dependency_overrides.pop(db_dependency, None)
@@ -5233,10 +5598,10 @@ def test_xhs_creator_routes_use_owned_creator_account_and_record_tasks(tmp_path)
             self.cookies = cookies
 
         def get_topic(self, keyword):
-            return True, "ok", {"data": {"items": [{"id": "topic-creator", "name": keyword}]}}
+            return True, "ok", {"data": {"items": [{"id": "topic-creator", "name": keyword}]}, "provider_secret": "topic-secret"}
 
         def get_location_info(self, keyword):
-            return True, "ok", {"data": {"items": [{"id": "loc-creator", "name": keyword}]}}
+            return True, "ok", {"data": {"items": [{"id": "loc-creator", "name": keyword}]}, "provider_secret": "loc-secret"}
 
         def upload_media(self, file_path, media_type):
             return {"fileIds": "file-creator-001", "width": 1080, "height": 1440, "media_type": media_type}
@@ -5273,6 +5638,7 @@ def test_xhs_creator_routes_use_owned_creator_account_and_record_tasks(tmp_path)
         )
         assert topic_response.status_code == 200
         assert topic_response.json()["items"][0]["name"] == "breakfast"
+        assert "raw" not in topic_response.json()
 
         location_response = client.post(
             "/api/xhs/creator/locations/search",
@@ -5281,6 +5647,7 @@ def test_xhs_creator_routes_use_owned_creator_account_and_record_tasks(tmp_path)
         )
         assert location_response.status_code == 200
         assert location_response.json()["items"][0]["id"] == "loc-creator"
+        assert "raw" not in location_response.json()
 
         upload_response = client.post(
             "/api/xhs/creator/assets/upload",
@@ -5324,6 +5691,7 @@ def test_xhs_creator_routes_use_owned_creator_account_and_record_tasks(tmp_path)
         )
         assert published_response.status_code == 200
         assert published_response.json()["items"][0]["note_id"] == "published-001"
+        assert "raw" not in published_response.json()
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -6242,8 +6610,12 @@ def test_notes_library_filters_by_keyword_tag_assets_and_comments(tmp_path):
 
 
 def test_notes_library_detail_enforces_ownership(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.models import Note, PlatformAccount, User
+
     db_dependency, owner_token, owner_account_id = _create_pc_account_with_cookie(tmp_path, "library-detail-owner")
     intruder_token = _register_and_get_access_token("library-detail-intruder")
+    admin_token = _register_and_get_admin_access_token("library-detail-admin")
     try:
         save_response = client.post(
             "/api/notes/batch-save",
@@ -6269,7 +6641,42 @@ def test_notes_library_detail_enforces_ownership(tmp_path):
         )
         assert owner_response.status_code == 200
         assert owner_response.json()["note_id"] == "detail-note-001"
-        assert owner_response.json()["raw_json"] == {"source": "detail"}
+        assert "raw_json" not in owner_response.json()
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = db.scalar(select(User).where(User.username == "library-detail-admin"))
+            assert admin is not None
+            admin_account = PlatformAccount(
+                user_id=admin.id,
+                platform="xhs",
+                sub_type="pc",
+                external_user_id="admin-detail-pc",
+                nickname="admin detail pc",
+                status="active",
+            )
+            db.add(admin_account)
+            db.flush()
+            admin_note = Note(
+                user_id=admin.id,
+                platform_account_id=admin_account.id,
+                platform="xhs",
+                note_id="admin-detail-note-001",
+                title="管理员详情页笔记",
+                raw_json={"source": "admin-detail"},
+            )
+            db.add(admin_note)
+            db.commit()
+            admin_note_id = admin_note.id
+        finally:
+            db.close()
+
+        admin_response = client.get(
+            f"/api/notes/{admin_note_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert admin_response.status_code == 200
+        assert admin_response.json()["raw_json"] == {"source": "admin-detail"}
 
         intruder_response = client.get(
             f"/api/notes/{note_id}",
@@ -6501,13 +6908,60 @@ def test_model_configs_require_authentication(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_sensitive_config_routes_require_admin_role(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    user_token = _register_and_get_access_token("sensitive-config-user")
+    admin_token = _register_and_get_admin_access_token("sensitive-config-admin")
+    try:
+        create_model_payload = {
+            "name": "Hidden Text",
+            "model_type": "text",
+            "provider": "openai-compatible",
+            "model_name": "gpt-hidden",
+            "base_url": "https://api.example.test/v1",
+            "api_key": "sk-hidden",
+            "is_default": True,
+        }
+        feishu_payload = {
+            "app_id": "cli_xxx",
+            "app_secret": "feishu-secret",
+            "bitable_url": "https://example.feishu.cn/base/appxxx?table=tblxxx",
+            "table_id": "tblxxx",
+            "enabled": True,
+        }
+        data_service_payload = {"name": "Data Service", "base_url": "https://data.example.test", "api_key": "provider-secret"}
+
+        blocked_requests = [
+            ("get", "/api/model-configs", None),
+            ("post", "/api/model-configs", create_model_payload),
+            ("get", "/api/integrations/feishu/config", None),
+            ("put", "/api/integrations/feishu/config", feishu_payload),
+            ("post", "/api/integrations/feishu/test", None),
+            ("get", "/api/wechat-official/redfox/config", None),
+            ("post", "/api/wechat-official/redfox/config", data_service_payload),
+            ("post", "/api/wechat-official/redfox/config/validate", None),
+        ]
+        for method, path, payload in blocked_requests:
+            kwargs = {"headers": {"Authorization": f"Bearer {user_token}"}}
+            if payload is not None:
+                kwargs["json"] = payload
+            response = getattr(client, method)(path, **kwargs)
+            assert response.status_code == 403, path
+
+        assert client.get("/api/model-configs", headers={"Authorization": f"Bearer {admin_token}"}).status_code == 200
+        assert client.get("/api/integrations/feishu/config", headers={"Authorization": f"Bearer {admin_token}"}).status_code == 200
+        assert client.get("/api/wechat-official/redfox/config", headers={"Authorization": f"Bearer {admin_token}"}).status_code == 200
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_model_configs_create_list_filter_and_encrypt_api_key(tmp_path):
     from backend.app.core.database import get_db
     from backend.app.core.security import decrypt_text
-    from backend.app.models import ModelConfig
+    from backend.app.models import ModelConfig, User
 
     db_dependency = _override_database(tmp_path)
-    owner_token = _register_and_get_access_token("model-owner")
+    owner_token = _register_and_get_admin_access_token("model-owner")
     intruder_token = _register_and_get_access_token("model-intruder")
     try:
         create_response = client.post(
@@ -6561,8 +7015,7 @@ def test_model_configs_create_list_filter_and_encrypt_api_key(tmp_path):
             "/api/model-configs",
             headers={"Authorization": f"Bearer {intruder_token}"},
         )
-        assert intruder_list_response.status_code == 200
-        assert intruder_list_response.json()["total"] == 0
+        assert intruder_list_response.status_code == 403
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -6575,9 +7028,72 @@ def test_model_configs_create_list_filter_and_encrypt_api_key(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_admin_can_quick_configure_doubao_main_models_without_exposing_api_key(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.core.security import decrypt_text
+    from backend.app.models import ModelConfig, User
+
+    db_dependency = _override_database(tmp_path)
+    admin_token = _register_and_get_admin_access_token("doubao-quick-config-admin")
+    user_token = _register_and_get_access_token("doubao-quick-config-user")
+    try:
+        forbidden = client.post(
+            "/api/model-configs/doubao-main",
+            headers={"Authorization": f"Bearer {user_token}"},
+            json={"api_key": "sk-ark-user"},
+        )
+        assert forbidden.status_code == 403
+
+        response = client.post(
+            "/api/model-configs/doubao-main",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"api_key": "sk-ark-admin"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert "api_key" not in payload
+        assert set(payload.keys()) == {"text", "vision"}
+        assert payload["text"]["model_type"] == "text"
+        assert payload["vision"]["model_type"] == "image"
+        for item in (payload["text"], payload["vision"]):
+            assert item["provider"] == "volcengine-ark"
+            assert item["model_name"] == "doubao-seed-2-0-mini-260428"
+            assert item["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+            assert item["has_api_key"] is True
+            assert item["is_default"] is True
+            assert "api_key" not in item
+            assert "encrypted_api_key" not in item
+
+        repeat = client.post(
+            "/api/model-configs/doubao-main",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"api_key": "sk-ark-rotated"},
+        )
+
+        assert repeat.status_code == 200
+        assert repeat.json()["text"]["id"] == payload["text"]["id"]
+        assert repeat.json()["vision"]["id"] == payload["vision"]["id"]
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = db.scalar(select(User).where(User.username == "doubao-quick-config-admin"))
+            assert admin is not None
+            configs = db.scalars(select(ModelConfig).where(ModelConfig.provider == "volcengine-ark")).all()
+            assert len(configs) == 2
+            assert all(config.user_id == admin.id for config in configs)
+            assert {config.model_type for config in configs} == {"text", "image"}
+            assert all(config.is_default for config in configs)
+            assert all(decrypt_text(config.encrypted_api_key) == "sk-ark-rotated" for config in configs)
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_model_config_test_uses_runninghub_default_base_url_when_blank(tmp_path, monkeypatch):
     db_dependency = _override_database(tmp_path)
-    token = _register_and_get_access_token("runninghub-default-base-url-owner")
+    token = _register_and_get_admin_access_token("runninghub-default-base-url-owner")
 
     class FakeResponse:
         status_code = 200
@@ -6621,9 +7137,258 @@ def test_model_config_test_uses_runninghub_default_base_url_when_blank(tmp_path,
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_model_config_test_checks_openai_compatible_image_models_with_chat_vision(tmp_path, monkeypatch):
+    db_dependency = _override_database(tmp_path)
+    token = _register_and_get_admin_access_token("doubao-image-config-owner")
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"choices":[{"message":{"content":"ok"}}]}'
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs["json"]
+        captured["headers"] = kwargs["headers"]
+        return FakeResponse()
+
+    import backend.app.api.model_configs as model_configs_api
+
+    monkeypatch.setattr(model_configs_api.http_requests, "post", fake_post, raising=False)
+
+    try:
+        response = client.post(
+            "/api/model-configs",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "Doubao Vision",
+                "model_type": "image",
+                "provider": "volcengine-ark",
+                "model_name": "doubao-seed-2-0-mini-260428",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "api_key": "sk-doubao",
+                "is_default": True,
+            },
+        )
+        assert response.status_code == 200
+        config_id = response.json()["id"]
+
+        test_response = client.post(f"/api/model-configs/{config_id}/test", headers={"Authorization": f"Bearer {token}"})
+
+        assert test_response.status_code == 200
+        assert test_response.json()["status"] == "ok"
+        assert captured["url"] == "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+        assert captured["headers"]["Authorization"] == "Bearer sk-doubao"
+        assert captured["json"]["model"] == "doubao-seed-2-0-mini-260428"
+        content = captured["json"]["messages"][0]["content"]
+        assert {"type": "text", "text": "请用一句话描述这张图片。"} in content
+        assert content[0]["type"] == "image_url"
+        assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert "images/generations" not in captured["url"]
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_openai_compatible_image_describe_converts_local_media_to_base64(tmp_path, monkeypatch):
+    from backend.app.models import ModelConfig
+    from backend.app.services.ai_service import OpenAICompatibleImageClient
+    import backend.app.services.ai_service as ai_service
+    import backend.app.core.config as core_config
+
+    storage_dir = tmp_path / "storage"
+    media_dir = storage_dir / "media"
+    media_dir.mkdir(parents=True)
+    image_name = "xhs-image-u1-0123456789abcdef0123456789abcdef.png"
+    image_bytes = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    (media_dir / image_name).write_bytes(image_bytes)
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"choices":[{"message":{"content":"这是一张早餐图"}}]}'
+        content = b'{"choices":[{"message":{"content":"\xe8\xbf\x99\xe6\x98\xaf\xe4\xb8\x80\xe5\xbc\xa0\xe6\x97\xa9\xe9\xa4\x90\xe5\x9b\xbe"}}]}'
+        apparent_encoding = "utf-8"
+        encoding = "utf-8"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "这是一张早餐图"}}]}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs["json"]
+        return FakeResponse()
+
+    monkeypatch.setattr(core_config, "get_settings", lambda: SimpleNamespace(storage_dir=storage_dir), raising=False)
+    monkeypatch.setattr(ai_service.requests, "post", fake_post, raising=False)
+
+    result = OpenAICompatibleImageClient().describe_image(
+        model_config=ModelConfig(
+            provider="volcengine-ark",
+            model_name="doubao-seed-2-0-mini-260428",
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+        ),
+        api_key="sk-doubao",
+        image_url=f"/api/files/media/{image_name}",
+        instruction="描述卖点",
+    )
+
+    assert result == "这是一张早餐图"
+    assert captured["url"] == "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    image_part = captured["json"]["messages"][1]["content"][1]
+    assert image_part["type"] == "image_url"
+    assert image_part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_image_generation_prefers_runninghub_when_doubao_is_default_vision_model(tmp_path, monkeypatch):
+    import backend.app.api.ai as ai_api
+    from backend.app.api.ai import get_image_ai_client
+
+    class FakeGenerationClient:
+        def __init__(self):
+            self.calls = []
+
+        def generate_image(self, *, model_config, api_key, prompt, reference_images=None, owner_user_id=None, aspect_ratio=None):
+            self.calls.append((model_config.provider, model_config.model_name, api_key, prompt, reference_images, owner_user_id, aspect_ratio))
+            return {"url": "https://cdn.example.test/generated.png", "raw": {"ok": True}}
+
+    fake_client = FakeGenerationClient()
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("image-generation-routing-owner")
+    admin_token = _register_and_get_admin_access_token("image-generation-routing-admin")
+    try:
+        app.dependency_overrides[get_image_ai_client] = lambda: fake_client
+        monkeypatch.setattr(ai_api, "_download_public_http_image", lambda url: (base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="), "image/png"))
+        client.post(
+            "/api/model-configs",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "name": "Doubao Vision",
+                "model_type": "image",
+                "provider": "volcengine-ark",
+                "model_name": "doubao-seed-2-0-mini-260428",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "api_key": "sk-doubao",
+                "is_default": True,
+            },
+        )
+        generation_config = client.post(
+            "/api/model-configs",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "name": "Image Generation",
+                "model_type": "image",
+                "provider": "openai-compatible",
+                "model_name": "image-generation-model",
+                "base_url": "https://api.example.test/v1",
+                "api_key": "sk-image-generation",
+                "is_default": False,
+            },
+        ).json()
+
+        response = client.post(
+            "/api/ai/images/generate",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"prompt": "生成一张配图", "save_to_assets": False, "aspect_ratio": "1:1"},
+        )
+
+        assert response.status_code == 200
+        assert fake_client.calls == [
+            ("openai-compatible", "image-generation-model", "sk-image-generation", "生成一张配图", None, None, "1:1")
+        ]
+        tasks = client.get("/api/tasks?platform=xhs", headers={"Authorization": f"Bearer {owner_token}"}).json()["items"]
+        assert tasks[0]["payload"]["model_config_id"] == generation_config["id"]
+    finally:
+        app.dependency_overrides.pop(get_image_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_system_note_analysis_uses_admin_default_doubao_models_for_regular_user(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.core.security import encrypt_text
+    from backend.app.models import ModelConfig, Note, NoteAsset, PlatformAccount, User
+    from backend.app.services.note_analysis_service import analyze_note_system
+
+    class FakeTextClient:
+        def complete_json_prompt(self, *, model_config, api_key, system_prompt, user_prompt, temperature=0.1):
+            assert model_config.model_name == "doubao-seed-2-0-mini-260428"
+            assert api_key == "sk-doubao-text"
+            return '{"subject_object":"低卡早餐","content_type":"经验分享"}'
+
+    class FakeImageClient:
+        def describe_image(self, *, model_config, api_key, image_url, instruction):
+            assert model_config.model_name == "doubao-seed-2-0-mini-260428"
+            assert api_key == "sk-doubao-vision"
+            assert image_url == "https://example.test/cover.png"
+            return "早餐封面"
+
+    db_dependency = _override_database(tmp_path)
+    _register_and_get_access_token("analysis-routing-owner")
+    _register_and_get_admin_access_token("analysis-routing-admin")
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            owner = db.scalar(select(User).where(User.username == "analysis-routing-owner"))
+            admin = db.scalar(select(User).where(User.username == "analysis-routing-admin"))
+            account = PlatformAccount(user_id=owner.id, platform="xhs", sub_type="pc", external_user_id="pc-owner", nickname="owner")
+            db.add(account)
+            db.flush()
+            note = Note(
+                user_id=owner.id,
+                platform_account_id=account.id,
+                platform="xhs",
+                note_id="analysis-routing-note",
+                title="低卡早餐",
+                content="适合通勤党的早餐搭配",
+            )
+            db.add(note)
+            db.flush()
+            db.add_all(
+                [
+                    NoteAsset(note_id=note.id, asset_type="image", url="https://example.test/cover.png", local_path="", sort_order=0),
+                    ModelConfig(
+                        user_id=admin.id,
+                        name="Doubao Text",
+                        model_type="text",
+                        provider="volcengine-ark",
+                        model_name="doubao-seed-2-0-mini-260428",
+                        base_url="https://ark.cn-beijing.volces.com/api/v3",
+                        encrypted_api_key=encrypt_text("sk-doubao-text"),
+                        is_default=True,
+                    ),
+                    ModelConfig(
+                        user_id=admin.id,
+                        name="Doubao Vision",
+                        model_type="image",
+                        provider="volcengine-ark",
+                        model_name="doubao-seed-2-0-mini-260428",
+                        base_url="https://ark.cn-beijing.volces.com/api/v3",
+                        encrypted_api_key=encrypt_text("sk-doubao-vision"),
+                        is_default=True,
+                    ),
+                ]
+            )
+            db.commit()
+
+            result = analyze_note_system(db, user_id=owner.id, note=note, text_client=FakeTextClient(), image_client=FakeImageClient())
+
+            assert result.source == "system"
+            assert result.subject_object == "低卡早餐"
+            assert result.cover_type == "早餐封面"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_text_model_config_defaults_to_gpt_54_when_model_name_omitted(tmp_path):
     db_dependency = _override_database(tmp_path)
-    owner_token = _register_and_get_access_token("model-default-owner")
+    owner_token = _register_and_get_admin_access_token("model-default-owner")
     try:
         response = client.post(
             "/api/model-configs",
@@ -6639,6 +7404,53 @@ def test_text_model_config_defaults_to_gpt_54_when_model_name_omitted(tmp_path):
         )
 
         assert response.status_code == 200
+        assert response.json()["model_name"] == "doubao-seed-2-0-mini-260428"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_image_analysis_model_config_defaults_to_doubao_when_model_name_omitted(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_admin_access_token("image-model-default-owner")
+    try:
+        response = client.post(
+            "/api/model-configs",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "name": "Default Image Analysis",
+                "model_type": "image",
+                "provider": "volcengine-ark",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "api_key": "sk-default",
+                "is_default": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["model_name"] == "doubao-seed-2-0-mini-260428"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_text_model_config_keeps_legacy_gpt_54_alias_normalization(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_admin_access_token("model-legacy-alias-owner")
+    try:
+        response = client.post(
+            "/api/model-configs",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={
+                "name": "Legacy GPT Alias",
+                "model_type": "text",
+                "provider": "openai-compatible",
+                "model_name": "gpt5.4",
+                "base_url": "https://api.example.test/v1",
+                "api_key": "sk-default",
+                "is_default": True,
+            },
+        )
+
+        assert response.status_code == 200
         assert response.json()["model_name"] == "gpt-5.4"
     finally:
         app.dependency_overrides.pop(db_dependency, None)
@@ -6646,7 +7458,7 @@ def test_text_model_config_defaults_to_gpt_54_when_model_name_omitted(tmp_path):
 
 def test_model_configs_update_and_set_default_are_owner_scoped(tmp_path):
     db_dependency = _override_database(tmp_path)
-    owner_token = _register_and_get_access_token("model-update-owner")
+    owner_token = _register_and_get_admin_access_token("model-update-owner")
     intruder_token = _register_and_get_access_token("model-update-intruder")
     try:
         first_response = client.post(
@@ -6692,7 +7504,7 @@ def test_model_configs_update_and_set_default_are_owner_scoped(tmp_path):
             headers={"Authorization": f"Bearer {intruder_token}"},
             json={"name": "stolen"},
         )
-        assert intruder_update_response.status_code == 404
+        assert intruder_update_response.status_code == 403
 
         default_response = client.post(
             f"/api/model-configs/{second_id}/set-default",
@@ -6713,7 +7525,7 @@ def test_model_configs_update_and_set_default_are_owner_scoped(tmp_path):
             f"/api/model-configs/{second_id}/set-default",
             headers={"Authorization": f"Bearer {intruder_token}"},
         )
-        assert intruder_default_response.status_code == 404
+        assert intruder_default_response.status_code == 403
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 
@@ -6780,12 +7592,13 @@ def test_ai_rewrite_note_returns_preview_candidate_without_overwriting_owned_dra
     fake_client = FakeTextAiClient()
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("ai-rewrite-success")
+    admin_token = _register_and_get_admin_access_token("ai-rewrite-admin")
     try:
         app.dependency_overrides[get_text_ai_client] = lambda: fake_client
 
         model_response = client.post(
             "/api/model-configs",
-            headers={"Authorization": f"Bearer {owner_token}"},
+            headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "name": "Default Text",
                 "model_type": "text",
@@ -6953,9 +7766,10 @@ def test_draft_ai_score_creates_task_and_latest_result(tmp_path):
     )
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("draft-score-success")
+    admin_token = _register_and_get_admin_access_token("draft-score-success-admin")
     try:
         app.dependency_overrides[get_text_ai_client] = lambda: fake_client
-        model = _create_default_text_model(owner_token)
+        model = _create_default_text_model(admin_token)
         draft_response = client.post(
             "/api/drafts",
             headers={"Authorization": f"Bearer {owner_token}"},
@@ -7009,9 +7823,10 @@ def test_draft_ai_score_falls_back_to_rules_when_ai_json_invalid(tmp_path):
     fake_client = FakeDraftScoreClient("not json")
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("draft-score-fallback")
+    admin_token = _register_and_get_admin_access_token("draft-score-fallback-admin")
     try:
         app.dependency_overrides[get_text_ai_client] = lambda: fake_client
-        _create_default_text_model(owner_token)
+        _create_default_text_model(admin_token)
         draft_response = client.post(
             "/api/drafts",
             headers={"Authorization": f"Bearer {owner_token}"},
@@ -7044,9 +7859,10 @@ def test_draft_ai_score_scopes_comments_through_owned_notes(tmp_path):
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("draft-score-comment-owner")
     intruder_token = _register_and_get_access_token("draft-score-comment-intruder")
+    admin_token = _register_and_get_admin_access_token("draft-score-comment-admin")
     try:
         app.dependency_overrides[get_text_ai_client] = lambda: fake_client
-        _create_default_text_model(owner_token)
+        _create_default_text_model(admin_token)
         db = next(app.dependency_overrides[get_db]())
         try:
             owner = db.scalar(select(User).where(User.username == "draft-score-comment-owner"))
@@ -7129,11 +7945,12 @@ def test_ai_text_generation_endpoints_use_default_model_and_create_tasks(tmp_pat
     fake_client = FakeTextGenerationClient()
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("ai-generate-owner")
+    admin_token = _register_and_get_admin_access_token("ai-generate-admin")
     try:
         app.dependency_overrides[get_text_ai_client] = lambda: fake_client
         model_response = client.post(
             "/api/model-configs",
-            headers={"Authorization": f"Bearer {owner_token}"},
+            headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "name": "Default Text",
                 "model_type": "text",
@@ -7576,6 +8393,7 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
 
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("ai-image-owner")
+    admin_token = _register_and_get_admin_access_token("ai-image-admin")
     intruder_token = _register_and_get_access_token("ai-image-intruder")
     try:
         app.dependency_overrides[get_image_ai_client] = lambda: fake_client
@@ -7584,7 +8402,7 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
         monkeypatch.setattr(ai_api, "_download_public_http_image", fake_checked_download)
         model_response = client.post(
             "/api/model-configs",
-            headers={"Authorization": f"Bearer {owner_token}"},
+            headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "name": "Default Image",
                 "model_type": "image",
@@ -7670,6 +8488,7 @@ def test_ai_image_generate_asset_import_failure_returns_clear_failure(tmp_path, 
 
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("ai-image-import-failure-owner")
+    admin_token = _register_and_get_admin_access_token("ai-image-import-failure-admin")
     tolerant_client = TestClient(app, raise_server_exceptions=False)
     try:
         app.dependency_overrides[get_image_ai_client] = lambda: InvalidAssetImageClient()
@@ -7677,7 +8496,7 @@ def test_ai_image_generate_asset_import_failure_returns_clear_failure(tmp_path, 
         monkeypatch.setattr(ai_api, "get_settings", lambda: SimpleNamespace(storage_dir=tmp_path / "storage"), raising=False)
         model_response = client.post(
             "/api/model-configs",
-            headers={"Authorization": f"Bearer {owner_token}"},
+            headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "name": "Default Invalid Image",
                 "model_type": "image",

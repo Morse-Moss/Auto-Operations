@@ -42,6 +42,7 @@ class HuitunPasswordLoginRequest(BaseModel):
     ticket: str = Field(min_length=1, max_length=512)
     randStr: str = Field(min_length=1, max_length=512)
     captcha: str | None = Field(default=None, max_length=16)
+    session_id: int | None = Field(default=None, ge=1)
 
 
 def _mask_mobile(mobile: str) -> str:
@@ -150,17 +151,33 @@ def huitun_password_login_confirm(
     client=Depends(get_huitun_account_client),
 ):
     require_admin_user(current_user)
-    session = LoginSession(
-        user_id=current_user.id,
-        platform="huitun",
-        sub_type="main",
-        status="pending",
-        login_method="password",
-        phone_mask=_mask_mobile(payload.mobile),
-        encrypted_temp_cookies=None,
-    )
-    db.add(session)
-    db.flush()
+    session = None
+    initial_cookies_text = None
+    if payload.session_id is not None:
+        session = db.get(LoginSession, payload.session_id)
+        if (
+            session is None
+            or session.user_id != current_user.id
+            or session.platform != "huitun"
+            or session.sub_type != "main"
+            or session.login_method != "password"
+            or session.status != "verification_required"
+        ):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Login session not found")
+        if session.encrypted_temp_cookies:
+            initial_cookies_text = decrypt_text(session.encrypted_temp_cookies)
+    if session is None:
+        session = LoginSession(
+            user_id=current_user.id,
+            platform="huitun",
+            sub_type="main",
+            status="pending",
+            login_method="password",
+            phone_mask=_mask_mobile(payload.mobile),
+            encrypted_temp_cookies=None,
+        )
+        db.add(session)
+        db.flush()
 
     try:
         result = client.login_huitun_with_password(
@@ -169,6 +186,7 @@ def huitun_password_login_confirm(
             payload.ticket.strip(),
             payload.randStr.strip(),
             payload.captcha.strip() if payload.captcha else None,
+            initial_cookies_text=initial_cookies_text,
         )
     except Exception as exc:
         session.status = "failed"
@@ -178,6 +196,8 @@ def huitun_password_login_confirm(
     result_status = result.get("status") or "pending"
     if result_status == "verification_required":
         session.status = "verification_required"
+        if result.get("cookies_text"):
+            session.encrypted_temp_cookies = encrypt_text(result["cookies_text"])
         db.commit()
         return {
             "session_id": session.id,
@@ -189,6 +209,7 @@ def huitun_password_login_confirm(
 
     if result_status != "confirmed":
         session.status = str(result_status)
+        session.encrypted_temp_cookies = None
         db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=HUITUN_PASSWORD_LOGIN_FAILED_MESSAGE)
 
@@ -208,6 +229,7 @@ def huitun_password_login_confirm(
         cookies_text=cookies_text,
     )
     session.status = "confirmed"
+    session.encrypted_temp_cookies = None
     db.commit()
     db.refresh(session)
     db.refresh(account)

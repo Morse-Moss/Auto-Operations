@@ -27,6 +27,7 @@ export type PlatformSectionConfig = {
   description: string;
   icon?: ReactNode;
   status?: PlatformSectionStatus;
+  adminOnly?: boolean;
 };
 
 export const platformSectionRegistry: Record<string, PlatformSectionConfig[]> = {
@@ -54,7 +55,7 @@ export const platformSectionRegistry: Record<string, PlatformSectionConfig[]> = 
     { key: "discovery", path: "/platforms/wechat-official/discovery", icon: <SearchOutlined />, label: "公众号爆文发现", title: "公众号爆文发现", description: "通过关键词、公众号或文章 URL 收集爆文候选，并把确认后的候选交给内容库。", status: "available" },
     { key: "library", path: "/platforms/wechat-official/library", icon: <DatabaseOutlined />, label: "公众号内容库", title: "公众号内容库", description: "管理已入库的公众号文章，补全素材、拆解爆点并生成独立草稿。", status: "available" },
     { key: "drafts", path: "/platforms/wechat-official/drafts", icon: <FileTextOutlined />, label: "公众号草稿工坊", title: "公众号草稿工坊", description: "基于内容库素材生成和管理公众号二创草稿。", status: "available" },
-    { key: "settings", path: "/platforms/wechat-official/settings", icon: <SettingOutlined />, label: "Redfox 设置", title: "Redfox 设置", description: "配置和校验 Redfox API Key；Redfox 只作为内容数据源。", status: "available" },
+    { key: "settings", path: "/platforms/wechat-official/settings", icon: <SettingOutlined />, label: "Redfox 设置", title: "Redfox 设置", description: "配置和校验 Redfox API Key；Redfox 只作为内容数据源。", status: "available", adminOnly: true },
   ],
 };
 
@@ -64,14 +65,18 @@ export function getPlatformIdFromPath(pathname: string): string {
   return "xhs";
 }
 
-export function getPlatformSections(platformId: string): PlatformSectionConfig[] {
-  return platformSectionRegistry[platformId] ?? platformSectionRegistry.xhs;
+export function getPlatformSections(platformId: string, options?: { includeAdminOnly?: boolean }): PlatformSectionConfig[] {
+  const sections = platformSectionRegistry[platformId] ?? platformSectionRegistry.xhs;
+  if (options?.includeAdminOnly === false) {
+    return sections.filter((section) => !section.adminOnly);
+  }
+  return sections;
 }
 
-export function getPlatformNavItems(platformId: string): MenuProps["items"] {
+export function getPlatformNavItems(platformId: string, options?: { includeAdminOnly?: boolean }): MenuProps["items"] {
   return [
     { key: "/platform-select", icon: <DashboardOutlined />, label: "平台中心" },
-    ...getPlatformSections(platformId).map((section) => ({
+    ...getPlatformSections(platformId, options).map((section) => ({
       key: section.path,
       icon: section.icon,
       label: section.label,

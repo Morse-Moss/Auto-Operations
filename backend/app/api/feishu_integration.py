@@ -6,10 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_user, require_admin_user
 from backend.app.core.security import encrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import FeishuIntegrationConfig, Note, NoteAnalysisResult, NoteExclusion, User
+from backend.app.models import FeishuIntegrationConfig, Note, NoteAnalysisResult, NoteExclusion, Tenant, TenantMember, User
 from backend.app.services.feishu_bitable_service import (
     FEISHU_FIELD_DEFINITIONS,
     FeishuIntegrationError,
@@ -96,6 +96,20 @@ def _get_config(db: Session, user_id: int) -> FeishuIntegrationConfig | None:
     return db.scalar(select(FeishuIntegrationConfig).where(FeishuIntegrationConfig.user_id == user_id))
 
 
+def _get_runtime_config(db: Session, user_id: int) -> FeishuIntegrationConfig | None:
+    config = _get_config(db, user_id)
+    if config is not None:
+        return config
+    return db.scalars(
+        select(FeishuIntegrationConfig)
+        .join(User, User.id == FeishuIntegrationConfig.user_id)
+        .join(TenantMember, TenantMember.user_id == User.id)
+        .join(Tenant, Tenant.id == TenantMember.tenant_id)
+        .where(User.role == "admin", User.status == "active", Tenant.status == "active")
+        .order_by(FeishuIntegrationConfig.id.asc())
+    ).first()
+
+
 def _serialize_config(config: FeishuIntegrationConfig | None) -> dict:
     if config is None:
         return {
@@ -171,12 +185,12 @@ def _grant_configured_collaborator(config: FeishuIntegrationConfig, client, *, n
 
 
 @router.get("/config")
-def get_feishu_config(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_feishu_config(current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     return _serialize_config(_get_config(db, current_user.id))
 
 
 @router.post("/test")
-def test_feishu_connection(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def test_feishu_connection(current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     config = _get_config(db, current_user.id)
     if config is None:
         return {"status": "not_configured", "message": "飞书集成未配置"}
@@ -197,7 +211,7 @@ def test_feishu_connection(current_user: User = Depends(get_current_user), db: S
 
 
 @router.post("/create-analysis-base")
-def create_feishu_analysis_base_endpoint(payload: FeishuCreateAnalysisBasePayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_feishu_analysis_base_endpoint(payload: FeishuCreateAnalysisBasePayload, current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     config = _get_config(db, current_user.id)
     if config is None:
         return {"status": "not_configured", "message": "请先保存飞书 App ID 和 App Secret"}
@@ -236,7 +250,7 @@ def create_feishu_analysis_base_endpoint(payload: FeishuCreateAnalysisBasePayloa
 
 
 @router.post("/grant-permission")
-def grant_feishu_permission(payload: FeishuGrantPermissionPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def grant_feishu_permission(payload: FeishuGrantPermissionPayload, current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     config = _get_config(db, current_user.id)
     if config is None:
         return {"status": "not_configured", "message": "飞书集成未配置"}
@@ -274,7 +288,7 @@ def grant_feishu_permission(payload: FeishuGrantPermissionPayload, current_user:
 
 
 @router.post("/ensure-fields")
-def ensure_feishu_fields(payload: FeishuDryRunPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def ensure_feishu_fields(payload: FeishuDryRunPayload, current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     config = _get_config(db, current_user.id)
     if config is None:
         return {"dry_run": payload.dry_run, "status": "not_configured", "fields": FEISHU_FIELD_DEFINITIONS}
@@ -308,7 +322,7 @@ def push_xhs_notes_to_feishu(payload: FeishuPushNotesPayload, current_user: User
     if payload.dry_run:
         return push_notes_to_feishu_dry_run(db, user_id=current_user.id, note_ids=payload.note_ids, overwrite_existing=payload.overwrite_existing)
     try:
-        client = _client_or_error(_get_config(db, current_user.id))
+        client = _client_or_error(_get_runtime_config(db, current_user.id))
         return push_notes_to_feishu(db, user_id=current_user.id, note_ids=payload.note_ids, client=client, overwrite_existing=payload.overwrite_existing)
     except Exception as exc:
         return {
@@ -370,7 +384,7 @@ def push_all_xhs_notes_to_feishu(payload: FeishuPushAllNotesPayload, current_use
     records = []
     batches = []
     try:
-        client = None if payload.dry_run else _client_or_error(_get_config(db, current_user.id))
+        client = None if payload.dry_run else _client_or_error(_get_runtime_config(db, current_user.id))
         for index in range(0, len(note_ids), payload.batch_size):
             batch = note_ids[index : index + payload.batch_size]
             batch_label = f"{index + 1}-{index + len(batch)}/{len(note_ids)}"
@@ -434,7 +448,7 @@ def pull_xhs_notes_from_feishu(payload: FeishuPullNotesPayload, current_user: Us
     if payload.dry_run:
         return pull_feishu_analysis_records(db, user_id=current_user.id, records=payload.records, note_ids=payload.note_ids or None)
     try:
-        client = _client_or_error(_get_config(db, current_user.id))
+        client = _client_or_error(_get_runtime_config(db, current_user.id))
         return pull_feishu_analysis_records_from_client(db, user_id=current_user.id, client=client, note_ids=payload.note_ids or None)
     except Exception as exc:
         return {
@@ -452,7 +466,7 @@ def push_wechat_official_articles_to_feishu_endpoint(payload: FeishuPushWechatOf
     if payload.dry_run:
         return push_wechat_official_articles_to_feishu_dry_run(db, user_id=current_user.id, article_ids=payload.article_ids)
     try:
-        client = _client_or_error(_get_config(db, current_user.id))
+        client = _client_or_error(_get_runtime_config(db, current_user.id))
         return push_wechat_official_articles_to_feishu(db, user_id=current_user.id, article_ids=payload.article_ids, client=client)
     except Exception as exc:
         return {
@@ -470,7 +484,7 @@ def pull_wechat_official_articles_from_feishu_endpoint(payload: FeishuPullWechat
     if payload.dry_run:
         return pull_wechat_official_feishu_analysis_records(db, user_id=current_user.id, records=payload.records, article_ids=payload.article_ids or None)
     try:
-        client = _client_or_error(_get_config(db, current_user.id))
+        client = _client_or_error(_get_runtime_config(db, current_user.id))
         return pull_wechat_official_feishu_analysis_records_from_client(db, user_id=current_user.id, client=client, article_ids=payload.article_ids or None)
     except Exception as exc:
         return {
@@ -482,7 +496,7 @@ def pull_wechat_official_articles_from_feishu_endpoint(payload: FeishuPullWechat
 
 
 @router.put("/config")
-def save_feishu_config(payload: FeishuConfigPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def save_feishu_config(payload: FeishuConfigPayload, current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     config = _get_config(db, current_user.id)
     if config is None:
         config = FeishuIntegrationConfig(user_id=current_user.id)

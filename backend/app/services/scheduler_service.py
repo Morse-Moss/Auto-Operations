@@ -19,7 +19,6 @@ from backend.app.models import (
     AccountCookieVersion,
     AiDraft,
     AutoTask,
-    ModelConfig,
     MonitoringSnapshot,
     MonitoringTarget,
     Note,
@@ -30,6 +29,7 @@ from backend.app.models import (
     Task,
     User,
 )
+from backend.app.services.model_config_service import get_default_model_config
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 
@@ -429,13 +429,7 @@ def run_monitoring_refresh_once(platform: str = "xhs") -> dict[str, Any]:
 
 
 def _get_text_model_for_user(db: Session, user_id: int):
-    config = db.scalars(
-        select(ModelConfig).where(
-            ModelConfig.user_id == user_id,
-            ModelConfig.model_type == "text",
-            ModelConfig.is_default.is_(True),
-        )
-    ).first()
+    config = get_default_model_config(db, user_id=user_id, model_type="text", capability="text")
     if not config or not config.encrypted_api_key:
         return None, ""
     return config, decrypt_text(config.encrypted_api_key)

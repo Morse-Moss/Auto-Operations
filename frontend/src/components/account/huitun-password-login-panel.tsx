@@ -79,6 +79,7 @@ export function HuitunPasswordLoginPanel({ onConfirmed }: HuitunPasswordLoginPan
   const [mobile, setMobile] = useState("");
   const [password, setPassword] = useState("");
   const [captchaCode, setCaptchaCode] = useState("");
+  const [verificationSessionId, setVerificationSessionId] = useState<number | null>(null);
   const [needsSmsCode, setNeedsSmsCode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusText, setStatusText] = useState("使用官方验证完成登录后，系统会保存登录态。");
@@ -110,10 +111,12 @@ export function HuitunPasswordLoginPanel({ onConfirmed }: HuitunPasswordLoginPan
         ticket: captcha.ticket,
         randStr: captcha.randStr,
         captcha: needsSmsCode ? captchaCode.trim() : undefined,
+        session_id: needsSmsCode ? verificationSessionId ?? undefined : undefined,
       });
 
       if (result.status === "verification_required") {
         setNeedsSmsCode(true);
+        setVerificationSessionId(result.session_id);
         setStatusText(result.message || "当前设备需要短信验证。");
         return;
       }
@@ -123,6 +126,8 @@ export function HuitunPasswordLoginPanel({ onConfirmed }: HuitunPasswordLoginPan
         setStatusText("登录态已保存。");
         setPassword("");
         setCaptchaCode("");
+        setVerificationSessionId(null);
+        setNeedsSmsCode(false);
         onConfirmed(account);
         return;
       }
@@ -185,7 +190,7 @@ export function HuitunPasswordLoginPanel({ onConfirmed }: HuitunPasswordLoginPan
         onClick={() => void handleLogin()}
         loading={isSubmitting}
       >
-        {isSubmitting ? "登录中..." : "登录并保存"}
+        {isSubmitting ? "登录中..." : needsSmsCode ? "提交短信验证码并保存" : "登录并保存"}
       </Button>
     </Space>
   );

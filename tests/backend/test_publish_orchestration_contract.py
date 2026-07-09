@@ -311,6 +311,53 @@ def test_dry_run_endpoint_returns_contract_without_adapter_side_effects(tmp_path
         app.dependency_overrides.pop(adapter_override, None)
 
 
+def test_app_draft_handoff_requires_mobile_confirmation_without_adapter_side_effects(tmp_path):
+    get_db_override, TestingSessionLocal = _override_database(tmp_path)
+    adapter_override = _override_adapter()
+    try:
+        with TestingSessionLocal() as db:
+            user = _create_user(db, "publish-app-draft-handoff-user")
+            account = _create_account(db, user)
+            job = _create_job(db, user, account, title="App draft handoff title", body="Draft body")
+            asset = _add_asset(
+                db,
+                job,
+                upload_status="pending",
+                file_path=f"/api/files/media/xhs-upload-u{user.id}-draft.jpg",
+            )
+            db.commit()
+            job_id = job.id
+            asset_id = asset.id
+            headers = _auth_headers(user)
+
+        response = client.post(f"/api/publish/jobs/{job_id}/app-draft-handoff", headers=headers)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "requires_mobile_app_handoff"
+        assert payload["draft_saved"] is False
+        assert payload["real_publish_blocked"] is True
+        assert payload["handoff"]["title"] == "App draft handoff title"
+        assert payload["handoff"]["body"] == "Draft body"
+        assert payload["handoff"]["assets"][0]["file_path"] == f"/api/files/media/xhs-upload-u{user.id}-draft.jpg"
+        assert payload["verification"]["requires_user_app_check"] is True
+        assert "App" in payload["verification"]["acceptance"]
+        assert payload["verification"]["verification_code"] in payload["handoff"]["suggested_test_title"]
+        assert CallableTrapAdapterFactory.called is False
+        assert TrapCreatorAdapter.init_called is False
+        assert TrapCreatorAdapter.upload_called is False
+        assert TrapCreatorAdapter.post_called is False
+        with TestingSessionLocal() as db:
+            persisted_job = db.get(PublishJob, job_id)
+            persisted_asset = db.get(PublishAsset, asset_id)
+            assert persisted_job.status == "pending"
+            assert persisted_job.external_note_id == ""
+            assert persisted_asset.upload_status == "pending"
+    finally:
+        app.dependency_overrides.pop(get_db_override, None)
+        app.dependency_overrides.pop(adapter_override, None)
+
+
 def test_real_publish_without_confirmation_returns_403_before_adapter_instantiation(tmp_path):
     get_db_override, TestingSessionLocal = _override_database(tmp_path)
     adapter_override = _override_adapter()

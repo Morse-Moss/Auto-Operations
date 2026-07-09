@@ -41,12 +41,14 @@ import {
   fetchDataAcquisitionCandidates,
   fetchDataAcquisitionReadiness,
   fetchDataAcquisitionRuns,
+  fetchKeywordGroup,
+  getUsageLimitError,
   importDataAcquisitionCandidates,
   restoreDataAcquisitionCandidates,
   retryDataAcquisitionRun,
 } from "../../../lib/api";
 import { useUsageBalance } from "../../../hooks/use-usage-balance";
-import type { DataAcquisitionCandidate, DataAcquisitionReadiness, DataAcquisitionRun } from "../../../types";
+import type { DataAcquisitionCandidate, DataAcquisitionReadiness, DataAcquisitionRun, KeywordGroupDetail } from "../../../types";
 import { XhsCrawlerPage } from "./crawler-page";
 
 const { Text, Title } = Typography;
@@ -104,9 +106,16 @@ function parseRunId(value: string | null): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function parseKeywordGroupId(searchParams: URLSearchParams): number | null {
+  const parsedKeywordGroupId = Number(searchParams.get("keyword_group_id") || 0);
+  return Number.isFinite(parsedKeywordGroupId) && parsedKeywordGroupId > 0 ? parsedKeywordGroupId : null;
+}
+
 export function XhsDataAcquisitionPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [form] = Form.useForm<{ keyword: string; limit: number; sort: string; note_type: string }>();
+  const keywordGroupId = parseKeywordGroupId(searchParams);
+  const fromAnalysisRecheck = searchParams.get("analysis_recheck") === "1";
   const [runs, setRuns] = useState<DataAcquisitionRun[]>([]);
   const [candidates, setCandidates] = useState<DataAcquisitionCandidate[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([]);
@@ -114,10 +123,22 @@ export function XhsDataAcquisitionPage() {
   const [selectedRunId, setSelectedRunId] = useState<number | undefined>(parseRunId(searchParams.get("run_id")));
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [keywordGroupRunning, setKeywordGroupRunning] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [readiness, setReadiness] = useState<DataAcquisitionReadiness>(defaultReadiness);
+  const [keywordGroup, setKeywordGroup] = useState<KeywordGroupDetail | null>(null);
+  const [keywordGroupError, setKeywordGroupError] = useState<string | null>(null);
+  const [keywordGroupStatus, setKeywordGroupStatus] = useState<string | null>(null);
   const usage = useUsageBalance();
   const creditsRemaining = usage.bucketRemaining("credits");
+  const keywordGroupKeywordLimit = useMemo(() => {
+    const parsed = Number(searchParams.get("keyword_limit") || 0);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(20, Math.max(1, parsed)) : 5;
+  }, [searchParams]);
+  const keywordGroupNoteLimit = useMemo(() => {
+    const parsed = Number(searchParams.get("max_notes_per_keyword") || 0);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(50, Math.max(1, parsed)) : 10;
+  }, [searchParams]);
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId), [runs, selectedRunId]);
   const selectableCandidateIds = useMemo(
@@ -169,6 +190,24 @@ export function XhsDataAcquisitionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!keywordGroupId) {
+      setKeywordGroup(null);
+      setKeywordGroupError(null);
+      return;
+    }
+    let cancelled = false;
+    setKeywordGroupError(null);
+    fetchKeywordGroup(keywordGroupId)
+      .then((group) => {
+        if (!cancelled) setKeywordGroup(group);
+      })
+      .catch(() => {
+        if (!cancelled) setKeywordGroupError("关键词组加载失败，请返回关键词组页面重试。");
+      });
+    return () => { cancelled = true; };
+  }, [keywordGroupId]);
+
   function updateCandidateView(nextRunId: number | undefined, nextStatus = candidateStatus) {
     setSelectedRunId(nextRunId);
     setCandidateStatus(nextStatus);
@@ -203,11 +242,61 @@ export function XhsDataAcquisitionPage() {
         message.success(`已获取 ${run.candidate_count} 条待确认候选。`);
       }
       updateCandidateView(run.id, "pending");
-    } catch {
-      message.error("本次数据获取失败，任务已停止。");
+    } catch (err) {
+      const limitError = getUsageLimitError(err);
+      message.error(limitError?.message || "本次数据获取失败，任务已停止。");
       void loadPageData();
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function handleCreateKeywordGroupRuns() {
+    if (!keywordGroup) {
+      message.warning("关键词组还没有加载完成。");
+      return;
+    }
+    if (!readiness.available) {
+      message.warning(readiness.message || "数据获取服务未就绪，请联系管理员。");
+      return;
+    }
+    const keywords = (keywordGroup.keywords || []).map((keyword) => keyword.trim()).filter(Boolean).slice(0, keywordGroupKeywordLimit);
+    if (!keywords.length) {
+      message.warning("该关键词组没有可获取的关键词。");
+      return;
+    }
+    const requiredCredits = keywords.length * 2;
+    if (creditsRemaining !== null && creditsRemaining < requiredCredits) {
+      message.warning(`积分不足，本次预计消耗 ${requiredCredits} 积分。`);
+      return;
+    }
+    setKeywordGroupRunning(true);
+    setKeywordGroupStatus(null);
+    try {
+      const createdRuns: DataAcquisitionRun[] = [];
+      for (const keyword of keywords) {
+        const run = await createDataAcquisitionRun({
+          acquisition_type: "note_search",
+          params: {
+            keyword,
+            limit: keywordGroupNoteLimit,
+            sort: "interaction",
+            note_type: "all",
+          },
+        });
+        createdRuns.push(run);
+      }
+      const latestRun = createdRuns.length ? createdRuns[createdRuns.length - 1] : undefined;
+      const candidateCount = createdRuns.reduce((sum, run) => sum + (run.candidate_count || 0), 0);
+      setKeywordGroupStatus(`关键词组获取完成：${keywords.length} 个关键词，${candidateCount} 条待确认候选。`);
+      if (latestRun) updateCandidateView(latestRun.id, "pending");
+      else await loadPageData();
+    } catch (err) {
+      const limitError = getUsageLimitError(err);
+      message.error(limitError?.message || "关键词组获取笔记数据失败，任务已停止。");
+      await loadPageData();
+    } finally {
+      setKeywordGroupRunning(false);
     }
   }
 
@@ -357,6 +446,33 @@ export function XhsDataAcquisitionPage() {
           description={!readiness.available && readiness.next_action ? readiness.next_action : undefined}
           style={{ marginBottom: 16 }}
         />
+        {keywordGroupId ? (
+          <Alert
+            type={keywordGroupError ? "error" : fromAnalysisRecheck ? "warning" : "info"}
+            showIcon
+            message="关键词组获取笔记数据"
+            description={
+              keywordGroupError
+                || (keywordGroup
+                  ? `将使用数据账号按「${keywordGroup.name}」前 ${Math.min(keywordGroupKeywordLimit, keywordGroup.keywords.length)} 个关键词获取候选笔记，每个关键词最多 ${keywordGroupNoteLimit} 条，预计消耗 ${Math.min(keywordGroupKeywordLimit, keywordGroup.keywords.length) * 2} 积分。`
+                  : "正在加载关键词组...")
+            }
+            action={keywordGroup ? (
+              <Button
+                type="primary"
+                size="small"
+                icon={<CloudDownloadOutlined />}
+                loading={keywordGroupRunning}
+                disabled={!readiness.available || Boolean(keywordGroupError)}
+                onClick={() => void handleCreateKeywordGroupRuns()}
+              >
+                按关键词组获取
+              </Button>
+            ) : undefined}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {keywordGroupStatus ? <Alert type="success" showIcon message={keywordGroupStatus} style={{ marginBottom: 16 }} /> : null}
         <Form
           form={form}
           layout="vertical"
@@ -371,7 +487,7 @@ export function XhsDataAcquisitionPage() {
             </Col>
             <Col xs={12} md={3}>
               <Form.Item label="数量" name="limit">
-                <InputNumber min={1} max={100} style={{ width: "100%" }} />
+                <InputNumber min={1} max={50} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
             <Col xs={12} md={3}>

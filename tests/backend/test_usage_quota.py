@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import encrypt_text
 from backend.app.main import app
-from backend.app.models import AiDraft, ApiLog, ModelConfig, Task, UsageLedger
+from backend.app.models import AiDraft, ApiLog, ModelConfig, Task, UsageLedger, User
 from test_support.beta_invites import create_test_invite_code
 
 client = TestClient(app)
@@ -40,6 +40,19 @@ def _register(username: str = "quota-owner") -> dict:
     )
     assert response.status_code == 200
     return response.json()
+
+
+def _register_admin(username: str) -> dict:
+    registered = _register(username)
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        user = db.scalar(select(User).where(User.id == registered["user"]["id"]))
+        assert user is not None
+        user.role = "admin"
+        db.commit()
+    finally:
+        db.close()
+    return registered
 
 
 def _auth_headers(token: str) -> dict[str, str]:
@@ -110,6 +123,34 @@ def test_usage_balance_hides_legacy_feature_buckets(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_usage_pricing_exposes_credit_costs_for_paid_features(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        registered = _register("pricing-owner")
+
+        response = client.get("/api/usage/pricing", headers=_auth_headers(registered["access_token"]))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["currency"] == "credits"
+        assert payload["actions"] == {
+            "note_search": 2,
+            "keyword_live_seed": 2,
+            "ai_text": 2,
+            "model_test": 1,
+            "image_generation": 5,
+            "analysis_report": 10,
+        }
+        assert payload["features"]["xhs.data_acquisition.note_search"] == {"action": "note_search", "cost": 2}
+        assert payload["features"]["keyword.discovery.live"] == {"action": "keyword_live_seed", "cost": 2}
+        assert payload["features"]["model_config.test"] == {"action": "model_test", "cost": 1}
+        assert payload["features"]["ai.generate_title"] == {"action": "ai_text", "cost": 2}
+        assert payload["features"]["ai.image_generate"] == {"action": "image_generation", "cost": 5}
+        assert payload["features"]["analysis.report_create"] == {"action": "analysis_report", "cost": 10}
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_usage_quota_reserve_commit_refund_and_idempotency_are_ledgered(tmp_path):
     db_dependency = _override_database(tmp_path)
     try:
@@ -163,6 +204,108 @@ def test_usage_quota_reserve_commit_refund_and_idempotency_are_ledgered(tmp_path
             ).all()
             assert [row.operation for row in ledger_rows] == ["reserve", "commit"]
             assert all("secret" not in str(row.request_summary).lower() for row in ledger_rows)
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_credit_adjustment_grants_deducts_and_resets_without_erasing_spend(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        registered = _register("credit-adjust-owner")
+        models, service_module = _usage_contract()
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
+            service = service_module.UsageQuotaService(db)
+            reservation = service.reserve(
+                tenant_id=context.tenant.id,
+                user_id=registered["user"]["id"],
+                feature_key="ai.image_generate",
+                bucket="credits",
+                amount=20,
+                idempotency_key="initial-image-spend",
+            )
+            service.commit(reservation.id)
+            assert service.get_balance(context.tenant.id)["credits"].total == 100
+            assert service.get_balance(context.tenant.id)["credits"].remaining == 80
+
+            granted = service.adjust_bucket(
+                context.tenant.id,
+                "credits",
+                operation="grant",
+                amount=50,
+                reason="top up beta user",
+            )
+            assert granted.total == 150
+            assert granted.remaining == 130
+
+            deducted = service.adjust_bucket(
+                context.tenant.id,
+                "credits",
+                operation="deduct",
+                amount=30,
+                reason="manual correction",
+            )
+            assert deducted.total == 120
+            assert deducted.remaining == 100
+
+            reset = service.adjust_bucket(
+                context.tenant.id,
+                "credits",
+                operation="reset",
+                total=200,
+                reason="new package",
+            )
+            assert reset.total == 200
+            assert reset.remaining == 200
+
+            repeat_reset = service.adjust_bucket(
+                context.tenant.id,
+                "credits",
+                operation="reset",
+                total=200,
+                reason="repeat same package",
+            )
+            assert repeat_reset.total == 200
+            assert repeat_reset.remaining == 200
+
+            adjustments = db.scalars(
+                select(models.UsageLedger)
+                .where(models.UsageLedger.tenant_id == context.tenant.id, models.UsageLedger.bucket == "credits")
+                .where(models.UsageLedger.operation.in_(["grant", "deduct", "reset"]))
+                .order_by(models.UsageLedger.id)
+            ).all()
+            assert [(row.operation, row.amount, row.balance_after) for row in adjustments] == [
+                ("grant", 50, 130),
+                ("deduct", -30, 100),
+                ("reset", 200, 200),
+                ("reset", 200, 200),
+            ]
+            assert [row.request_summary["previous_remaining"] for row in adjustments] == [80, 130, 100, 200]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_credit_deduction_cannot_make_remaining_negative(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        registered = _register("credit-deduct-owner")
+        _, service_module = _usage_contract()
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
+            service = service_module.UsageQuotaService(db)
+            try:
+                service.adjust_bucket(context.tenant.id, "credits", operation="deduct", amount=101, reason="too much")
+            except ValueError as exc:
+                assert "Insufficient remaining credits" in str(exc)
+            else:  # pragma: no cover - the assertion above is the contract.
+                raise AssertionError("manual deduction must not make remaining credits negative")
+            assert service.get_balance(context.tenant.id)["credits"].remaining == 100
         finally:
             db.close()
     finally:
@@ -832,9 +975,70 @@ def test_draft_ai_score_success_commits_credits(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_model_config_test_allows_three_free_daily_attempts_then_returns_429_without_provider_call(tmp_path, monkeypatch):
+def test_text_generation_without_idempotency_header_charges_each_request(tmp_path):
+    from backend.app.api.ai import get_text_ai_client
+
+    class CountingTextClient:
+        calls = 0
+
+        def generate_titles(self, **kwargs):
+            self.calls += 1
+            return [f"标题 {self.calls}"]
+
+    db_dependency = _override_database(tmp_path)
+    fake_client = CountingTextClient()
+    try:
+        registered = _register("implicit-idempotency-owner")
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            db.add(
+                ModelConfig(
+                    user_id=registered["user"]["id"],
+                    name="Default Text",
+                    model_type="text",
+                    provider="openai-compatible",
+                    model_name="gpt-quota-test",
+                    base_url="https://api.example.test/v1",
+                    encrypted_api_key=encrypt_text("sk-test-secret"),
+                    is_default=True,
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        app.dependency_overrides[get_text_ai_client] = lambda: fake_client
+        headers = _auth_headers(registered["access_token"])
+        payload = {"title": "同一个标题", "body": "同一个正文", "count": 1}
+        first = client.post("/api/ai/generate-title", headers=headers, json=payload)
+        second = client.post("/api/ai/generate-title", headers=headers, json=payload)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert fake_client.calls == 2
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            rows = db.scalars(
+                select(UsageLedger)
+                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits")
+                .order_by(UsageLedger.id)
+            ).all()
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("ai.generate_title", "reserve", 2),
+                ("ai.generate_title.commit", "commit", 2),
+                ("ai.generate_title", "reserve", 2),
+                ("ai.generate_title.commit", "commit", 2),
+            ]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_text_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_model_config_test_charges_one_credit_per_attempt(tmp_path, monkeypatch):
     import backend.app.api.model_configs as model_configs_api
-    from backend.app.core.time import shanghai_now
 
     calls = 0
 
@@ -852,7 +1056,7 @@ def test_model_config_test_allows_three_free_daily_attempts_then_returns_429_wit
 
     db_dependency = _override_database(tmp_path)
     try:
-        registered = _register("model-test-limit-owner")
+        registered = _register_admin("model-test-limit-owner")
         db = next(app.dependency_overrides[get_db]())
         try:
             model = ModelConfig(
@@ -874,12 +1078,11 @@ def test_model_config_test_allows_three_free_daily_attempts_then_returns_429_wit
         monkeypatch.setattr(model_configs_api.http_requests, "post", fake_post, raising=False)
         responses = [
             client.post(f"/api/model-configs/{config_id}/test", headers=_auth_headers(registered["access_token"]))
-            for _ in range(4)
+            for _ in range(2)
         ]
 
-        assert [response.status_code for response in responses] == [200, 200, 200, 429]
-        assert responses[-1].json()["code"] == "model_test_daily_limit_exceeded"
-        assert calls == 3
+        assert [response.status_code for response in responses] == [200, 200]
+        assert calls == 2
 
         db = next(app.dependency_overrides[get_db]())
         try:
@@ -888,18 +1091,27 @@ def test_model_config_test_allows_three_free_daily_attempts_then_returns_429_wit
                 .where(ApiLog.user_id == registered["user"]["id"], ApiLog.endpoint == "model_config.test")
                 .order_by(ApiLog.id)
             ).all()
-            assert len(logs) == 3
+            assert len(logs) == 2
             assert all(log.meta["feature_key"] == "model_test" for log in logs)
-            assert db.scalars(select(UsageLedger).where(UsageLedger.bucket == "model_test")).all() == []
+            rows = db.scalars(
+                select(UsageLedger)
+                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits")
+                .order_by(UsageLedger.id)
+            ).all()
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("model_config.test", "reserve", 1),
+                ("model_config.test.commit", "commit", 1),
+                ("model_config.test", "reserve", 1),
+                ("model_config.test.commit", "commit", 1),
+            ]
         finally:
             db.close()
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 
 
-def test_model_config_test_ignores_previous_day_attempts(tmp_path, monkeypatch):
+def test_model_config_test_credit_shortage_returns_402_without_provider_call(tmp_path, monkeypatch):
     import backend.app.api.model_configs as model_configs_api
-    from backend.app.core.time import shanghai_now
 
     calls = 0
 
@@ -917,7 +1129,8 @@ def test_model_config_test_ignores_previous_day_attempts(tmp_path, monkeypatch):
 
     db_dependency = _override_database(tmp_path)
     try:
-        registered = _register("model-test-next-day-owner")
+        registered = _register_admin("model-test-credit-shortage-owner")
+        _, service_module = _usage_contract()
         db = next(app.dependency_overrides[get_db]())
         try:
             model = ModelConfig(
@@ -931,29 +1144,25 @@ def test_model_config_test_ignores_previous_day_attempts(tmp_path, monkeypatch):
                 is_default=True,
             )
             db.add(model)
-            db.flush()
-            for index in range(3):
-                db.add(
-                    ApiLog(
-                        user_id=registered["user"]["id"],
-                        platform="ai",
-                        endpoint="model_config.test",
-                        status="success",
-                        meta={"feature_key": "model_test", "model_config_id": model.id, "attempt": index + 1},
-                        created_at=shanghai_now() - timedelta(days=1),
-                    )
-                )
             db.commit()
             config_id = model.id
+            context = service_module.get_or_create_default_tenant_context(db, registered["user"]["id"])
+            service_module.UsageQuotaService(db).adjust_bucket(
+                context.tenant.id,
+                "credits",
+                total=0,
+                reason="test exhausts model test credits",
+            )
         finally:
             db.close()
 
         monkeypatch.setattr(model_configs_api.http_requests, "post", fake_post, raising=False)
         response = client.post(f"/api/model-configs/{config_id}/test", headers=_auth_headers(registered["access_token"]))
 
-        assert response.status_code == 200
-        assert response.json()["status"] == "ok"
-        assert calls == 1
+        assert response.status_code == 402
+        assert response.json()["code"] == "usage_quota_insufficient"
+        assert response.json()["required"] == 1
+        assert calls == 0
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 

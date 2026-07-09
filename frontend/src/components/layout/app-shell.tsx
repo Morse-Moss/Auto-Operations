@@ -45,8 +45,12 @@ const { Title, Text } = Typography;
 
 const footerNavItems: MenuProps["items"] = [
   { key: "/tasks", icon: <ScheduleOutlined />, label: "任务中心" },
+];
+
+const adminFooterNavItems: MenuProps["items"] = [
   { key: "/models", icon: <RobotOutlined />, label: "模型配置" },
   { key: "/settings", icon: <SettingOutlined />, label: "设置" },
+  { key: "/admin", icon: <ControlOutlined />, label: "Beta 管理" },
 ];
 
 const roleLabels: Record<string, string> = {
@@ -180,9 +184,10 @@ export function AppShell() {
   };
   const selectedKeys = [location.pathname];
   const platformId = getPlatformIdFromPath(location.pathname);
-  const mainNavItems = getPlatformNavItems(platformId);
+  const isAdmin = role === "admin";
+  const mainNavItems = getPlatformNavItems(platformId, { includeAdminOnly: isAdmin });
   const footerItems: MenuProps["items"] = auth.user?.role === "admin"
-    ? [...(footerNavItems ?? []), { key: "/admin", icon: <ControlOutlined />, label: "Beta 管理" }]
+    ? [...(footerNavItems ?? []), ...(adminFooterNavItems ?? [])]
     : footerNavItems;
 
   const accountDropdownContent = (

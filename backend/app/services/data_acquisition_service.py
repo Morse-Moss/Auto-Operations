@@ -15,12 +15,14 @@ from backend.app.models import (
     DataAcquisitionRun,
     Note,
     NoteAsset,
+    NoteComment,
     NoteSourceSnapshot,
     PlatformAccount,
     Task,
     User,
 )
 from backend.app.services import huitun_live_note_source
+from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, get_or_create_default_tenant_context
 
@@ -29,7 +31,8 @@ SOURCE_MODE = "live_account"
 SUPPORTED_ACQUISITION_TYPE = "note_search"
 NOTE_SEARCH_FEATURE_KEY = "xhs.data_acquisition.note_search"
 NOTE_SEARCH_DEFAULT_LIMIT = 20
-NOTE_SEARCH_MAX_LIMIT = 100
+NOTE_SEARCH_MAX_LIMIT = 50
+IMPORT_COMMENT_LIMIT = 200
 FAILURE_USER_MESSAGE = "本次数据获取失败，任务已停止。"
 NETWORK_FAILURE_MESSAGE = "笔记数据网络请求失败，任务已停止，请稍后低频重试。"
 STRUCTURE_CHANGED_MESSAGE = "笔记数据结构变化，任务已停止，请联系管理员检查采集配置。"
@@ -393,11 +396,91 @@ def _note_raw_from_candidate(candidate: DataAcquisitionCandidate) -> dict[str, A
     return result
 
 
+def _store_imported_note_comments(
+    *,
+    db: Session,
+    note: Note,
+    candidate: DataAcquisitionCandidate,
+    run: DataAcquisitionRun | None,
+    note_source: Any,
+) -> None:
+    fetcher = getattr(note_source, "fetch_note_comments", None)
+    if not callable(fetcher):
+        return
+    if run is None or run.account_id is None:
+        return
+    note_id = candidate.platform_note_id or candidate.external_id or note.note_id
+    if not note_id:
+        return
+
+    raw = dict(note.raw_json or {})
+    acquisition = dict(raw.get("data_acquisition") or {})
+    try:
+        _account, cookie_text = get_platform_data_account_cookie_text(db, run.account_id, allow_explicit_account=True)
+        comments = fetcher(cookie_text, note_id, limit=IMPORT_COMMENT_LIMIT)
+    except Exception as exc:
+        acquisition["comments_status"] = "failed"
+        acquisition["comments_error"] = str(exc)[:300]
+        raw["data_acquisition"] = acquisition
+        note.raw_json = raw
+        return
+
+    db.execute(delete(NoteComment).where(NoteComment.note_id == note.id))
+    for comment in comments:
+        comment_id = str(comment.get("comment_id") or "").strip()
+        if not comment_id:
+            continue
+        db.add(
+            NoteComment(
+                note_id=note.id,
+                comment_id=comment_id,
+                user_name=str(comment.get("user_name") or ""),
+                user_id=comment.get("user_id"),
+                content=str(comment.get("content") or ""),
+                like_count=int(comment.get("like_count") or 0),
+                parent_comment_id=comment.get("parent_comment_id"),
+                created_at_remote=comment.get("created_at_remote"),
+                raw_json=comment.get("raw_json"),
+            )
+        )
+    acquisition["comments_status"] = "completed"
+    acquisition["comments_count"] = len(comments)
+    raw["data_acquisition"] = acquisition
+    note.raw_json = raw
+
+
+def _resolve_candidate_original_url(
+    *,
+    db: Session,
+    candidate: DataAcquisitionCandidate,
+    note_source: Any,
+) -> str:
+    if candidate.original_url:
+        return candidate.original_url
+    note_id = candidate.platform_note_id or candidate.external_id
+    resolver = getattr(note_source, "resolve_note_url", None)
+    if not note_id or not callable(resolver):
+        return ""
+    run = db.get(DataAcquisitionRun, candidate.run_id)
+    if run is None or run.account_id is None:
+        return ""
+    try:
+        _account, cookie_text = get_platform_data_account_cookie_text(db, run.account_id, allow_explicit_account=True)
+        resolved_url = str(resolver(cookie_text, note_id) or "").strip()
+    except Exception:
+        return ""
+    if resolved_url:
+        candidate.original_url = resolved_url
+        candidate.updated_at = shanghai_now()
+    return resolved_url
+
+
 def import_candidates(
     *,
     db: Session,
     current_user: User,
     candidate_ids: list[int],
+    note_source: Any = huitun_live_note_source,
 ) -> list[Note]:
     candidates = get_owned_candidates(db, current_user, candidate_ids)
     if any(candidate.status == "excluded" for candidate in candidates):
@@ -414,6 +497,7 @@ def import_candidates(
                 continue
         if candidate.status != "pending":
             continue
+        _resolve_candidate_original_url(db=db, candidate=candidate, note_source=note_source)
         note = _find_existing_note(db, current_user, candidate)
         run = db.get(DataAcquisitionRun, candidate.run_id)
         if note is None:
@@ -432,7 +516,9 @@ def import_candidates(
 
         db.execute(delete(NoteAsset).where(NoteAsset.note_id == note.id))
         for index, asset_url in enumerate(candidate.asset_urls_json or []):
-            db.add(NoteAsset(note_id=note.id, asset_type="image", url=str(asset_url), local_path="", sort_order=index))
+            url = str(asset_url)
+            local_name = download_asset_to_local(url, current_user.id, "image") or ""
+            db.add(NoteAsset(note_id=note.id, asset_type="image", url=url, local_path=local_name, sort_order=index))
 
         snapshot = NoteSourceSnapshot(
             note_id=note.id,
@@ -452,6 +538,7 @@ def import_candidates(
             raw_json=candidate.raw_json or {},
         )
         db.add(snapshot)
+        _store_imported_note_comments(db=db, note=note, candidate=candidate, run=run, note_source=note_source)
         candidate.status = "imported"
         candidate.imported_note_id = note.id
         candidate.updated_at = shanghai_now()

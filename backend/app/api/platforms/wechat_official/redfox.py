@@ -12,7 +12,7 @@ from backend.app.api.platforms.wechat_official.schemas import (
     WechatOfficialRedfoxUrlImportRequest,
 )
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_user, require_admin_user
 from backend.app.models import User
 from backend.app.services.wechat_official_redfox_service import WechatOfficialRedfoxService
 
@@ -20,17 +20,17 @@ router = APIRouter(prefix="/wechat-official/redfox", tags=["wechat-official"])
 
 
 @router.get("/config")
-def get_redfox_config(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_redfox_config(current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     return WechatOfficialRedfoxService(db).get_config(current_user.id)
 
 
 @router.post("/config")
-def save_redfox_config(payload: WechatOfficialRedfoxConfigRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def save_redfox_config(payload: WechatOfficialRedfoxConfigRequest, current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     return WechatOfficialRedfoxService(db).save_config(current_user.id, payload.model_dump(exclude_unset=True))
 
 
 @router.post("/config/validate")
-def validate_redfox_config(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def validate_redfox_config(current_user: User = Depends(require_admin_user), db: Session = Depends(get_db)):
     return WechatOfficialRedfoxService(db).validate_config(current_user.id)
 
 

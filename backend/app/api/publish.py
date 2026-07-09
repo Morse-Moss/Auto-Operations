@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -111,6 +112,11 @@ def _apply_publish_options(note_info: dict[str, Any], options: dict[str, Any]) -
         note_info["type"] = privacy_type
 
 
+def _app_draft_verification_code(job: PublishJob) -> str:
+    created_compact = re.sub(r"\D", "", job.created_at.isoformat())[:14]
+    return f"XHS-DRAFT-{job.id}-{created_compact}"
+
+
 def serialize_publish_job(job: PublishJob) -> dict:
     return {
         "id": job.id,
@@ -144,6 +150,45 @@ def serialize_publish_asset(asset: PublishAsset) -> dict:
         "creator_media_id": asset.creator_media_id,
         "upload_error": asset.upload_error,
         "creator_upload_info": creator_upload_info,
+    }
+
+
+def serialize_app_draft_handoff(job: PublishJob, assets: list[PublishAsset]) -> dict[str, Any]:
+    image_assets = [asset for asset in assets if asset.asset_type == "image"]
+    verification_code = _app_draft_verification_code(job)
+    suggested_title = job.title.strip()
+    if verification_code not in suggested_title:
+        suggested_title = f"{suggested_title} {verification_code}".strip()
+    return {
+        "job_id": job.id,
+        "status": "requires_mobile_app_handoff",
+        "draft_saved": False,
+        "real_publish_blocked": True,
+        "handoff": {
+            "method": "xiaohongshu_app_composer",
+            "title": job.title,
+            "suggested_test_title": suggested_title,
+            "body": job.body,
+            "assets": [
+                {
+                    "id": asset.id,
+                    "asset_type": asset.asset_type,
+                    "file_path": asset.file_path,
+                }
+                for asset in image_assets
+            ],
+            "publish_options": _load_publish_options(job),
+        },
+        "verification": {
+            "verification_code": verification_code,
+            "requires_user_app_check": True,
+            "acceptance": "Open the same Xiaohongshu account in the mobile App draft box and confirm the suggested test title appears.",
+        },
+        "limitations": [
+            "No verified Xiaohongshu account-cloud draft API is available in this system.",
+            "Creator Web drafts are browser-local IndexedDB and are not treated as App-visible account drafts.",
+            "This endpoint prepares an App handoff package only; it does not upload media to Creator or call the real publish endpoint.",
+        ],
     }
 
 
@@ -399,6 +444,39 @@ def dry_run_publish_job(
     db: Session = Depends(get_db),
 ):
     return PublishOrchestrationService(db).dry_run(job_id=job_id, current_user=current_user)
+
+
+@router.post("/jobs/{job_id}/app-draft-handoff")
+def prepare_app_draft_handoff(
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    job = _get_owned_publish_job(db, current_user, job_id)
+    if job.platform != "xhs":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Xiaohongshu job required")
+    if job.status in {"published", "scheduled", "publishing"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish job is already completed or processing")
+    if not job.title.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish title is required")
+
+    if job.platform_account_id:
+        account = db.get(PlatformAccount, job.platform_account_id)
+        if account is None or account.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+        if account.platform != "xhs":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Xiaohongshu account required")
+
+    assets = list(
+        db.scalars(
+            select(PublishAsset).where(PublishAsset.publish_job_id == job.id).order_by(PublishAsset.id.asc())
+        ).all()
+    )
+    image_assets = [asset for asset in assets if asset.asset_type == "image"]
+    if not image_assets:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one image asset is required")
+
+    return serialize_app_draft_handoff(job, assets)
 
 
 @router.post("/jobs/{job_id}/retry")

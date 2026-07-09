@@ -7,6 +7,7 @@ import type {
   AnalysisHealthPayload,
   AnalysisReport,
   AdminCreditAdjustment,
+  AdminCreditAdjustmentPayload,
   AdminInviteCode,
   AdminTenant,
   AdminUser,
@@ -70,6 +71,7 @@ import type {
   KeywordGroup,
   KeywordGroupDetail,
   KeywordGroupPayload,
+  DoubaoMainModelConfigResult,
   ModelConfig,
   ModelConfigPayload,
   ModelType,
@@ -90,6 +92,7 @@ import type {
   PlatformAccount,
   PlatformMeta,
   PlatformUser,
+  PublishAppDraftHandoff,
   PublishAsset,
   PublishAssetPayload,
   PublishJob,
@@ -108,6 +111,7 @@ import type {
   TaskRecord,
   UsageBalance,
   UsageLimitError,
+  UsagePricing,
   WechatOfficialArticleComment,
   WechatOfficialArticleCommentsPayload,
   WechatOfficialArticleMetric,
@@ -303,12 +307,27 @@ export function getUsageLimitError(error: unknown): UsageLimitError | null {
   const payload = detail && typeof detail === "object" ? detail : data;
   if (!payload || typeof payload !== "object") return null;
   const record = payload as UsageLimitError;
-  if (record.code === "usage_quota_insufficient" || record.code === "model_test_daily_limit_exceeded") return record;
+  if (record.code === "usage_quota_insufficient") {
+    const required = typeof record.required === "number" ? record.required : null;
+    const remaining = typeof record.remaining === "number" ? record.remaining : null;
+    return {
+      ...record,
+      message:
+        required !== null && remaining !== null
+          ? `积分不足，本次需要 ${required} 积分，当前剩余 ${remaining} 积分。`
+          : "积分不足，请联系管理员补充额度后再试。",
+    };
+  }
   return null;
 }
 
 export async function fetchUsageBalance(): Promise<UsageBalance> {
   const response = await http.get<UsageBalance>("/usage/balance", { _silent: true } as never);
+  return response.data;
+}
+
+export async function fetchUsagePricing(): Promise<UsagePricing> {
+  const response = await http.get<UsagePricing>("/usage/pricing", { _silent: true } as never);
   return response.data;
 }
 
@@ -344,7 +363,7 @@ export async function activateAdminUser(userId: number): Promise<AdminUser> {
 
 export async function adjustAdminTenantCredit(
   tenantId: number,
-  payload: { bucket: string; total: number; reason?: string }
+  payload: AdminCreditAdjustmentPayload
 ): Promise<AdminCreditAdjustment> {
   const response = await http.post<AdminCreditAdjustment>(`/admin/tenants/${tenantId}/credits/adjust`, payload);
   return response.data;
@@ -1378,6 +1397,11 @@ export async function createModelConfig(payload: ModelConfigPayload): Promise<Mo
   return response.data;
 }
 
+export async function configureDoubaoMainModels(apiKey: string): Promise<DoubaoMainModelConfigResult> {
+  const response = await http.post<DoubaoMainModelConfigResult>("/model-configs/doubao-main", { api_key: apiKey });
+  return response.data;
+}
+
 export async function setDefaultModelConfig(configId: number): Promise<ModelConfig> {
   const response = await http.post<ModelConfig>(`/model-configs/${configId}/set-default`);
   return response.data;
@@ -1567,6 +1591,11 @@ export async function publishJobToCreator(jobId: number, options?: { confirmReal
   return response.data;
 }
 
+export async function preparePublishJobAppDraftHandoff(jobId: number): Promise<PublishAppDraftHandoff> {
+  const response = await http.post<PublishAppDraftHandoff>(`/publish/jobs/${jobId}/app-draft-handoff`);
+  return response.data;
+}
+
 export async function retryPublishJob(jobId: number): Promise<PublishJob> {
   const response = await http.post<PublishJob>(`/publish/jobs/${jobId}/retry`);
   return response.data;
@@ -1662,10 +1691,12 @@ export async function confirmHuitunPasswordLogin(payload: {
   ticket: string;
   randStr: string;
   captcha?: string;
+  session_id?: number;
 }): Promise<XhsQrLoginSession> {
   const response = await http.post<XhsQrLoginSession>("/huitun/login-sessions/password/confirm", payload, { _silent: true } as never);
   return response.data;
 }
+
 export async function pollXhsLoginSession(sessionId: number): Promise<XhsQrLoginSession> {
   const response = await http.get<XhsQrLoginSession>(`/xhs/login-sessions/${sessionId}`);
   return response.data;

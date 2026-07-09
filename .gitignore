@@ -62,6 +62,10 @@ db.sqlite3
 .claude/
 .superpowers/
 .agent/
+.tmp-codex/
+pytest_tmp_backend/
+compare-shots/
+*.crx
 
 # Local code index
 .codegraph/
