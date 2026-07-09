@@ -936,6 +936,7 @@ export type SavedNote = {
   content: string;
   author_name: string;
   raw_json?: Record<string, unknown>;
+  source_url?: string;
   asset_urls?: string[];
   cover_url?: string;
   video_url?: string;
