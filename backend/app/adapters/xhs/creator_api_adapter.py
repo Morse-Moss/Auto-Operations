@@ -90,6 +90,84 @@ class XhsCreatorApiAdapter:
             raise RuntimeError(message or "Creator note publish failed")
         return payload or {}
 
+    @staticmethod
+    def _ensure_creator_publish_success(payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise RuntimeError("Creator note publish failed")
+
+        message = payload.get("msg") or payload.get("message") or payload.get("error")
+        code = payload.get("code")
+        result = payload.get("result")
+        success = payload.get("success")
+
+        if code == -1:
+            raise RuntimeError(message or "Creator note publish signature failed")
+        if result not in (None, 0):
+            raise RuntimeError(message or "Creator note publish failed")
+        if success is False:
+            raise RuntimeError(message or "Creator note publish failed")
+        if success is None and result is None:
+            raise RuntimeError(message or "Creator note publish failed")
+
+        return payload
+
+    @classmethod
+    def _extract_creator_note_id(cls, payload: dict[str, Any]) -> str:
+        for key in ("note_id", "noteId", "id", "workId"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return cls._extract_creator_note_id(data)
+        return ""
+
+    @classmethod
+    def _extract_creator_share_link(cls, payload: dict[str, Any]) -> str:
+        for key in ("shareLink", "share_link"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return cls._extract_creator_share_link(data)
+        return ""
+
+    def _enrich_creator_publish_payload(self, api: Any, payload: dict[str, Any]) -> dict[str, Any]:
+        note_id = self._extract_creator_note_id(payload)
+        if not note_id:
+            return payload
+
+        payload.setdefault("note_id", note_id)
+        payload.setdefault("workId", note_id)
+        response_link = self._extract_creator_share_link(payload)
+        if response_link:
+            payload["shareLink"] = response_link
+            return payload
+
+        payload["shareLink"] = f"https://www.xiaohongshu.com/explore/{note_id}"
+
+        try:
+            success, _, notes = api.get_all_publish_note_info(cookies_str=self.cookies)
+        except Exception:
+            return payload
+        if not success or not isinstance(notes, list):
+            return payload
+
+        for note in notes:
+            if not isinstance(note, dict) or str(note.get("id") or note.get("note_id") or "") != note_id:
+                continue
+            token = note.get("xsec_token")
+            source = note.get("xsec_source")
+            if token and source:
+                payload["shareLink"] = (
+                    f"https://www.xiaohongshu.com/explore/{note_id}"
+                    f"?xsec_token={token}&xsec_source={source}"
+                )
+            return payload
+
+        return payload
+
     def _post_uploaded_image_note(self, note_info: dict[str, Any]) -> dict[str, Any]:
         import json
 
@@ -149,6 +227,16 @@ class XhsCreatorApiAdapter:
             data["common"]["desc"] += f" #{insert_topic['name']}[话题]# "
         raw_data = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         headers = get_post_note_headers()
+        headers.update(
+            {
+                "content-type": "application/json;charset=UTF-8",
+                "origin": "https://creator.xiaohongshu.com",
+                "referer": "https://creator.xiaohongshu.com/",
+                "authorization": "",
+                "sec-fetch-site": "same-site",
+            }
+        )
+        headers.pop("sec-fetch-storage-access", None)
         xs, xt, xs_common = generate_xs_xs_common(cookies["a1"], post_api, raw_data)
         headers["x-s"], headers["x-t"], headers["x-s-common"] = xs, str(xt), xs_common
         headers["x-rap-param"] = generate_x_rap_param(post_api, raw_data)
@@ -160,6 +248,5 @@ class XhsCreatorApiAdapter:
             timeout=REQUEST_TIMEOUT,
         )
         payload = response.json()
-        if not payload.get("success"):
-            raise RuntimeError(payload.get("msg") or "Creator note publish failed")
-        return payload
+        payload = self._ensure_creator_publish_success(payload)
+        return self._enrich_creator_publish_payload(api, payload)
