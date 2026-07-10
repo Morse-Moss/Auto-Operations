@@ -466,7 +466,7 @@ export function XhsDataAcquisitionPage() {
       width: 140,
       render: (value: string) => value ? <Tag color="blue">{value}</Tag> : <Text type="secondary">-</Text>,
     },
-    { title: "指标", width: 180, render: (_, candidate) => <Text>{metricText(candidate)}</Text> },
+    { title: "指标", width: 180, render: (_, candidate) => <Text style={{ whiteSpace: "nowrap" }}>{metricText(candidate)}</Text> },
     { title: "状态", dataIndex: "status", width: 100, render: candidateStatusTag },
   ];
 
@@ -607,6 +607,7 @@ export function XhsDataAcquisitionPage() {
             <Table<DataAcquisitionCandidate>
               rowKey="id"
               size="small"
+              scroll={{ x: 1000 }}
               columns={candidateColumns}
               dataSource={candidates}
               loading={loading}
