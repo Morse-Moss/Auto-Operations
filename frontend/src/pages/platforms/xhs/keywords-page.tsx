@@ -651,7 +651,7 @@ export function XhsKeywordsPage() {
                       type="primary"
                       icon={<PlayCircleOutlined />}
                       disabled={isWorking}
-                      onClick={() => navigate(`/platforms/xhs/crawler?keyword_group_id=${group.id}`)}
+                      onClick={() => navigate(`/platforms/xhs/crawler?keyword_group_id=${group.id}&keyword_limit=${Math.min(20, group.keywords.length)}`)}
                     >
                       开始采集
                     </Button>

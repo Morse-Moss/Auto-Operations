@@ -142,12 +142,14 @@ def test_xhs_data_acquisition_keyword_group_links_open_data_account_workbench():
     source = open("frontend/src/pages/platforms/xhs/data-acquisition-page.tsx", encoding="utf-8").read()
     keywords_page_source = open("frontend/src/pages/platforms/xhs/keywords-page.tsx", encoding="utf-8").read()
 
-    assert "navigate(`/platforms/xhs/crawler?keyword_group_id=${group.id}`)" in keywords_page_source
+    assert "navigate(`/platforms/xhs/crawler?keyword_group_id=${group.id}&keyword_limit=${Math.min(20, group.keywords.length)}`)" in keywords_page_source
     assert "handleCreateKeywordGroupRuns" in source
     assert "关键词组获取笔记数据" in source
     assert "预计消耗" in source
     assert 'searchParams.get("keyword_group_id")' in source
     assert "createDataAcquisitionRun" in source
+    assert "run_ids" in source
+    assert "setSelectedRunIds" in source
     assert "shouldShowKeywordGroupCrawler" not in source
 
 

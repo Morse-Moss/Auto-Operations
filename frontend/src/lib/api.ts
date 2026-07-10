@@ -1026,11 +1026,15 @@ export async function cancelDataAcquisitionRun(runId: number): Promise<DataAcqui
 
 export async function fetchDataAcquisitionCandidates(params?: {
   run_id?: number;
+  run_ids?: number[];
   status?: string;
   page?: number;
   page_size?: number;
 }): Promise<Paginated<DataAcquisitionCandidate>> {
-  const response = await http.get<Paginated<DataAcquisitionCandidate>>("/xhs/data-acquisition/candidates", { params });
+  const { run_ids, ...rest } = params || {};
+  const response = await http.get<Paginated<DataAcquisitionCandidate>>("/xhs/data-acquisition/candidates", {
+    params: run_ids?.length ? { ...rest, run_ids: run_ids.join(",") } : rest,
+  });
   return response.data;
 }
 

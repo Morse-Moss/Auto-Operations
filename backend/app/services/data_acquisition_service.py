@@ -302,11 +302,13 @@ def serialize_run(
 
 
 def serialize_candidate(candidate: DataAcquisitionCandidate, *, include_admin_debug: bool = False) -> dict[str, Any]:
+    raw_json = candidate.raw_json if isinstance(candidate.raw_json, dict) else {}
     result: dict[str, Any] = {
         "id": candidate.id,
         "run_id": candidate.run_id,
         "platform": candidate.platform,
         "candidate_type": candidate.candidate_type,
+        "source_keyword": str(raw_json.get("keyword") or ""),
         "platform_note_id": candidate.platform_note_id,
         "original_url": candidate.original_url,
         "title": candidate.title,
@@ -330,7 +332,7 @@ def serialize_candidate(candidate: DataAcquisitionCandidate, *, include_admin_de
     }
     if include_admin_debug:
         result["source"] = candidate.source
-        result["raw_json"] = candidate.raw_json or {}
+        result["raw_json"] = raw_json
     return result
 
 

@@ -73,6 +73,22 @@ def _candidate_counts_by_run(db: Session, current_user: User, run_ids: list[int]
     return {int(run_id): int(count) for run_id, count in rows}
 
 
+def _parse_run_ids(value: Optional[str]) -> list[int]:
+    if not value:
+        return []
+    result: list[int] = []
+    seen: set[int] = set()
+    for item in value.split(","):
+        try:
+            run_id = int(item.strip())
+        except ValueError:
+            continue
+        if run_id > 0 and run_id not in seen:
+            result.append(run_id)
+            seen.add(run_id)
+    return result
+
+
 @router.post("/runs")
 def create_data_acquisition_run(
     payload: DataAcquisitionRunRequest,
@@ -184,9 +200,10 @@ def cancel_data_acquisition_run(
 @router.get("/candidates")
 def list_data_acquisition_candidates(
     run_id: Optional[int] = None,
+    run_ids: Optional[str] = None,
     status_filter: Optional[str] = Query(default="pending", alias="status"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -196,6 +213,10 @@ def list_data_acquisition_candidates(
     )
     if run_id is not None:
         statement = statement.where(DataAcquisitionCandidate.run_id == run_id)
+    else:
+        parsed_run_ids = _parse_run_ids(run_ids)
+        if parsed_run_ids:
+            statement = statement.where(DataAcquisitionCandidate.run_id.in_(parsed_run_ids))
     if status_filter:
         statement = statement.where(DataAcquisitionCandidate.status == status_filter)
     candidates = db.scalars(

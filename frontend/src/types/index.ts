@@ -1135,6 +1135,7 @@ export type DataAcquisitionCandidate = {
   run_id: number;
   platform: "xhs" | string;
   candidate_type: "note" | "keyword" | "note_detail" | "keyword_analysis" | string;
+  source_keyword: string;
   platform_note_id: string;
   original_url: string;
   title: string;

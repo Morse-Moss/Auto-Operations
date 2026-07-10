@@ -613,6 +613,47 @@ def test_exclude_and_restore_candidates_update_filters_and_decision_reason(tmp_p
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_candidate_list_filters_multiple_runs_and_exposes_source_keyword(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        first_run, _fake = create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=[sample_note_row("note-bathtub", "Bathtub note")],
+            keyword="bathtub",
+        )
+        second_run, _fake = create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=[sample_note_row("note-small-bathtub", "Small bathtub note")],
+            keyword="small bathtub",
+        )
+        create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=[sample_note_row("note-other", "Other note")],
+            keyword="other",
+        )
+
+        response = client.get(
+            f"/api/xhs/data-acquisition/candidates?run_ids={first_run['id']},{second_run['id']}&status=pending&page_size=500",
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert {item["platform_note_id"] for item in items} == {"note-bathtub", "note-small-bathtub"}
+        assert {item["source_keyword"] for item in items} == {"bathtub", "small bathtub"}
+        assert all(item["run_id"] in {first_run["id"], second_run["id"]} for item in items)
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_list_runs_reports_candidate_count_and_task_center_links_to_run(tmp_path):
     SessionLocal = override_database(tmp_path)
     try:

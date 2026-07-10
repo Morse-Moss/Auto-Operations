@@ -106,6 +106,20 @@ function parseRunId(value: string | null): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function parseRunIds(value: string | null): number[] {
+  if (!value) return [];
+  const seen = new Set<number>();
+  const result: number[] = [];
+  for (const item of value.split(",")) {
+    const parsed = Number(item.trim());
+    if (Number.isInteger(parsed) && parsed > 0 && !seen.has(parsed)) {
+      result.push(parsed);
+      seen.add(parsed);
+    }
+  }
+  return result;
+}
+
 function parseKeywordGroupId(searchParams: URLSearchParams): number | null {
   const parsedKeywordGroupId = Number(searchParams.get("keyword_group_id") || 0);
   return Number.isFinite(parsedKeywordGroupId) && parsedKeywordGroupId > 0 ? parsedKeywordGroupId : null;
@@ -121,6 +135,7 @@ export function XhsDataAcquisitionPage() {
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([]);
   const [candidateStatus, setCandidateStatus] = useState<string>(searchParams.get("status") || "pending");
   const [selectedRunId, setSelectedRunId] = useState<number | undefined>(parseRunId(searchParams.get("run_id")));
+  const [selectedRunIds, setSelectedRunIds] = useState<number[]>(parseRunIds(searchParams.get("run_ids")));
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [keywordGroupRunning, setKeywordGroupRunning] = useState(false);
@@ -133,7 +148,7 @@ export function XhsDataAcquisitionPage() {
   const creditsRemaining = usage.bucketRemaining("credits");
   const keywordGroupKeywordLimit = useMemo(() => {
     const parsed = Number(searchParams.get("keyword_limit") || 0);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.min(20, Math.max(1, parsed)) : 5;
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(20, Math.max(1, parsed)) : 20;
   }, [searchParams]);
   const keywordGroupNoteLimit = useMemo(() => {
     const parsed = Number(searchParams.get("max_notes_per_keyword") || 0);
@@ -141,6 +156,7 @@ export function XhsDataAcquisitionPage() {
   }, [searchParams]);
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId), [runs, selectedRunId]);
+  const selectedRunLabel = selectedRun ? runKeyword(selectedRun) : selectedRunIds.length ? `关键词组 ${selectedRunIds.length} 个任务` : "";
   const selectableCandidateIds = useMemo(
     () => candidates.filter((candidate) => candidate.status !== "imported").map((candidate) => candidate.id),
     [candidates]
@@ -156,23 +172,36 @@ export function XhsDataAcquisitionPage() {
   const selectedAllPending = selectedCandidateIds.length > 0 && selectedPendingCount === selectedCandidateIds.length;
   const selectedAllExcluded = selectedCandidateIds.length > 0 && selectedExcludedCount === selectedCandidateIds.length;
 
-  function syncUrl(nextRunId: number | undefined, nextStatus: string) {
+  function syncUrl(nextRunId: number | undefined, nextStatus: string, nextRunIds = selectedRunIds) {
     const next = new URLSearchParams(searchParams);
-    if (nextRunId) next.set("run_id", String(nextRunId));
-    else next.delete("run_id");
+    if (nextRunIds.length) {
+      next.delete("run_id");
+      next.set("run_ids", nextRunIds.join(","));
+    } else if (nextRunId) {
+      next.set("run_id", String(nextRunId));
+      next.delete("run_ids");
+    } else {
+      next.delete("run_id");
+      next.delete("run_ids");
+    }
     if (nextStatus && nextStatus !== "pending") next.set("status", nextStatus);
     else next.delete("status");
     setSearchParams(next, { replace: true });
   }
 
-  async function loadPageData(nextRunId = selectedRunId, nextStatus = candidateStatus) {
+  async function loadPageData(nextRunId = selectedRunId, nextStatus = candidateStatus, nextRunIds = selectedRunIds) {
     setLoading(true);
     try {
       const statusParam = nextStatus === "all" ? undefined : nextStatus;
       const [readinessPayload, runPage, candidatePage] = await Promise.all([
         fetchDataAcquisitionReadiness(),
         fetchDataAcquisitionRuns({ page_size: 10 }),
-        fetchDataAcquisitionCandidates({ run_id: nextRunId, status: statusParam, page_size: 50 }),
+        fetchDataAcquisitionCandidates({
+          run_id: nextRunIds.length ? undefined : nextRunId,
+          run_ids: nextRunIds.length ? nextRunIds : undefined,
+          status: statusParam,
+          page_size: nextRunIds.length ? 500 : 50,
+        }),
       ]);
       setReadiness(readinessPayload);
       setRuns(runPage.items);
@@ -186,7 +215,7 @@ export function XhsDataAcquisitionPage() {
   }
 
   useEffect(() => {
-    void loadPageData(selectedRunId, candidateStatus);
+    void loadPageData(selectedRunId, candidateStatus, selectedRunIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -208,12 +237,13 @@ export function XhsDataAcquisitionPage() {
     return () => { cancelled = true; };
   }, [keywordGroupId]);
 
-  function updateCandidateView(nextRunId: number | undefined, nextStatus = candidateStatus) {
+  function updateCandidateView(nextRunId: number | undefined, nextStatus = candidateStatus, nextRunIds: number[] = []) {
     setSelectedRunId(nextRunId);
+    setSelectedRunIds(nextRunIds);
     setCandidateStatus(nextStatus);
     setSelectedCandidateIds([]);
-    syncUrl(nextRunId, nextStatus);
-    void loadPageData(nextRunId, nextStatus);
+    syncUrl(nextRunId, nextStatus, nextRunIds);
+    void loadPageData(nextRunId, nextStatus, nextRunIds);
   }
 
   async function handleCreateRun(values: { keyword: string; limit: number; sort: string; note_type: string }) {
@@ -286,10 +316,10 @@ export function XhsDataAcquisitionPage() {
         });
         createdRuns.push(run);
       }
-      const latestRun = createdRuns.length ? createdRuns[createdRuns.length - 1] : undefined;
+      const runIds = createdRuns.map((run) => run.id);
       const candidateCount = createdRuns.reduce((sum, run) => sum + (run.candidate_count || 0), 0);
       setKeywordGroupStatus(`关键词组获取完成：${keywords.length} 个关键词，${candidateCount} 条待确认候选。`);
-      if (latestRun) updateCandidateView(latestRun.id, "pending");
+      if (runIds.length) updateCandidateView(undefined, "pending", runIds);
       else await loadPageData();
     } catch (err) {
       const limitError = getUsageLimitError(err);
@@ -411,6 +441,12 @@ export function XhsDataAcquisitionPage() {
         </Space>
       ),
     },
+    {
+      title: "来源关键词",
+      dataIndex: "source_keyword",
+      width: 140,
+      render: (value: string) => value ? <Tag color="blue">{value}</Tag> : <Text type="secondary">-</Text>,
+    },
     { title: "指标", width: 180, render: (_, candidate) => <Text>{metricText(candidate)}</Text> },
     { title: "状态", dataIndex: "status", width: 100, render: candidateStatusTag },
   ];
@@ -520,7 +556,7 @@ export function XhsDataAcquisitionPage() {
               <Space>
                 <DatabaseOutlined />
                 候选列表
-                {selectedRun ? <Tag color="blue">{runKeyword(selectedRun)}</Tag> : null}
+                {selectedRunLabel ? <Tag color="blue">{selectedRunLabel}</Tag> : null}
               </Space>
             }
             extra={
@@ -529,7 +565,7 @@ export function XhsDataAcquisitionPage() {
                   value={candidateStatus}
                   style={{ width: 120 }}
                   options={candidateStatusOptions}
-                  onChange={(value) => updateCandidateView(selectedRunId, value)}
+                  onChange={(value) => updateCandidateView(selectedRunId, value, selectedRunIds)}
                 />
                 <Button icon={<RollbackOutlined />} onClick={() => void handleRestoreSelected()} disabled={!selectedAllExcluded} loading={actionLoading}>
                   恢复
