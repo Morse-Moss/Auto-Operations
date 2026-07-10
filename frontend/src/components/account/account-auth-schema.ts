@@ -125,7 +125,7 @@ function addUniqueOption<T extends string>(options: AccountAuthOption<T>[], opti
 }
 
 function mapPlatformAuthSchema(platform: PlatformMeta): AccountAuthSchema | null {
-  if (!isAccountPlatform(platform.id) || !platform.account_auth_schemas?.length) {
+  if (!platform.enabled || !isAccountPlatform(platform.id) || !platform.account_auth_schemas?.length) {
     return null;
   }
 

@@ -4,6 +4,7 @@ import { AppShell } from "../components/layout/app-shell";
 import { ComingSoonPage } from "../components/platforms/coming-soon";
 import { AdminRoute, ProtectedRoute, PublicOnlyRoute } from "../components/ui/protected-route";
 import { BetaAdminPage } from "../pages/admin/beta-admin-page";
+import { WECHAT_OFFICIAL_PUBLIC_ENABLED } from "../lib/platforms";
 import { LoginPage } from "../pages/login/login-page";
 import { ModelConfigPage } from "../pages/models/model-config-page";
 import { PlatformSelectPage } from "../pages/platform-select/platform-select-page";
@@ -69,13 +70,19 @@ export function AppRouter() {
           }
         >
           <Route path="/platforms/demo-platform/library" element={<DemoPlatformLibraryPage />} />
-          <Route path="/platforms/wechat-official/dashboard" element={<WechatOfficialDashboardPage />} />
-          <Route path="/platforms/wechat-official/accounts" element={<WechatOfficialAccountsPage />} />
-          <Route path="/platforms/wechat-official/discovery" element={<WechatOfficialDiscoveryPage />} />
-          <Route path="/platforms/wechat-official/library" element={<WechatOfficialLibraryPage />} />
-          <Route path="/platforms/wechat-official/drafts" element={<WechatOfficialDraftsPage />} />
-          <Route path="/platforms/wechat-official/image-studio" element={<XhsImageStudioPage />} />
-          <Route path="/platforms/wechat-official/settings" element={<AdminRoute><WechatOfficialSettingsPage /></AdminRoute>} />
+          {WECHAT_OFFICIAL_PUBLIC_ENABLED ? (
+            <>
+              <Route path="/platforms/wechat-official/dashboard" element={<WechatOfficialDashboardPage />} />
+              <Route path="/platforms/wechat-official/accounts" element={<WechatOfficialAccountsPage />} />
+              <Route path="/platforms/wechat-official/discovery" element={<WechatOfficialDiscoveryPage />} />
+              <Route path="/platforms/wechat-official/library" element={<WechatOfficialLibraryPage />} />
+              <Route path="/platforms/wechat-official/drafts" element={<WechatOfficialDraftsPage />} />
+              <Route path="/platforms/wechat-official/image-studio" element={<XhsImageStudioPage />} />
+              <Route path="/platforms/wechat-official/settings" element={<AdminRoute><WechatOfficialSettingsPage /></AdminRoute>} />
+            </>
+          ) : (
+            <Route path="/platforms/wechat-official/*" element={<Navigate to="/platform-select" replace />} />
+          )}
           <Route path="/platforms/xhs/dashboard" element={<XhsDashboard />} />
           <Route path="/platforms/xhs/accounts" element={<XhsAccountsPage />} />
           <Route path="/platforms/xhs/analytics" element={<XhsAnalyticsPage />} />

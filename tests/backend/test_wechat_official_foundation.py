@@ -13,19 +13,19 @@ def _capabilities_by_key(platform_payload: dict) -> dict[str, dict]:
     return {item["key"]: item for item in platform_payload["capabilities"]}
 
 
-def test_wechat_official_registry_is_beta_enabled_foundation_workspace():
+def test_wechat_official_registry_is_public_disabled_for_offline_development():
     payload = get_platform(PlatformId.WECHAT_OFFICIAL).to_dict()
 
     assert payload["id"] == "wechat_official"
     assert payload["name_cn"] == "公众号"
     assert payload["name_en"] == "WeChat Official"
-    assert payload["enabled"] is True
-    assert payload["release_stage"] == "beta"
-    assert payload["status"] == "beta"
+    assert payload["enabled"] is False
+    assert payload["release_stage"] == "planned"
+    assert payload["status"] == "coming_soon"
     assert payload["region"] == "cn"
     assert payload["platform_type"] == "content"
-    assert payload["default_route"] == "/platforms/wechat-official/dashboard"
-    assert payload["adapter_key"] == "wechat_official"
+    assert payload["default_route"] is None
+    assert payload["adapter_key"] is None
     assert payload["risk_level"] == "medium"
     assert payload["auth_modes"] == ["none"]
     assert payload["accent_color"] == "#0a9b57"
@@ -55,18 +55,18 @@ def test_wechat_official_capabilities_are_planned_or_blocked_and_publish_is_fail
     }
 
 
-def test_platform_registry_endpoint_exposes_wechat_official_beta_metadata():
+def test_platform_registry_endpoint_exposes_wechat_official_public_disabled_metadata():
     response = client.get("/api/platforms")
 
     assert response.status_code == 200
     payload = response.json()
     wechat = next(item for item in payload["items"] if item["id"] == "wechat_official")
 
-    assert wechat["enabled"] is True
-    assert wechat["release_stage"] == "beta"
-    assert wechat["status"] == "beta"
-    assert wechat["default_route"] == "/platforms/wechat-official/dashboard"
-    assert wechat["adapter_key"] == "wechat_official"
+    assert wechat["enabled"] is False
+    assert wechat["release_stage"] == "planned"
+    assert wechat["status"] == "coming_soon"
+    assert wechat["default_route"] is None
+    assert wechat["adapter_key"] is None
     assert wechat["auth_modes"] == ["none"]
     assert _capabilities_by_key(wechat)["publish.real_publish"]["status"] == "blocked"
 

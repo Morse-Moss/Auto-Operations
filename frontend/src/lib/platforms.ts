@@ -1,5 +1,7 @@
 import type { PlatformMeta } from "../types";
 
+export const WECHAT_OFFICIAL_PUBLIC_ENABLED = false;
+
 export const fallbackPlatforms: PlatformMeta[] = [
   {
     id: "xhs",
@@ -90,13 +92,13 @@ export const fallbackPlatforms: PlatformMeta[] = [
     id: "wechat_official",
     name_cn: "公众号",
     name_en: "WeChat Official",
-    enabled: true,
-    status: "beta",
-    release_stage: "beta",
+    enabled: WECHAT_OFFICIAL_PUBLIC_ENABLED,
+    status: WECHAT_OFFICIAL_PUBLIC_ENABLED ? "beta" : "coming_soon",
+    release_stage: WECHAT_OFFICIAL_PUBLIC_ENABLED ? "beta" : "planned",
     region: "cn",
     platform_type: "content",
-    default_route: "/platforms/wechat-official/library",
-    adapter_key: "wechat_official",
+    default_route: WECHAT_OFFICIAL_PUBLIC_ENABLED ? "/platforms/wechat-official/library" : null,
+    adapter_key: WECHAT_OFFICIAL_PUBLIC_ENABLED ? "wechat_official" : null,
     risk_level: "medium",
     auth_modes: ["none"],
     capabilities: [

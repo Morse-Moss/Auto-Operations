@@ -79,6 +79,9 @@ class CapabilityKey(str, Enum):
     WORKFLOW_AUTO_OPS = "workflow.auto_ops"
 
 
+WECHAT_OFFICIAL_PUBLIC_ENABLED = False
+
+
 @dataclass(frozen=True)
 class PlatformCapability:
     key: CapabilityKey
@@ -369,14 +372,14 @@ _PLATFORMS: List[PlatformMeta] = [
         id=PlatformId.WECHAT_OFFICIAL,
         name_cn="公众号",
         name_en="WeChat Official",
-        enabled=True,
-        release_stage=ReleaseStage.BETA,
+        enabled=WECHAT_OFFICIAL_PUBLIC_ENABLED,
+        release_stage=ReleaseStage.BETA if WECHAT_OFFICIAL_PUBLIC_ENABLED else ReleaseStage.PLANNED,
         region=PlatformRegion.CN,
         platform_type=PlatformType.CONTENT,
         accent_color="#0a9b57",
         icon="wechat_official",
-        default_route="/platforms/wechat-official/dashboard",
-        adapter_key="wechat_official",
+        default_route="/platforms/wechat-official/dashboard" if WECHAT_OFFICIAL_PUBLIC_ENABLED else None,
+        adapter_key="wechat_official" if WECHAT_OFFICIAL_PUBLIC_ENABLED else None,
         risk_level=RiskLevel.MEDIUM,
         auth_modes=[AuthMode.NONE],
         capabilities=_WECHAT_OFFICIAL_CAPABILITIES,
