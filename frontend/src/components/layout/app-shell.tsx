@@ -30,8 +30,7 @@ import {
 import type { MenuProps } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import KeepAliveRouteOutlet from "keepalive-for-react-router";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { useThemeMode } from "../../app/providers";
 import { useAuth } from "../../hooks/use-auth";
@@ -544,7 +543,7 @@ export function AppShell() {
           </Space>
         </Header>
         <Content style={{ padding: isNarrowViewport ? 16 : 24, minHeight: "calc(100vh - 56px)", overflow: "auto", background: palette.appBg, minWidth: 0 }}>
-          <KeepAliveRouteOutlet include={[/\/platforms\/xhs\/discovery/, /\/platforms\/xhs\/crawler/]} />
+          <Outlet />
         </Content>
       </Layout>
     </Layout>
