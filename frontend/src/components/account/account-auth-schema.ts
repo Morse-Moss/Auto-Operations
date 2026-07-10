@@ -38,7 +38,6 @@ const wechatOfficialAccountTypes = [
 const xhsLoginMethods = [
   { label: "二维码", value: "qr" },
   { label: "手机验证码", value: "phone" },
-  { label: "Cookie", value: "cookie" },
 ] as const satisfies readonly AccountAuthOption<LoginMethod>[];
 
 const huitunLoginMethods = [
@@ -137,6 +136,9 @@ function mapPlatformAuthSchema(platform: PlatformMeta): AccountAuthSchema | null
   for (const registrySchema of platform.account_auth_schemas) {
     const accountType = normalizeAccountType(registrySchema);
     const loginMethod = normalizeLoginMethod(registrySchema.auth_mode);
+    if (platform.id === "xhs" && loginMethod === "cookie") {
+      continue;
+    }
     const disabled = isBlocked(registrySchema);
     const description = registrySchema.notes || (disabled ? "该账号绑定方式暂未开放。" : undefined);
 

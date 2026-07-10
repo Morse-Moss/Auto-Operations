@@ -107,9 +107,9 @@ const schemas = mapPlatformRegistryToAccountAuthSchemas(registryPlatforms);
 assert.equal(schemas.length, 2);
 assert.equal(schemas[0].platform, "xhs");
 assert.deepEqual(accountTypeOptionsFor(schemas[0]).map((option) => option.value), ["pc", "creator"]);
-assert.deepEqual(loginMethodOptionsFor(schemas[0]).map((option) => option.value), ["cookie", "qr", "phone"]);
+assert.deepEqual(loginMethodOptionsFor(schemas[0]).map((option) => option.value), ["qr", "phone"]);
 assert.equal(getDefaultAccountType(schemas[0]), "pc");
-assert.equal(getDefaultLoginMethod(schemas[0]), "cookie");
+assert.equal(getDefaultLoginMethod(schemas[0]), "qr");
 assert.equal(getDefaultLoginMethod(schemas[0], "phone"), "phone");
 assert.equal(schemas[1].platform, "wechat_official");
 assert.equal(schemas[1].loginMethods[0].value, "none");
@@ -125,7 +125,7 @@ assert.deepEqual(loginMethodOptionsFor(getAccountAuthSchema("huitun", adminSchem
 
 const fallback = getAccountAuthSchema("xhs");
 assert.deepEqual(accountTypeOptionsFor(fallback).map((option) => option.value), ["pc", "creator"]);
-assert.deepEqual(loginMethodOptionsFor(fallback).map((option) => option.value), ["qr", "phone", "cookie"]);
+assert.deepEqual(loginMethodOptionsFor(fallback).map((option) => option.value), ["qr", "phone"]);
 assert.equal(getDefaultLoginMethod(fallback, "phone"), "phone");
 
 const emptyRegistryFallback = mapPlatformRegistryToAccountAuthSchemas([]);
@@ -162,6 +162,6 @@ const blockedDuplicateRegistry = mapPlatformRegistryToAccountAuthSchemas([
     ],
   },
 ]);
-assert.equal(loginMethodOptionsFor(blockedDuplicateRegistry[0]).find((option) => option.value === "cookie")?.disabled, true);
+assert.equal(loginMethodOptionsFor(blockedDuplicateRegistry[0]).find((option) => option.value === "cookie"), undefined);
 
 console.log("account-auth-schema tests passed");
