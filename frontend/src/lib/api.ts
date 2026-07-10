@@ -1,6 +1,7 @@
-import axios from "axios";
+import axios, { AxiosHeaders } from "axios";
 import { message } from "antd";
 
+import { ensureRequestId, recordResponseRequestId } from "./diagnostics";
 import { fallbackPlatforms } from "./platforms";
 import type {
   AnalysisDataHealth,
@@ -213,15 +214,22 @@ export function clearAuthTokens(): void {
 }
 
 http.interceptors.request.use((config) => {
+  const headers = AxiosHeaders.from(config.headers);
+  headers.set("X-Request-ID", ensureRequestId());
   if (accessToken) {
-    config.headers.Authorization = `Bearer ${accessToken}`;
+    headers.set("Authorization", `Bearer ${accessToken}`);
   }
+  config.headers = headers;
   return config;
 });
 
 http.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    recordResponseRequestId(response.headers["x-request-id"]);
+    return response;
+  },
   async (error) => {
+    recordResponseRequestId(error.response?.headers?.["x-request-id"]);
     const originalRequest = error.config as typeof error.config & { _authRetry?: boolean; _silent?: boolean };
     const isRefreshRequest = originalRequest?.url === "/auth/refresh";
     if (isRefreshRequest) {
@@ -238,7 +246,10 @@ http.interceptors.response.use(
     originalRequest._authRetry = true;
     try {
       const token = await refreshAccessToken();
-      originalRequest.headers.Authorization = `Bearer ${token}`;
+      const headers = AxiosHeaders.from(originalRequest.headers);
+      headers.set("Authorization", `Bearer ${token}`);
+      headers.set("X-Request-ID", ensureRequestId());
+      originalRequest.headers = headers;
       return http(originalRequest);
     } catch (refreshError) {
       clearAuthTokens();
@@ -277,8 +288,12 @@ export async function refreshAccessToken(): Promise<string> {
       {
         refresh_token: refreshToken
       },
-      { timeout: AUTH_REFRESH_TIMEOUT_MS }
+      {
+        timeout: AUTH_REFRESH_TIMEOUT_MS,
+        headers: { "X-Request-ID": ensureRequestId() }
+      }
     );
+    recordResponseRequestId(response.headers["x-request-id"]);
     setAccessToken(response.data.access_token);
     authExpiredMessageShown = false;
     return response.data.access_token;

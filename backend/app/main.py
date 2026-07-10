@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
+import os
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from backend.app.api import accounts, admin, ai, auth, auto_tasks, drafts, feishu_integration, files, huitun_login_sessions, keyword_groups, login_sessions, model_configs, notes, notifications, publish, tags, tasks, usage
 from backend.app.api.platforms import registry
@@ -18,6 +23,40 @@ from backend.app.core.database import init_db
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLimitExceeded
 from backend.app.services.scheduler_service import run_due_auto_tasks, shutdown_due_publish_scheduler, start_due_publish_scheduler
 from backend.app.services.usage_quota_service import UsageQuotaInsufficientError
+
+
+logger = logging.getLogger("spider_xhs.runtime")
+REQUEST_ID_HEADER = "X-Request-ID"
+
+
+class ClientErrorReport(BaseModel):
+    event_type: str = Field(default="browser_error", max_length=80)
+    message: str = Field(default="", max_length=2000)
+    stack: str = Field(default="", max_length=12000)
+    url: str = Field(default="", max_length=2048)
+    app_version: str = Field(default="", max_length=120)
+    request_id: str = Field(default="", max_length=120)
+    user_agent: str = Field(default="", max_length=512)
+    timestamp: str = Field(default="", max_length=80)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+def _runtime_version() -> dict[str, str]:
+    commit = (
+        os.environ.get("APP_COMMIT")
+        or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("RENDER_GIT_COMMIT")
+        or os.environ.get("VERCEL_GIT_COMMIT_SHA")
+        or os.environ.get("GIT_COMMIT_SHA")
+        or ""
+    )
+    version = os.environ.get("APP_VERSION") or (commit[:12] if commit else "dev")
+    return {"service": "spider-xhs", "version": version, "commit": commit}
+
+
+def _safe_request_id(value: str | None) -> str:
+    request_id = "".join(ch for ch in (value or "").strip() if ch.isalnum() or ch in "-_:.")
+    return request_id[:120] or uuid4().hex
 
 
 @asynccontextmanager
@@ -66,7 +105,15 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
-    async def _source_image_import_page_cors(request, call_next):
+    async def _request_id_middleware(request: Request, call_next):
+        request_id = _safe_request_id(request.headers.get(REQUEST_ID_HEADER))
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
+    @app.middleware("http")
+    async def _source_image_import_page_cors(request: Request, call_next):
         origin = request.headers.get("origin", "")
         if _is_xhs_page_payload_path(request.url.path) and _is_allowed_xhs_page_origin(origin):
             headers = _xhs_page_cors_headers(origin)
@@ -89,6 +136,27 @@ def create_app() -> FastAPI:
     @app.get("/api/health", tags=["health"])
     def health() -> dict:
         return {"status": "ok", "service": "spider-xhs"}
+
+    @app.get("/api/version", tags=["health"])
+    def version() -> dict[str, str]:
+        return _runtime_version()
+
+    @app.post("/api/client-errors", status_code=202, tags=["diagnostics"])
+    def client_errors(report: ClientErrorReport, request: Request) -> dict[str, Any]:
+        request_id = _safe_request_id(
+            request.headers.get(REQUEST_ID_HEADER) or report.request_id or getattr(request.state, "request_id", "")
+        )
+        logger.warning(
+            "client_error event_type=%s request_id=%s app_version=%s url=%s message=%s stack=%s extra_keys=%s",
+            report.event_type,
+            request_id,
+            report.app_version,
+            report.url,
+            report.message,
+            report.stack[:4000],
+            sorted(report.extra.keys()),
+        )
+        return {"accepted": True, "request_id": request_id}
 
     app.include_router(registry.router, prefix="/api")
     app.include_router(wechat_official_router, prefix="/api")
