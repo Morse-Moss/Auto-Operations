@@ -1365,6 +1365,42 @@ class FailingCreatorExchangeAdapter(FakeCreatorLoginAdapter):
         raise RuntimeError("creator exchange failed")
 
 
+class FailingPcUserInfoAdapter(FakePcLoginAdapter):
+    def get_user_info(self, cookies):
+        raise RuntimeError("user info endpoint failed")
+
+
+class FakePcSelfProfileAdapter:
+    def __init__(self, cookies):
+        assert cookies == "a1=final-a1; web_session=session-123"
+
+    def get_self_info(self):
+        return {
+            "data": {
+                "basic_info": {
+                    "user_id": "self-profile-user-1",
+                    "nickname": "self-profile-cat",
+                    "images": "https://example.test/self-profile-avatar.webp",
+                    "red_id": "self-red-1",
+                    "desc": "self profile bio",
+                },
+                "interactions": [
+                    {"type": "fans", "count": 12},
+                    {"type": "follows", "count": 3},
+                    {"type": "interaction", "count": 45},
+                ],
+            }
+        }
+
+
+class FailingPcSelfProfileAdapter:
+    def __init__(self, cookies):
+        assert cookies == "a1=final-a1; web_session=session-123"
+
+    def get_self_info(self):
+        raise RuntimeError("self profile endpoint failed")
+
+
 class FailingQrLoginAdapter:
     def create_qrcode(self):
         raise RuntimeError("proxy refused while creating qrcode")
@@ -1460,6 +1496,28 @@ class FakePhoneLoginAdapter:
             "external_user_id": "phone-user-1",
             "nickname": "phone-cat",
             "avatar_url": "https://example.test/phone-avatar.webp",
+        }
+
+
+class FailingPhoneUserInfoAdapter(FakePhoneLoginAdapter):
+    def get_user_info(self, cookies):
+        raise RuntimeError("phone user info endpoint failed")
+
+
+class FakePhoneSelfProfileAdapter:
+    def __init__(self, cookies):
+        assert cookies == "a1=phone-final-a1; web_session=phone-session"
+
+    def get_self_info(self):
+        return {
+            "data": {
+                "basic_info": {
+                    "user_id": "phone-self-profile-user-1",
+                    "nickname": "phone-self-profile-cat",
+                    "images": "https://example.test/phone-self-profile-avatar.webp",
+                    "red_id": "phone-self-red-1",
+                }
+            }
         }
 
 
@@ -2132,6 +2190,94 @@ def test_xhs_pc_qrcode_login_updates_existing_account_for_same_external_user(tmp
         app.dependency_overrides.pop(get_creator_login_adapter, None)
 
 
+def test_xhs_pc_qrcode_login_falls_back_to_self_profile_when_confirmed_user_info_fails(tmp_path, monkeypatch):
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.core.security import decrypt_text
+    from backend.app.models import AccountCookieVersion, PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_pc_login_adapter] = lambda: FailingPcUserInfoAdapter()
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    monkeypatch.setattr("backend.app.api.login_sessions.XhsPcApiAdapter", FakePcSelfProfileAdapter)
+    try:
+        access_token = _register_and_get_access_token("qr-profile-fallback-operator")
+        create_response = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert create_response.status_code == 200
+        created = create_response.json()
+
+        poll_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert poll_response.status_code == 200
+        payload = poll_response.json()
+        assert payload["status"] == "confirmed"
+        assert payload["account"]["nickname"] == "self-profile-cat"
+        assert payload["account"]["external_user_id"] == "self-profile-user-1"
+        assert payload["account"]["profile"]["red_id"] == "self-red-1"
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.query(PlatformAccount).one()
+            assert account.external_user_id == "self-profile-user-1"
+            cookie_version = db.query(AccountCookieVersion).one()
+            assert decrypt_text(cookie_version.encrypted_cookies) == '{"a1":"final-a1","web_session":"session-123"}'
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_pc_qrcode_login_returns_controlled_error_when_confirmed_profile_fetch_fails(tmp_path, monkeypatch):
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.core.security import decrypt_text
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_pc_login_adapter] = lambda: FailingPcUserInfoAdapter()
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    monkeypatch.setattr("backend.app.api.login_sessions.XhsPcApiAdapter", FailingPcSelfProfileAdapter)
+    try:
+        access_token = _register_and_get_access_token("qr-profile-failure-operator")
+        create_response = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert create_response.status_code == 200
+        created = create_response.json()
+
+        poll_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert poll_response.status_code == 502
+        payload = poll_response.json()
+        assert "账号登录已确认，但读取账号资料失败" in payload["detail"]
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.get(LoginSession, created["session_id"])
+            assert stored_session.status == "pending"
+            assert decrypt_text(stored_session.encrypted_temp_cookies) == '{"a1":"temp-a1"}'
+            assert db.query(PlatformAccount).count() == 0
+            assert db.query(AccountCookieVersion).count() == 0
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
 def test_xhs_creator_qrcode_login_session_persists_and_confirms_account(tmp_path):
     from backend.app.api.login_sessions import get_creator_login_adapter
     from backend.app.core.database import get_db
@@ -2321,6 +2467,50 @@ def test_xhs_pc_phone_login_session_sends_code_and_confirms_account(tmp_path):
             account = db.query(PlatformAccount).one()
             assert account.sub_type == "pc"
             assert account.external_user_id == "phone-user-1"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_pc_phone_login_falls_back_to_self_profile_when_user_info_fails(tmp_path, monkeypatch):
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_pc_login_adapter] = lambda: FailingPhoneUserInfoAdapter()
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    monkeypatch.setattr("backend.app.api.login_sessions.XhsPcApiAdapter", FakePhoneSelfProfileAdapter)
+    try:
+        access_token = _register_and_get_access_token("phone-profile-fallback-operator")
+
+        send_response = client.post(
+            "/api/xhs/login-sessions/pc/phone/send-code",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"phone": "13800138000"},
+        )
+        assert send_response.status_code == 200
+        sent = send_response.json()
+
+        confirm_response = client.post(
+            "/api/xhs/login-sessions/pc/phone/confirm",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"session_id": sent["session_id"], "phone": "13800138000", "code": "123456"},
+        )
+
+        assert confirm_response.status_code == 200
+        confirmed = confirm_response.json()
+        assert confirmed["status"] == "confirmed"
+        assert confirmed["account"]["nickname"] == "phone-self-profile-cat"
+        assert confirmed["account"]["external_user_id"] == "phone-self-profile-user-1"
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.query(PlatformAccount).one()
+            assert account.external_user_id == "phone-self-profile-user-1"
         finally:
             db.close()
     finally:

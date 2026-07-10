@@ -1,6 +1,5 @@
 import { Alert, Button, Card, Checkbox, Space, Typography } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
-import axios from "axios";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -11,6 +10,7 @@ import {
   pollXhsLoginSession,
 } from "../../lib/api";
 import type { PlatformAccount, XhsQrLoginSession } from "../../types";
+import { accountLoginErrorMessage } from "./account-login-errors";
 import { clearPendingCreatorLoginSession, rememberPendingCreatorLoginSession } from "./pending-creator-login";
 
 const { Text, Link: AntLink } = Typography;
@@ -85,16 +85,6 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
   const [syncCreator, setSyncCreator] = useState(false);
   const confirmedRef = useRef(false);
 
-  function errorMessage(error: unknown): string {
-    if (axios.isAxiosError(error)) {
-      const detail = error.response?.data?.detail;
-      if (typeof detail === "string" && detail) {
-        return detail;
-      }
-    }
-    return "二维码生成失败，请稍后重试。";
-  }
-
   async function startSession(reuseExisting = false) {
     setIsLoading(true);
     setError(null);
@@ -113,7 +103,7 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
             : "请使用小红书 App 扫描 Creator 二维码"
       );
     } catch (caught) {
-      setError(errorMessage(caught));
+      setError(accountLoginErrorMessage(caught, "二维码生成失败，请稍后重试。"));
     } finally {
       setIsLoading(false);
     }
@@ -155,8 +145,8 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
             onConfirmed(confirmedAccount);
           }
         }
-      } catch {
-        setError("轮询登录状态失败，正在等待下一次尝试。");
+      } catch (caught) {
+        setError(accountLoginErrorMessage(caught, "轮询登录状态失败，正在等待下一次尝试。"));
       }
     }, 2000);
 

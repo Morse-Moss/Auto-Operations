@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -23,6 +24,7 @@ from backend.app.services.account_service import (
 )
 
 router = APIRouter(prefix="/xhs/login-sessions", tags=["xhs-login-sessions"])
+logger = logging.getLogger(__name__)
 
 
 class PcQrCodeRequest(BaseModel):
@@ -88,6 +90,55 @@ def _mask_phone(phone: str) -> str:
     if len(phone) <= 7:
         return f"{phone[:2]}****"
     return f"{phone[:3]}****{phone[-4:]}"
+
+
+def _first_present(*values):
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _pc_user_info_from_self_profile(cookies: dict) -> dict:
+    self_profile = XhsPcApiAdapter(cookie_header_from_text(_dump_json(cookies))).get_self_info()
+    user_info = enrich_user_info_with_xhs_self_profile({}, self_profile)
+    data = self_profile.get("data") if isinstance(self_profile, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    basic_info = data.get("basic_info")
+    if not isinstance(basic_info, dict):
+        basic_info = {}
+
+    external_user_id = _first_present(
+        basic_info.get("user_id"),
+        basic_info.get("userId"),
+        basic_info.get("userid"),
+        data.get("user_id"),
+        data.get("userId"),
+        data.get("userid"),
+        basic_info.get("red_id"),
+    )
+    if external_user_id:
+        user_info["external_user_id"] = str(external_user_id)
+    return user_info
+
+
+def _get_pc_user_info_after_confirm(adapter: XhsPcLoginAdapter, cookies: dict, failure_detail: str) -> dict:
+    try:
+        return adapter.get_user_info(cookies)
+    except Exception as primary_exc:
+        try:
+            return _pc_user_info_from_self_profile(cookies)
+        except Exception as fallback_exc:
+            logger.warning(
+                "Failed to fetch XHS PC profile after confirmed login; primary=%s fallback=%s",
+                primary_exc,
+                fallback_exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=failure_detail,
+            ) from fallback_exc
 
 
 def _sync_creator_account_from_pc_login(
@@ -230,7 +281,15 @@ def login_session(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported login session")
         result = pc_adapter.check_qrcode_status(session.qr_id, session.code, cookies)
         account_sub_type = "pc"
-        user_info = pc_adapter.get_user_info(result["cookies"]) if result["status"] == "confirmed" else None
+        user_info = (
+            _get_pc_user_info_after_confirm(
+                pc_adapter,
+                result["cookies"],
+                "账号登录已确认，但读取账号资料失败，请刷新二维码后重试。",
+            )
+            if result["status"] == "confirmed"
+            else None
+        )
     else:
         result = creator_adapter.check_qrcode_status(session.qr_id, cookies)
         account_sub_type = "creator"
@@ -363,7 +422,20 @@ def _confirm_phone_login(
     try:
         cookies, stored_sync_creator = _load_temp_state(decrypt_text(session.encrypted_temp_cookies))
         result = adapter.confirm_phone_login(payload.phone, payload.code, cookies)
-        user_info = adapter.get_user_info(result["cookies"])
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone login failed") from exc
+    try:
+        user_info = (
+            _get_pc_user_info_after_confirm(
+                adapter,
+                result["cookies"],
+                "账号登录已确认，但读取账号资料失败，请重新获取验证码后重试。",
+            )
+            if sub_type == "pc"
+            else adapter.get_user_info(result["cookies"])
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone login failed") from exc
 
