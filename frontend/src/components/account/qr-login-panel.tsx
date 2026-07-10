@@ -84,13 +84,26 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
   const [error, setError] = useState<string | null>(null);
   const [syncCreator, setSyncCreator] = useState(false);
   const confirmedRef = useRef(false);
+  const requestSequenceRef = useRef(0);
 
   async function startSession(reuseExisting = false) {
+    const requestSequence = ++requestSequenceRef.current;
     setIsLoading(true);
     setError(null);
+    setSession(null);
     confirmedRef.current = false;
+    setStatusText(
+      platform === "huitun"
+        ? "正在生成数据账号二维码，请稍候"
+        : accountType === "creator"
+          ? "正在生成 Creator 二维码，请稍候"
+          : "正在生成小红书 PC 二维码，请稍候"
+    );
     try {
       const nextSession = await createQrSession(platform, accountType, syncCreator, reuseExisting);
+      if (requestSequence !== requestSequenceRef.current) {
+        return;
+      }
       setSession(nextSession);
       if (platform === "xhs" && accountType === "creator") {
         rememberPendingCreatorLoginSession(nextSession);
@@ -103,11 +116,20 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
             : "请使用小红书 App 扫描 Creator 二维码"
       );
     } catch (caught) {
+      if (requestSequence !== requestSequenceRef.current) {
+        return;
+      }
       setError(accountLoginErrorMessage(caught, "二维码生成失败，请稍后重试。"));
     } finally {
-      setIsLoading(false);
+      if (requestSequence === requestSequenceRef.current) {
+        setIsLoading(false);
+      }
     }
   }
+
+  useEffect(() => () => {
+    requestSequenceRef.current += 1;
+  }, []);
 
   useEffect(() => {
     void startSession(true);
@@ -118,15 +140,24 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
       return;
     }
 
+    const pollingSessionId = session.session_id;
+    const pollingRequestSequence = requestSequenceRef.current;
+    let pollingCancelled = false;
     const interval = window.setInterval(async () => {
       try {
         const polled = platform === "huitun"
-          ? await pollHuitunLoginSession(session.session_id)
-          : await pollXhsLoginSession(session.session_id);
-        setSession((current) => ({
-          ...polled,
-          qr_image_data_url: polled.qr_image_data_url ?? current?.qr_image_data_url
-        }));
+          ? await pollHuitunLoginSession(pollingSessionId)
+          : await pollXhsLoginSession(pollingSessionId);
+        if (pollingCancelled || pollingRequestSequence !== requestSequenceRef.current) {
+          return;
+        }
+        setSession((current) => current?.session_id === pollingSessionId
+          ? {
+              ...polled,
+              qr_image_data_url: polled.qr_image_data_url ?? current.qr_image_data_url
+            }
+          : current
+        );
         if (polled.status === "scanned") {
           setStatusText("已扫码，请在手机端确认登录");
         } else if (polled.status === "expired") {
@@ -146,11 +177,17 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
           }
         }
       } catch (caught) {
+        if (pollingCancelled || pollingRequestSequence !== requestSequenceRef.current) {
+          return;
+        }
         setError(accountLoginErrorMessage(caught, "轮询登录状态失败，正在等待下一次尝试。"));
       }
     }, 2000);
 
-    return () => window.clearInterval(interval);
+    return () => {
+      pollingCancelled = true;
+      window.clearInterval(interval);
+    };
   }, [platform, accountType, onConfirmed, session?.session_id, session?.status]);
 
   return (

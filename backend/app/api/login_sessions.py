@@ -140,7 +140,10 @@ def _get_pc_user_info_after_confirm(
                 (fallback_user_info or {}).get("external_user_id") or ""
             ).strip()
             if fallback_external_user_id:
-                return {"external_user_id": fallback_external_user_id}
+                return {
+                    "external_user_id": fallback_external_user_id,
+                    "profile": {"profile_sync_status": "pending"},
+                }
             logger.warning(
                 "Failed to fetch XHS PC profile after confirmed login; primary=%s fallback=%s",
                 primary_exc,

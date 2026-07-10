@@ -53,6 +53,7 @@ export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = 
   const loginUnavailable = isUnavailableLoginMethod(schema, effectiveMethod);
   const platformOptions = platformOptionsFor(availableSchemas);
   const drawerTitle = accountDrawerTitleFor(availableSchemas);
+  const qrPanelKey = `${schema.platform}:${effectiveAccountType}:${effectiveMethod}`;
 
   useEffect(() => {
     if (schemas || !open) return;
@@ -148,7 +149,12 @@ export function AddAccountDrawer({ open, onClose, onBound, defaultAccountType = 
       {loginUnavailable ? (
         <Alert type="info" showIcon message="账号绑定暂未开放" description={unavailableReason} />
       ) : effectiveMethod === "qr" && (schema.platform === "xhs" || schema.platform === "huitun") ? (
-        <QrLoginPanel platform={schema.platform} accountType={effectiveAccountType} onConfirmed={handleConfirmed} />
+        <QrLoginPanel
+          key={qrPanelKey}
+          platform={schema.platform}
+          accountType={effectiveAccountType}
+          onConfirmed={handleConfirmed}
+        />
       ) : effectiveMethod === "cookie" && (schema.platform === "xhs" || schema.platform === "huitun") ? (
         <CookieImportPanel platform={schema.platform} accountType={effectiveAccountType} onImported={handleConfirmed} />
       ) : effectiveMethod === "password" && schema.platform === "huitun" ? (

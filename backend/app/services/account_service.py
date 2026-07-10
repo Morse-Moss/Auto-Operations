@@ -12,6 +12,8 @@ from backend.app.models import AccountCookieVersion, PlatformAccount
 from xhs_utils.cookie_util import trans_cookies
 
 DATA_ACCOUNT_DISPLAY_NAME = "数据账号"
+PROFILE_SYNC_PENDING = "pending"
+PROFILE_SYNC_PENDING_MESSAGE = "账号已登录，完整资料待同步。"
 DATA_ACCOUNT_INTERNAL_TEXT_REPLACEMENTS = (
     ("第三方数据源", DATA_ACCOUNT_DISPLAY_NAME),
     ("灰豚", DATA_ACCOUNT_DISPLAY_NAME),
@@ -31,6 +33,89 @@ def account_profile_from_user_info(user_info: dict[str, Any]) -> dict[str, Any]:
     if isinstance(profile, dict):
         return profile
     return {}
+
+
+def _account_profile(account: PlatformAccount) -> dict[str, Any]:
+    try:
+        profile = json.loads(account.profile_json or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return profile if isinstance(profile, dict) else {}
+
+
+def _has_value(value: Any) -> bool:
+    return value not in (None, "", [], {})
+
+
+def _account_profile_score(account: PlatformAccount) -> int:
+    profile = _account_profile(account)
+    profile_values = [
+        value
+        for key, value in profile.items()
+        if key != "profile_sync_status" and _has_value(value)
+    ]
+    return (
+        (4 if _has_value(account.nickname) else 0)
+        + (2 if _has_value(account.avatar_url) else 0)
+        + len(profile_values)
+    )
+
+
+def _merge_profile_values(
+    source_profile: dict[str, Any],
+    incoming_profile: dict[str, Any],
+) -> dict[str, Any]:
+    merged = {
+        key: value
+        for key, value in source_profile.items()
+        if key != "profile_sync_status" and _has_value(value)
+    }
+    merged.update(
+        {
+            key: value
+            for key, value in incoming_profile.items()
+            if key != "profile_sync_status" and _has_value(value)
+        }
+    )
+    if incoming_profile.get("profile_sync_status") == PROFILE_SYNC_PENDING:
+        merged["profile_sync_status"] = PROFILE_SYNC_PENDING
+    return merged
+
+
+def _merge_user_info_with_account(
+    user_info: dict[str, Any],
+    source: PlatformAccount | None,
+) -> dict[str, Any]:
+    if source is None:
+        return user_info
+    return {
+        **user_info,
+        "nickname": user_info.get("nickname") or source.nickname or "",
+        "avatar_url": user_info.get("avatar_url") or source.avatar_url or "",
+        "profile": _merge_profile_values(
+            _account_profile(source),
+            account_profile_from_user_info(user_info),
+        ),
+    }
+
+
+def _profile_sync_is_pending(profile: dict[str, Any]) -> bool:
+    return profile.get("profile_sync_status") == PROFILE_SYNC_PENDING
+
+
+def _best_identity_profile_source(
+    accounts: list[PlatformAccount],
+    *,
+    exclude_account_id: int | None = None,
+) -> PlatformAccount | None:
+    candidates = [
+        account
+        for account in accounts
+        if account.id != exclude_account_id
+        and account.status != "deleted"
+        and _account_profile_score(account) > 0
+    ]
+    return max(candidates, key=_account_profile_score, default=None)
 
 
 def decode_cookie_text(value: str) -> dict[str, Any]:
@@ -121,12 +206,7 @@ def _public_data_account_external_id(value: Any, account_id: int | None) -> str:
 
 
 def serialize_account(account: PlatformAccount, action: str | None = None) -> dict[str, Any]:
-    try:
-        profile = json.loads(account.profile_json or "{}")
-        if not isinstance(profile, dict):
-            profile = {}
-    except json.JSONDecodeError:
-        profile = {}
+    profile = _account_profile(account)
 
     nickname = account.nickname
     external_user_id = account.external_user_id
@@ -154,6 +234,64 @@ def serialize_account(account: PlatformAccount, action: str | None = None) -> di
     return payload
 
 
+def serialize_accounts(accounts: list[PlatformAccount]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for account in accounts:
+        payload = serialize_account(account)
+        profile = payload["profile"]
+        has_profile_details = bool(
+            payload["nickname"]
+            or payload["avatar_url"]
+            or any(
+                _has_value(value)
+                for key, value in profile.items()
+                if key != "profile_sync_status"
+            )
+        )
+        used_identity_profile_fallback = False
+        if account.platform == "xhs" and account.external_user_id:
+            identity_accounts = [
+                candidate
+                for candidate in accounts
+                if candidate.user_id == account.user_id
+                and candidate.platform == account.platform
+                and candidate.external_user_id == account.external_user_id
+            ]
+            source = _best_identity_profile_source(
+                identity_accounts,
+                exclude_account_id=account.id,
+            )
+            if source is not None:
+                source_payload = serialize_account(source)
+                used_identity_profile_fallback = bool(
+                    (not _has_value(payload["nickname"]) and _has_value(source_payload["nickname"]))
+                    or (not _has_value(payload["avatar_url"]) and _has_value(source_payload["avatar_url"]))
+                    or any(
+                        key != "profile_sync_status"
+                        and _has_value(value)
+                        and not _has_value(profile.get(key))
+                        for key, value in source_payload["profile"].items()
+                    )
+                )
+                payload["nickname"] = payload["nickname"] or source_payload["nickname"]
+                payload["avatar_url"] = payload["avatar_url"] or source_payload["avatar_url"]
+                payload["profile"] = _merge_profile_values(
+                    source_payload["profile"],
+                    profile,
+                )
+        profile_sync_pending = account.platform == "xhs" and (
+            _profile_sync_is_pending(profile)
+            or (bool(account.external_user_id) and not has_profile_details)
+            or used_identity_profile_fallback
+        )
+        if profile_sync_pending:
+            payload["profile"]["profile_sync_status"] = PROFILE_SYNC_PENDING
+            if account.status == "active" and not payload["status_message"]:
+                payload["status_message"] = PROFILE_SYNC_PENDING_MESSAGE
+        payloads.append(payload)
+    return payloads
+
+
 def upsert_platform_account_from_login(
     *,
     db: Session,
@@ -175,6 +313,22 @@ def upsert_platform_account_from_login(
             )
         )
 
+    if platform == "xhs" and external_user_id:
+        identity_accounts = list(
+            db.scalars(
+                select(PlatformAccount).where(
+                    PlatformAccount.user_id == user_id,
+                    PlatformAccount.platform == platform,
+                    PlatformAccount.external_user_id == external_user_id,
+                    PlatformAccount.status != "deleted",
+                )
+            ).all()
+        )
+        user_info = _merge_user_info_with_account(
+            user_info,
+            _best_identity_profile_source(identity_accounts),
+        )
+
     action = "updated" if account is not None else "created"
     now = shanghai_now()
     if account is None:
@@ -191,8 +345,13 @@ def upsert_platform_account_from_login(
     account.avatar_url = user_info.get("avatar_url", "") or account.avatar_url or ""
     account.external_user_id = external_user_id or account.external_user_id
     account.status = "active"
-    account.status_message = ""
-    account.profile_json = json.dumps(account_profile_from_user_info(user_info), ensure_ascii=False, separators=(",", ":"))
+    profile = account_profile_from_user_info(user_info)
+    account.status_message = (
+        PROFILE_SYNC_PENDING_MESSAGE
+        if _profile_sync_is_pending(profile)
+        else ""
+    )
+    account.profile_json = json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
     account.updated_at = now
     db.flush()
     db.add(

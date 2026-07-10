@@ -106,8 +106,9 @@ function toXhsAccountCardItems(
 ): XhsAccountCardItem[] {
   return accounts.map((account) => {
     const checking = isChecking(account.id);
-    const statusColor = statusColorMap[account.status] || "default";
-    const statusLabel = statusLabelMap[account.status] || account.status;
+    const profileSyncPending = profileValue(account, "profile_sync_status") === "pending";
+    const statusColor = profileSyncPending ? "gold" : statusColorMap[account.status] || "default";
+    const statusLabel = profileSyncPending ? "资料待同步" : statusLabelMap[account.status] || account.status;
     const borderColor = accountBorderColor(account);
 
     return {
