@@ -24,7 +24,7 @@ from backend.app.api.platforms.xhs.pc import (
 from backend.app.adapters.xhs.mappers import XhsContentMapping, map_xhs_content, normalize_xhs_comment_payload
 from backend.app.core.config import get_settings
 from backend.app.core.database import get_db
-from backend.app.core.deps import get_current_user
+from backend.app.core.deps import get_current_tenant_context, get_current_user
 from backend.app.core.time import shanghai_now
 from backend.app.core.security import decrypt_text
 from backend.app.models import AccountCookieVersion, AiDraft, Note, NoteAnalysisResult, NoteAsset, NoteComment, NoteExclusion, PlatformAccount, Tag, User, note_tags
@@ -33,6 +33,7 @@ from backend.app.services.asset_storage_policy import create_signed_media_url, e
 from backend.app.services.feishu_bitable_service import get_or_create_analysis_result
 from backend.app.services.note_analysis_service import analyze_note_system
 from backend.app.services.note_exclusion_service import build_current_cleanup_candidates, mark_notes_excluded
+from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 from backend.app.services import huitun_live_note_source
 from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
 from backend.app.services.xhs_source_image_extractor import (
@@ -44,6 +45,7 @@ from backend.app.services.xhs_source_image_extractor import (
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 SOURCE_IMAGE_IMPORT_TOKEN_TTL_SECONDS = 15 * 60
+NOTE_SYSTEM_ANALYSIS_FEATURE_KEY = "note.system_analysis"
 
 
 class BatchSaveNoteItem(BaseModel):
@@ -751,11 +753,30 @@ def get_notes(
 @router.post("/{note_id}/analysis")
 def analyze_note(
     note_id: int,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     note = _get_owned_note(db, current_user, note_id)
-    result = analyze_note_system(db, user_id=current_user.id, note=note)
+    tenant_context = get_current_tenant_context(current_user=current_user, db=db)
+    usage_service = UsageQuotaService(db)
+    reservation = usage_service.reserve(
+        tenant_id=tenant_context.tenant.id,
+        user_id=current_user.id,
+        feature_key=NOTE_SYSTEM_ANALYSIS_FEATURE_KEY,
+        bucket=CREDITS_BUCKET,
+        amount=credit_cost_for_feature(NOTE_SYSTEM_ANALYSIS_FEATURE_KEY),
+        idempotency_key=usage_idempotency_key(request, f"note.system_analysis:{current_user.id}:{note.id}"),
+        request_summary={"note_id": note.id},
+        resource_type="note",
+        resource_id=note.id,
+    )
+    try:
+        result = analyze_note_system(db, user_id=current_user.id, note=note)
+    except Exception as exc:
+        usage_service.refund(reservation.id, failure_reason=str(exc))
+        raise
+    usage_service.commit(reservation.id)
     return _serialize_analysis_result(result)
 
 

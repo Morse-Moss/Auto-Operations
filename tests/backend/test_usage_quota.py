@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 from datetime import timedelta
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -10,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import encrypt_text
 from backend.app.main import app
-from backend.app.models import AiDraft, ApiLog, ModelConfig, Task, UsageLedger, User
+from backend.app.models import AiDraft, ApiLog, ModelConfig, Note, Task, UsageLedger, User
 from test_support.beta_invites import create_test_invite_code
 
 client = TestClient(app)
@@ -57,6 +58,27 @@ def _register_admin(username: str) -> dict:
 
 def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _create_xhs_note(user_id: int, note_id: str) -> int:
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        note = Note(
+            user_id=user_id,
+            platform_account_id=1,
+            platform="xhs",
+            note_id=note_id,
+            title="System analysis pricing",
+            content="A note used to verify system analysis credit billing.",
+            author_name="author",
+            raw_json={"liked_count": 120},
+        )
+        db.add(note)
+        db.commit()
+        db.refresh(note)
+        return note.id
+    finally:
+        db.close()
 
 
 def _usage_contract():
@@ -146,7 +168,80 @@ def test_usage_pricing_exposes_credit_costs_for_paid_features(tmp_path):
         assert payload["features"]["model_config.test"] == {"action": "model_test", "cost": 1}
         assert payload["features"]["ai.generate_title"] == {"action": "ai_text", "cost": 2}
         assert payload["features"]["ai.image_generate"] == {"action": "image_generation", "cost": 5}
+        assert payload["features"]["note.system_analysis"] == {"action": "ai_text", "cost": 2}
         assert payload["features"]["analysis.report_create"] == {"action": "analysis_report", "cost": 10}
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_note_system_analysis_charges_two_credits(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        registered = _register("note-analysis-credit-owner")
+        note_id = _create_xhs_note(registered["user"]["id"], "note-analysis-credit")
+
+        response = client.post(
+            f"/api/notes/{note_id}/analysis",
+            headers={**_auth_headers(registered["access_token"]), "Idempotency-Key": "note-analysis-credit-once"},
+            json={},
+        )
+
+        assert response.status_code == 200
+        balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 98
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            rows = db.scalars(
+                select(UsageLedger)
+                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits")
+                .order_by(UsageLedger.id)
+            ).all()
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("note.system_analysis", "reserve", 2),
+                ("note.system_analysis.commit", "commit", 2),
+            ]
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_note_system_analysis_failure_refunds_two_credits(tmp_path, monkeypatch):
+    from backend.app.api import notes as notes_api
+
+    def fail_analysis(*args, **kwargs):
+        raise HTTPException(status_code=502, detail="analysis provider unavailable")
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        registered = _register("note-analysis-refund-owner")
+        note_id = _create_xhs_note(registered["user"]["id"], "note-analysis-refund")
+        monkeypatch.setattr(notes_api, "analyze_note_system", fail_analysis)
+
+        response = client.post(
+            f"/api/notes/{note_id}/analysis",
+            headers={**_auth_headers(registered["access_token"]), "Idempotency-Key": "note-analysis-refund-once"},
+            json={},
+        )
+
+        assert response.status_code == 502
+        balance_response = client.get("/api/usage/balance", headers=_auth_headers(registered["access_token"]))
+        assert balance_response.json()["buckets"]["credits"]["remaining"] == 100
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            rows = db.scalars(
+                select(UsageLedger)
+                .where(UsageLedger.user_id == registered["user"]["id"], UsageLedger.bucket == "credits")
+                .order_by(UsageLedger.id)
+            ).all()
+            assert [(row.feature_key, row.operation, row.amount) for row in rows] == [
+                ("note.system_analysis", "reserve", 2),
+                ("note.system_analysis.refund", "refund", 2),
+            ]
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 

@@ -8,13 +8,14 @@ def read_frontend(path: str) -> str:
     return (ROOT / "frontend" / "src" / path).read_text(encoding="utf-8")
 
 
-def test_xhs_content_library_system_analysis_shows_credit_cost():
+def test_xhs_content_library_system_analysis_uses_pricing_feature_cost():
     adapter_source = read_frontend("pages/platforms/xhs/xhs-content-library-adapter.ts")
 
-    assert "SYSTEM_ANALYSIS_CREDIT_COST" in adapter_source
-    assert "消耗 10 积分" in adapter_source
-    assert "selectedCount * SYSTEM_ANALYSIS_CREDIT_COST" in adapter_source
-    assert "消耗 10 积分/条" in adapter_source
+    assert "fetchUsagePricing" in adapter_source
+    assert 'NOTE_SYSTEM_ANALYSIS_FEATURE_KEY = "note.system_analysis"' in adapter_source
+    assert "pricing.features[NOTE_SYSTEM_ANALYSIS_FEATURE_KEY]?.cost" in adapter_source
+    assert "消耗 10 积分" not in adapter_source
+    assert "消耗 10 积分/条" not in adapter_source
 
 
 def test_xhs_content_library_exposes_system_analysis_action():

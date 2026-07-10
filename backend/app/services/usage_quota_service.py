@@ -46,6 +46,7 @@ FEATURE_CREDIT_ACTIONS: dict[str, str] = {
     "ai.polish_text": "ai_text",
     "ai.describe_image": "ai_text",
     "draft.ai_score": "ai_text",
+    "note.system_analysis": "ai_text",
     "ai.image_generate_cover": "image_generation",
     "ai.image_generate": "image_generation",
     "ai.image_generate_async": "image_generation",

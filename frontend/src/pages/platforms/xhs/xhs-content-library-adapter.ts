@@ -34,6 +34,7 @@ import {
   fetchSavedNoteFilterOptions,
   fetchSavedNotes,
   fetchTags,
+  fetchUsagePricing,
   createSavedNoteSourceImageImportScript,
   importSavedNoteSourceImages,
   localizeSavedNoteImages,
@@ -48,11 +49,50 @@ const { Text, Paragraph } = Typography;
 const h = React.createElement;
 
 type XhsNavigate = (path: string) => void;
-const SYSTEM_ANALYSIS_CREDIT_COST = 10;
-const SYSTEM_ANALYSIS_CREDIT_LABEL = "消耗 10 积分";
-const SYSTEM_ANALYSIS_BATCH_CREDIT_LABEL = "消耗 10 积分/条";
+const NOTE_SYSTEM_ANALYSIS_FEATURE_KEY = "note.system_analysis";
 const localizingImageNoteIds = new Set<number>();
 const importingSourceImageNoteIds = new Set<number>();
+let systemAnalysisCreditCostPromise: Promise<number> | null = null;
+
+function loadSystemAnalysisCreditCost(): Promise<number> {
+  if (systemAnalysisCreditCostPromise) return systemAnalysisCreditCostPromise;
+  systemAnalysisCreditCostPromise = fetchUsagePricing()
+    .then((pricing) => {
+      const cost = pricing.features[NOTE_SYSTEM_ANALYSIS_FEATURE_KEY]?.cost;
+      if (!Number.isFinite(cost) || Number(cost) <= 0) throw new Error("System analysis pricing is unavailable");
+      return Number(cost);
+    })
+    .catch((error) => {
+      systemAnalysisCreditCostPromise = null;
+      throw error;
+    });
+  return systemAnalysisCreditCostPromise;
+}
+
+function useSystemAnalysisCreditCost() {
+  const [creditCost, setCreditCost] = React.useState<number | null>(null);
+  const [isPricingLoading, setIsPricingLoading] = React.useState(true);
+  const [pricingError, setPricingError] = React.useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    void loadSystemAnalysisCreditCost()
+      .then((cost) => {
+        if (active) setCreditCost(cost);
+      })
+      .catch(() => {
+        if (active) setPricingError(true);
+      })
+      .finally(() => {
+        if (active) setIsPricingLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return { creditCost, isPricingLoading, pricingError };
+}
 
 function formatSavedTime(value: string): string {
   return formatShanghaiTime(value);
@@ -587,12 +627,18 @@ function SystemAnalysisButton({
   selectedNote: SavedNote;
 }) {
   const [isLoading, setIsLoading] = React.useState(false);
+  const { creditCost, isPricingLoading, pricingError } = useSystemAnalysisCreditCost();
   const hasSystemAnalysis = selectedNote.analysis_result?.source === "system";
+  const creditLabel = creditCost === null ? (pricingError ? "价格加载失败" : "价格加载中") : `消耗 ${creditCost} 积分`;
   async function analyze() {
+    if (creditCost === null) {
+      message.error("系统分析价格加载失败，请刷新后重试。");
+      return;
+    }
     setIsLoading(true);
     controller.setDetailError(null);
-    controller.setDetailActionMessage(`正在调用系统模型分析这篇笔记（${SYSTEM_ANALYSIS_CREDIT_LABEL}），请保持页面打开…`);
-    const loadingMessage = message.loading(`正在进行系统分析（${SYSTEM_ANALYSIS_CREDIT_LABEL}）…`, 0);
+    controller.setDetailActionMessage(`正在调用系统模型分析这篇笔记（${creditLabel}），请保持页面打开…`);
+    const loadingMessage = message.loading(`正在进行系统分析（${creditLabel}）…`, 0);
     try {
       const result = await analyzeSavedNote(selectedNote.id);
       await controller.refreshSelectedItem();
@@ -615,10 +661,11 @@ function SystemAnalysisButton({
     icon: h(PlayCircleOutlined),
     type: hasSystemAnalysis ? "default" : "primary",
     loading: isLoading,
-    disabled: isLoading,
+    disabled: isLoading || isPricingLoading || creditCost === null,
     onClick: () => void analyze(),
     size: "small",
-  }, `${hasSystemAnalysis ? "重新系统分析" : "系统分析"}（${SYSTEM_ANALYSIS_CREDIT_LABEL}）`);
+    title: pricingError ? "系统分析价格加载失败，请刷新后重试。" : undefined,
+  }, `${hasSystemAnalysis ? "重新系统分析" : "系统分析"}（${creditLabel}）`);
 }
 
 function renderBatchSystemAnalysisAction(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
@@ -631,8 +678,9 @@ function BatchSystemAnalysisButton({
   controller: ContentLibraryRenderContext<SavedNote>["controller"];
 }) {
   const [isLoading, setIsLoading] = React.useState(false);
+  const { creditCost, isPricingLoading, pricingError } = useSystemAnalysisCreditCost();
   const selectedCount = controller.selectedItemIds.length;
-  const estimatedCreditCost = selectedCount * SYSTEM_ANALYSIS_CREDIT_COST;
+  const estimatedCreditCost = creditCost === null ? null : selectedCount * creditCost;
 
   async function analyzeSelected() {
     const noteIds = [...controller.selectedItemIds];
@@ -640,10 +688,14 @@ function BatchSystemAnalysisButton({
       controller.setBatchActionMessage("请先选择要系统分析的笔记。");
       return;
     }
+    if (creditCost === null) {
+      controller.setBatchActionMessage("系统分析价格加载失败，请刷新后重试。");
+      return;
+    }
 
     setIsLoading(true);
-    controller.setBatchActionMessage(`正在系统分析 ${noteIds.length} 条笔记，预计消耗 ${noteIds.length * SYSTEM_ANALYSIS_CREDIT_COST} 积分，请保持页面打开…`);
-    const loadingMessage = message.loading(`正在系统分析 ${noteIds.length} 条笔记（预计消耗 ${noteIds.length * SYSTEM_ANALYSIS_CREDIT_COST} 积分）…`, 0);
+    controller.setBatchActionMessage(`正在系统分析 ${noteIds.length} 条笔记，预计消耗 ${noteIds.length * creditCost} 积分，请保持页面打开…`);
+    const loadingMessage = message.loading(`正在系统分析 ${noteIds.length} 条笔记（预计消耗 ${noteIds.length * creditCost} 积分）…`, 0);
     let successCount = 0;
     let failedCount = 0;
 
@@ -680,11 +732,19 @@ function BatchSystemAnalysisButton({
     type: "primary",
     ghost: true,
     loading: isLoading,
-    disabled: isLoading || !selectedCount,
+    disabled: isLoading || isPricingLoading || creditCost === null || !selectedCount,
     onClick: () => void analyzeSelected(),
     size: "small",
-    title: selectedCount ? `预计消耗 ${estimatedCreditCost} 积分` : SYSTEM_ANALYSIS_BATCH_CREDIT_LABEL,
-  }, selectedCount ? `系统分析 ${selectedCount} 条（消耗 ${estimatedCreditCost} 积分）` : `系统分析（${SYSTEM_ANALYSIS_BATCH_CREDIT_LABEL}）`);
+    title: pricingError
+      ? "系统分析价格加载失败，请刷新后重试。"
+      : selectedCount && estimatedCreditCost !== null
+        ? `预计消耗 ${estimatedCreditCost} 积分`
+        : creditCost === null
+          ? "系统分析价格加载中"
+          : `消耗 ${creditCost} 积分/条`,
+  }, selectedCount && estimatedCreditCost !== null
+    ? `系统分析 ${selectedCount} 条（消耗 ${estimatedCreditCost} 积分）`
+    : `系统分析（${creditCost === null ? (pricingError ? "价格加载失败" : "价格加载中") : `消耗 ${creditCost} 积分/条`}）`);
 }
 
 function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
