@@ -172,6 +172,7 @@ const http = axios.create({
 });
 
 const REFRESH_TOKEN_KEY = "spider_xhs_refresh_token";
+const AUTH_REFRESH_TIMEOUT_MS = 10000;
 let accessToken: string | null = null;
 let refreshPromise: Promise<string> | null = null;
 let authExpiredMessageShown = false;
@@ -271,9 +272,13 @@ export async function refreshAccessToken(): Promise<string> {
       throw new Error("Missing refresh token");
     }
 
-    const response = await axios.post<{ access_token: string; token_type: "bearer" }>("/api/auth/refresh", {
-      refresh_token: refreshToken
-    });
+    const response = await axios.post<{ access_token: string; token_type: "bearer" }>(
+      "/api/auth/refresh",
+      {
+        refresh_token: refreshToken
+      },
+      { timeout: AUTH_REFRESH_TIMEOUT_MS }
+    );
     setAccessToken(response.data.access_token);
     authExpiredMessageShown = false;
     return response.data.access_token;
