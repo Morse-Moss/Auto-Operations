@@ -87,6 +87,45 @@ def test_xhs_direct_request_env_temporarily_removes_proxy_variables(monkeypatch)
     assert os.environ["HTTP_PROXY"] == "http://127.0.0.1:10809"
 
 
+def test_xhs_pc_login_sdk_preserves_qrcode_identity_metadata(monkeypatch):
+    from apis import xhs_pc_login_apis
+
+    response = SimpleNamespace(
+        cookies={},
+        json=lambda: {
+            "success": True,
+            "msg": "success",
+            "data": {"codeStatus": 1, "userId": "qr-user-1", "result": {}},
+        },
+    )
+    monkeypatch.setattr(xhs_pc_login_apis, "generate_headers", lambda *_args, **_kwargs: ({}, "{}"))
+    monkeypatch.setattr(xhs_pc_login_apis.requests, "post", lambda *_args, **_kwargs: response)
+
+    api = xhs_pc_login_apis.XHSLoginApi()
+    success, _message, _cookies = api.check_qrcode_status("qr-123", "code-123", {"a1": "temp-a1"})
+
+    assert success is False
+    assert api.last_qrcode_status_data == {"codeStatus": 1, "userId": "qr-user-1", "result": {}}
+
+
+def test_xhs_pc_login_adapter_maps_qrcode_user_id(monkeypatch):
+    from apis.xhs_pc_login_apis import XHSLoginApi
+    from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
+
+    def fake_check_qrcode_status(self, qr_id, code, cookies):
+        assert qr_id == "qr-123"
+        assert code == "code-123"
+        self.last_qrcode_status_data = {"codeStatus": 2, "userId": "qr-user-1"}
+        return True, "success", {**cookies, "web_session": "session-123"}
+
+    monkeypatch.setattr(XHSLoginApi, "check_qrcode_status", fake_check_qrcode_status)
+
+    result = XhsPcLoginAdapter().check_qrcode_status("qr-123", "code-123", {"a1": "temp-a1"})
+
+    assert result["status"] == "confirmed"
+    assert result["user_info"] == {"external_user_id": "qr-user-1"}
+
+
 def test_xhs_adapters_isolate_sdk_calls_from_broken_system_proxy():
     adapter_paths = [
         "backend/app/adapters/xhs/creator_login_adapter.py",
@@ -1370,6 +1409,33 @@ class FailingPcUserInfoAdapter(FakePcLoginAdapter):
         raise RuntimeError("user info endpoint failed")
 
 
+class FailingPcProfilesWithQrIdentityAdapter(FailingPcUserInfoAdapter):
+    def check_qrcode_status(self, qr_id, code, cookies):
+        result = super().check_qrcode_status(qr_id, code, cookies)
+        result["user_info"] = {"external_user_id": "qr-identity-user-1"}
+        return result
+
+
+class TransientPcPollingAdapter(FakePcLoginAdapter):
+    def __init__(self):
+        self.poll_count = 0
+
+    def check_qrcode_status(self, qr_id, code, cookies):
+        assert qr_id == "qr-123"
+        assert code == "code-123"
+        assert cookies == {"a1": "temp-a1"}
+        self.poll_count += 1
+        if self.poll_count == 1:
+            return {"status": "scanned", "cookies": cookies}
+        if self.poll_count == 2:
+            raise requests.exceptions.JSONDecodeError(
+                "Expecting value",
+                "The origin web server returned an invalid or incomplete response to Cloudflare.",
+                0,
+            )
+        return {"status": "confirmed", "cookies": {"a1": "final-a1", "web_session": "session-123"}}
+
+
 class FakePcSelfProfileAdapter:
     def __init__(self, cookies):
         assert cookies == "a1=final-a1; web_session=session-123"
@@ -2121,6 +2187,59 @@ def test_xhs_pc_qrcode_login_session_persists_and_confirms_account(tmp_path):
         app.dependency_overrides.pop(get_creator_login_adapter, None)
 
 
+def test_xhs_pc_qrcode_login_recovers_after_transient_cloudflare_poll_failure(tmp_path):
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.core.security import decrypt_text
+    from backend.app.models import LoginSession
+
+    db_dependency = _override_database(tmp_path)
+    adapter = TransientPcPollingAdapter()
+    app.dependency_overrides[get_pc_login_adapter] = lambda: adapter
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    try:
+        access_token = _register_and_get_access_token("qr-transient-cloudflare-operator")
+        created = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+
+        scanned_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert scanned_response.status_code == 200
+        assert scanned_response.json()["status"] == "scanned"
+
+        transient_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert transient_response.status_code == 200
+        assert transient_response.json()["status"] == "scanned"
+        assert transient_response.json()["account"] is None
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.get(LoginSession, created["session_id"])
+            assert stored_session.status == "scanned"
+            assert decrypt_text(stored_session.encrypted_temp_cookies) == '{"a1":"temp-a1"}'
+        finally:
+            db.close()
+
+        confirmed_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert confirmed_response.status_code == 200
+        assert confirmed_response.json()["status"] == "confirmed"
+        assert confirmed_response.json()["account"]["nickname"] == "cat"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
 def test_xhs_pc_qrcode_login_updates_existing_account_for_same_external_user(tmp_path):
     from backend.app.api.accounts import get_pc_account_adapter
     from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
@@ -2227,6 +2346,44 @@ def test_xhs_pc_qrcode_login_falls_back_to_self_profile_when_confirmed_user_info
             assert account.external_user_id == "self-profile-user-1"
             cookie_version = db.query(AccountCookieVersion).one()
             assert decrypt_text(cookie_version.encrypted_cookies) == '{"a1":"final-a1","web_session":"session-123"}'
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_pc_qrcode_login_uses_qrcode_identity_when_profile_fetches_fail(tmp_path, monkeypatch):
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_pc_login_adapter] = lambda: FailingPcProfilesWithQrIdentityAdapter()
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    monkeypatch.setattr("backend.app.api.login_sessions.XhsPcApiAdapter", FailingPcSelfProfileAdapter)
+    try:
+        access_token = _register_and_get_access_token("qr-identity-fallback-operator")
+        created = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+
+        poll_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert poll_response.status_code == 200
+        payload = poll_response.json()
+        assert payload["status"] == "confirmed"
+        assert payload["account"]["external_user_id"] == "qr-identity-user-1"
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.query(PlatformAccount).one()
+            assert account.external_user_id == "qr-identity-user-1"
         finally:
             db.close()
     finally:

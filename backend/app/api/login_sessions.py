@@ -5,6 +5,7 @@ import io
 import json
 import logging
 
+import requests
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -123,13 +124,23 @@ def _pc_user_info_from_self_profile(cookies: dict) -> dict:
     return user_info
 
 
-def _get_pc_user_info_after_confirm(adapter: XhsPcLoginAdapter, cookies: dict, failure_detail: str) -> dict:
+def _get_pc_user_info_after_confirm(
+    adapter: XhsPcLoginAdapter,
+    cookies: dict,
+    failure_detail: str,
+    fallback_user_info: dict | None = None,
+) -> dict:
     try:
         return adapter.get_user_info(cookies)
     except Exception as primary_exc:
         try:
             return _pc_user_info_from_self_profile(cookies)
         except Exception as fallback_exc:
+            fallback_external_user_id = str(
+                (fallback_user_info or {}).get("external_user_id") or ""
+            ).strip()
+            if fallback_external_user_id:
+                return {"external_user_id": fallback_external_user_id}
             logger.warning(
                 "Failed to fetch XHS PC profile after confirmed login; primary=%s fallback=%s",
                 primary_exc,
@@ -279,13 +290,29 @@ def login_session(
     if session.sub_type == "pc":
         if not session.code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported login session")
-        result = pc_adapter.check_qrcode_status(session.qr_id, session.code, cookies)
+        try:
+            result = pc_adapter.check_qrcode_status(session.qr_id, session.code, cookies)
+        except requests.RequestException as exc:
+            logger.warning(
+                "Transient XHS PC QR polling failure; session_id=%s status=%s error_type=%s",
+                session.id,
+                session.status,
+                type(exc).__name__,
+            )
+            return {
+                "session_id": session.id,
+                "status": session.status,
+                "qr_url": session.qr_url,
+                "account": None,
+                "creator_account": None,
+            }
         account_sub_type = "pc"
         user_info = (
             _get_pc_user_info_after_confirm(
                 pc_adapter,
                 result["cookies"],
                 "账号登录已确认，但读取账号资料失败，请刷新二维码后重试。",
+                fallback_user_info=result.get("user_info"),
             )
             if result["status"] == "confirmed"
             else None

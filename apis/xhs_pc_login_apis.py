@@ -18,6 +18,7 @@ class XHSLoginApi:
         self.base_url = "https://edith.xiaohongshu.com"
         self.as_url = "https://as.xiaohongshu.com"
         self.home_url = 'https://www.xiaohongshu.com/explore'
+        self.last_qrcode_status_data = {}
 
     @staticmethod
     def _get_sec_headers():
@@ -150,7 +151,9 @@ class XHSLoginApi:
             cookies[key] = value
 
         res = resp.json()
-        status = (res.get('data') or {}).get('codeStatus')
+        status_data = res.get('data') or {}
+        self.last_qrcode_status_data = dict(status_data) if isinstance(status_data, dict) else {}
+        status = self.last_qrcode_status_data.get('codeStatus')
         if status is None:
             return False, res.get('msg', '二维码状态响应缺少 codeStatus'), cookies
 

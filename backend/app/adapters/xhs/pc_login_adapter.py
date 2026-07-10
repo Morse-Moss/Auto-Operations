@@ -33,7 +33,11 @@ class XhsPcLoginAdapter:
             status = "expired"
         if "确认" in message or "confirm" in message.lower():
             status = "scanned"
-        return {"status": status, "cookies": updated_cookies}
+        result: dict[str, Any] = {"status": status, "cookies": updated_cookies}
+        qrcode_user_id = str(api.last_qrcode_status_data.get("userId") or "").strip()
+        if qrcode_user_id:
+            result["user_info"] = {"external_user_id": qrcode_user_id}
+        return result
 
     def get_user_info(self, cookies: dict[str, Any]) -> dict[str, Any]:
         with direct_xhs_request_env():
