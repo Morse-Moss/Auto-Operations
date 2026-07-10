@@ -56,6 +56,8 @@
 | `image_generation` | AI 图片(每张) | 5 | 实测 0.11 元/张,毛利 ~70% |
 | `analysis_report` | 分析报告(每份) | 10 | 复合动作(多搜索 + LLM 长输出) |
 
+内容库单篇系统分析使用 `feature_key=note.system_analysis`,映射 `ai_text`,固定 **2 积分/条**。`analysis_report=10` 只用于完整分析报告的生成或重跑,不用于单篇笔记分析。
+
 扣分为固定值,**不按 token/时长浮动**。上游波动(RH 币 2~7、token 长短)由毛利吸收,不传导给用户。
 
 ### 4.3 免费动作
