@@ -23,6 +23,7 @@ from backend.app.services.account_service import (
     decode_cookie_text,
     enrich_user_info_with_xhs_self_profile,
     serialize_account,
+    serialize_accounts,
     upsert_platform_account_from_login,
 )
 from backend.app.services.huitun_account_service import HUITUN_INVALID_LOGIN_MESSAGE, validate_huitun_login_state
@@ -109,7 +110,7 @@ def get_accounts(
         statement = statement.where(PlatformAccount.platform == platform)
     accounts = db.scalars(statement.order_by(PlatformAccount.created_at.desc())).all()
     return paginated(
-        [serialize_account(account) for account in accounts],
+        serialize_accounts(accounts),
         page,
         page_size,
     )

@@ -2392,6 +2392,267 @@ def test_xhs_pc_qrcode_login_uses_qrcode_identity_when_profile_fetches_fail(tmp_
         app.dependency_overrides.pop(get_creator_login_adapter, None)
 
 
+def test_xhs_accounts_list_reuses_matching_identity_profile_without_mutating_storage(tmp_path):
+    import json
+
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, User
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        access_token = _register_and_get_access_token("identity-profile-list-owner")
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            user = db.query(User).filter(User.username == "identity-profile-list-owner").one()
+            creator_account = PlatformAccount(
+                user_id=user.id,
+                platform="xhs",
+                sub_type="creator",
+                external_user_id="shared-xhs-user",
+                nickname="Morse",
+                avatar_url="https://example.com/morse.png",
+                status="active",
+                profile_json=json.dumps(
+                    {"followers": "88", "following": "12", "likes": "301"},
+                    ensure_ascii=False,
+                ),
+            )
+            pc_account = PlatformAccount(
+                user_id=user.id,
+                platform="xhs",
+                sub_type="pc",
+                external_user_id="shared-xhs-user",
+                nickname="",
+                avatar_url="",
+                status="active",
+                profile_json="{}",
+            )
+            db.add_all([creator_account, pc_account])
+            db.commit()
+            pc_account_id = pc_account.id
+        finally:
+            db.close()
+
+        response = client.get(
+            "/api/accounts?platform=xhs",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        pc_payload = next(item for item in response.json()["items"] if item["sub_type"] == "pc")
+        assert pc_payload["nickname"] == "Morse"
+        assert pc_payload["avatar_url"] == "https://example.com/morse.png"
+        assert pc_payload["profile"]["followers"] == "88"
+        assert pc_payload["profile"]["profile_sync_status"] == "pending"
+        assert pc_payload["status"] == "active"
+        assert pc_payload["status_message"] == "账号已登录，完整资料待同步。"
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_pc_account = db.get(PlatformAccount, pc_account_id)
+            assert stored_pc_account.nickname == ""
+            assert stored_pc_account.profile_json == "{}"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_xhs_identity_only_upsert_reuses_matching_account_profile(tmp_path):
+    import json
+
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, User
+    from backend.app.services.account_service import upsert_platform_account_from_login
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        _register_and_get_access_token("identity-profile-upsert-owner")
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            user = db.query(User).filter(User.username == "identity-profile-upsert-owner").one()
+            db.add(
+                PlatformAccount(
+                    user_id=user.id,
+                    platform="xhs",
+                    sub_type="creator",
+                    external_user_id="shared-upsert-user",
+                    nickname="Morse",
+                    avatar_url="https://example.com/morse.png",
+                    status="active",
+                    profile_json=json.dumps({"followers": "88"}, ensure_ascii=False),
+                )
+            )
+            db.commit()
+
+            account, action = upsert_platform_account_from_login(
+                db=db,
+                user_id=user.id,
+                platform="xhs",
+                sub_type="pc",
+                user_info={
+                    "external_user_id": "shared-upsert-user",
+                    "profile": {"profile_sync_status": "pending"},
+                },
+                cookies_text='{"a1":"final-a1","web_session":"session-123"}',
+            )
+            db.commit()
+
+            assert action == "created"
+            assert account.nickname == "Morse"
+            assert account.avatar_url == "https://example.com/morse.png"
+            assert json.loads(account.profile_json)["followers"] == "88"
+            assert json.loads(account.profile_json)["profile_sync_status"] == "pending"
+            assert account.status == "active"
+            assert account.status_message == "账号已登录，完整资料待同步。"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_xhs_accounts_with_empty_external_ids_do_not_share_profile():
+    import json
+
+    from backend.app.models import PlatformAccount
+    from backend.app.services.account_service import serialize_accounts
+
+    source = PlatformAccount(
+        id=101,
+        user_id=1,
+        platform="xhs",
+        sub_type="creator",
+        external_user_id="",
+        nickname="不应复用的账号",
+        avatar_url="https://example.com/wrong.png",
+        status="active",
+        profile_json=json.dumps({"followers": "999"}, ensure_ascii=False),
+    )
+    target = PlatformAccount(
+        id=102,
+        user_id=1,
+        platform="xhs",
+        sub_type="pc",
+        external_user_id="",
+        nickname="",
+        avatar_url="",
+        status="active",
+        profile_json=json.dumps({"profile_sync_status": "pending"}, ensure_ascii=False),
+    )
+
+    target_payload = next(item for item in serialize_accounts([source, target]) if item["id"] == target.id)
+
+    assert target_payload["nickname"] == ""
+    assert target_payload["avatar_url"] == ""
+    assert "followers" not in target_payload["profile"]
+
+
+def test_xhs_partial_account_profile_fills_only_missing_fields():
+    import json
+
+    from backend.app.models import PlatformAccount
+    from backend.app.services.account_service import serialize_accounts
+
+    source = PlatformAccount(
+        id=201,
+        user_id=1,
+        platform="xhs",
+        sub_type="creator",
+        external_user_id="shared-partial-user",
+        nickname="资料源昵称",
+        avatar_url="https://example.com/source.png",
+        status="active",
+        profile_json=json.dumps(
+            {"followers": "88", "likes": "301"},
+            ensure_ascii=False,
+        ),
+    )
+    target = PlatformAccount(
+        id=202,
+        user_id=1,
+        platform="xhs",
+        sub_type="pc",
+        external_user_id="shared-partial-user",
+        nickname="当前昵称",
+        avatar_url="",
+        status="active",
+        profile_json=json.dumps({"likes": "500"}, ensure_ascii=False),
+    )
+
+    target_payload = next(item for item in serialize_accounts([source, target]) if item["id"] == target.id)
+
+    assert target_payload["nickname"] == "当前昵称"
+    assert target_payload["avatar_url"] == "https://example.com/source.png"
+    assert target_payload["profile"]["followers"] == "88"
+    assert target_payload["profile"]["likes"] == "500"
+    assert target_payload["profile"]["profile_sync_status"] == "pending"
+    assert target_payload["status_message"] == "账号已登录，完整资料待同步。"
+
+
+def test_xhs_complete_profile_upsert_preserves_old_non_empty_values_without_pending(tmp_path):
+    import json
+
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, User
+    from backend.app.services.account_service import upsert_platform_account_from_login
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        _register_and_get_access_token("complete-profile-upsert-owner")
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            user = db.query(User).filter(User.username == "complete-profile-upsert-owner").one()
+            db.add(
+                PlatformAccount(
+                    user_id=user.id,
+                    platform="xhs",
+                    sub_type="creator",
+                    external_user_id="complete-profile-user",
+                    nickname="旧昵称",
+                    avatar_url="https://example.com/old.png",
+                    status="active",
+                    profile_json=json.dumps(
+                        {
+                            "followers": "88",
+                            "likes": "301",
+                            "profile_sync_status": "pending",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+
+            account, action = upsert_platform_account_from_login(
+                db=db,
+                user_id=user.id,
+                platform="xhs",
+                sub_type="pc",
+                user_info={
+                    "external_user_id": "complete-profile-user",
+                    "nickname": "新昵称",
+                    "avatar_url": "https://example.com/new.png",
+                    "profile": {"followers": "", "following": "12"},
+                },
+                cookies_text='{"a1":"complete-a1","web_session":"complete-session"}',
+            )
+            db.commit()
+
+            profile = json.loads(account.profile_json)
+            assert action == "created"
+            assert account.nickname == "新昵称"
+            assert account.avatar_url == "https://example.com/new.png"
+            assert profile["followers"] == "88"
+            assert profile["following"] == "12"
+            assert profile["likes"] == "301"
+            assert "profile_sync_status" not in profile
+            assert account.status_message == ""
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_xhs_pc_qrcode_login_returns_controlled_error_when_confirmed_profile_fetch_fails(tmp_path, monkeypatch):
     from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
     from backend.app.core.database import get_db
