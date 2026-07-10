@@ -949,6 +949,8 @@ export type SavedNote = {
   cover_url?: string;
   video_url?: string;
   video_addr?: string;
+  media_type?: string;
+  note_type?: string;
   created_at: string;
   engagement_metrics?: {
     likes: number;

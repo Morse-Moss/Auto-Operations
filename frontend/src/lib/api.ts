@@ -1028,6 +1028,7 @@ export async function fetchDataAcquisitionCandidates(params?: {
   run_id?: number;
   run_ids?: number[];
   status?: string;
+  sort_by?: string;
   page?: number;
   page_size?: number;
 }): Promise<Paginated<DataAcquisitionCandidate>> {

@@ -93,6 +93,26 @@ def sample_note_row(note_id: str = "note-1", title: str = "浴缸收纳") -> dic
     }
 
 
+def sample_metric_note_row(
+    note_id: str,
+    title: str,
+    *,
+    likes: int = 0,
+    collects: int = 0,
+    comments: int = 0,
+    shares: int = 0,
+) -> dict[str, Any]:
+    row = sample_note_row(note_id, title)
+    row["metrics"] = {
+        "like_count": likes,
+        "collect_count": collects,
+        "comment_count": comments,
+        "share_count": shares,
+        "interaction_count": likes + collects + comments + shares,
+    }
+    return row
+
+
 def sample_unresolved_note_row(note_id: str = "11548571364", title: str = "浴缸收纳") -> dict[str, Any]:
     row = sample_note_row(note_id, title)
     row["original_url"] = ""
@@ -649,6 +669,40 @@ def test_candidate_list_filters_multiple_runs_and_exposes_source_keyword(tmp_pat
         assert {item["platform_note_id"] for item in items} == {"note-bathtub", "note-small-bathtub"}
         assert {item["source_keyword"] for item in items} == {"bathtub", "small bathtub"}
         assert all(item["run_id"] in {first_run["id"], second_run["id"]} for item in items)
+    finally:
+        app.dependency_overrides.pop(get_data_acquisition_note_source, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_candidate_list_sorts_by_metrics_across_full_result_set(tmp_path):
+    SessionLocal = override_database(tmp_path)
+    try:
+        _user_id, account_id, headers = create_user_account_and_headers(SessionLocal)
+        run, _fake = create_successful_run(
+            SessionLocal=SessionLocal,
+            headers=headers,
+            account_id=account_id,
+            rows=[
+                sample_metric_note_row("note-oldest-middle", "Middle likes", likes=30, collects=1, comments=1, shares=1),
+                sample_metric_note_row("note-most-engaged", "Most engagement", likes=20, collects=80, comments=12, shares=8),
+                sample_metric_note_row("note-most-liked", "Most likes", likes=90, collects=2, comments=2, shares=2),
+            ],
+            keyword="bathtub",
+        )
+
+        likes_response = client.get(
+            f"/api/xhs/data-acquisition/candidates?run_id={run['id']}&status=pending&sort_by=likes&page_size=1",
+            headers=headers,
+        )
+        engagement_response = client.get(
+            f"/api/xhs/data-acquisition/candidates?run_id={run['id']}&status=pending&sort_by=engagement&page_size=1",
+            headers=headers,
+        )
+
+        assert likes_response.status_code == 200
+        assert engagement_response.status_code == 200
+        assert likes_response.json()["items"][0]["platform_note_id"] == "note-most-liked"
+        assert engagement_response.json()["items"][0]["platform_note_id"] == "note-most-engaged"
     finally:
         app.dependency_overrides.pop(get_data_acquisition_note_source, None)
         app.dependency_overrides.pop(get_db, None)

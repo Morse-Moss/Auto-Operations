@@ -89,6 +89,47 @@ def _parse_run_ids(value: Optional[str]) -> list[int]:
     return result
 
 
+def _candidate_metric(candidate: DataAcquisitionCandidate, key: str) -> int:
+    metrics = candidate.metrics_json if isinstance(candidate.metrics_json, dict) else {}
+    metric_keys = {
+        "likes": "like_count",
+        "collects": "collect_count",
+        "comments": "comment_count",
+        "shares": "share_count",
+        "engagement": "interaction_count",
+    }
+    metric_key = metric_keys.get(key)
+    if not metric_key:
+        return 0
+    if key == "engagement":
+        fallback = sum(_safe_int(metrics.get(name)) for name in ("like_count", "collect_count", "comment_count", "share_count"))
+        return _safe_int(metrics.get(metric_key)) or fallback
+    return _safe_int(metrics.get(metric_key))
+
+
+def _safe_int(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.replace(",", "").strip()))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _sort_candidates(candidates: list[DataAcquisitionCandidate], sort_by: str) -> list[DataAcquisitionCandidate]:
+    if sort_by == "latest":
+        return sorted(candidates, key=lambda item: (item.created_at, item.id), reverse=True)
+    return sorted(
+        candidates,
+        key=lambda item: (_candidate_metric(item, sort_by), item.created_at, item.id),
+        reverse=True,
+    )
+
+
 @router.post("/runs")
 def create_data_acquisition_run(
     payload: DataAcquisitionRunRequest,
@@ -202,6 +243,7 @@ def list_data_acquisition_candidates(
     run_id: Optional[int] = None,
     run_ids: Optional[str] = None,
     status_filter: Optional[str] = Query(default="pending", alias="status"),
+    sort_by: Literal["latest", "engagement", "likes", "collects", "comments", "shares"] = "latest",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=500),
     current_user: User = Depends(get_current_user),
@@ -222,6 +264,7 @@ def list_data_acquisition_candidates(
     candidates = db.scalars(
         statement.order_by(DataAcquisitionCandidate.created_at.desc(), DataAcquisitionCandidate.id.desc())
     ).all()
+    candidates = _sort_candidates(candidates, sort_by)
     return paginated([serialize_candidate(candidate, include_admin_debug=False) for candidate in candidates], page, page_size)
 
 

@@ -185,6 +185,23 @@ def _note_engagement_metrics(note: Note, mapping_cache: dict[int, XhsContentMapp
     return _legacy_note_engagement_metrics(note)
 
 
+def _is_video_type(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return int(value) == 1
+    text = str(value).strip().lower()
+    return text == "1" or "video" in text or "视频" in text
+
+
+def _note_media_type(*, mapping: XhsContentMapping | None, video_assets: list[NoteAsset], response_video_url: str) -> str:
+    if video_assets or response_video_url:
+        return "video"
+    if mapping is not None and _is_video_type(mapping.note_type):
+        return "video"
+    return "image"
+
+
 def _note_metric(note: Note, sort_by: str, mapping_cache: dict[int, XhsContentMapping | None] | None = None) -> int:
     metrics = _note_engagement_metrics(note, mapping_cache)
     if sort_by == "likes":
@@ -330,6 +347,7 @@ def _serialize_note(
     response_asset_urls = asset_urls or mapped_asset_urls
     response_cover_url = _asset_display_url(image_assets[0], note.user_id) if image_assets else (mapped_cover_url or raw_cover)
     response_video_url = _asset_display_url(video_assets[0], note.user_id) if video_assets else mapped_video_url
+    media_type = _note_media_type(mapping=mapping, video_assets=video_assets, response_video_url=response_video_url)
     marks = (top20_marks or {}).get(note.id, [])
     feishu_analysis = _get_feishu_analysis_result(db, note.id)
     effective_analysis = _get_effective_analysis_result(db, note.id)
@@ -346,6 +364,8 @@ def _serialize_note(
         "cover_url": response_cover_url,
         "video_url": response_video_url,
         "video_addr": response_video_url,
+        "media_type": media_type,
+        "note_type": "video" if media_type == "video" else "normal",
         "created_at": note.created_at.isoformat(),
         "engagement_metrics": _note_engagement_metrics(note, mapping_cache),
         "analysis_marks": marks,

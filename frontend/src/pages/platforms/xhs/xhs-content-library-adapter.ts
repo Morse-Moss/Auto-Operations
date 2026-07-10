@@ -48,6 +48,9 @@ const { Text, Paragraph } = Typography;
 const h = React.createElement;
 
 type XhsNavigate = (path: string) => void;
+const SYSTEM_ANALYSIS_CREDIT_COST = 10;
+const SYSTEM_ANALYSIS_CREDIT_LABEL = "消耗 10 积分";
+const SYSTEM_ANALYSIS_BATCH_CREDIT_LABEL = "消耗 10 积分/条";
 const localizingImageNoteIds = new Set<number>();
 const importingSourceImageNoteIds = new Set<number>();
 
@@ -56,8 +59,20 @@ function formatSavedTime(value: string): string {
 }
 
 function getRawNoteType(note: SavedNote): string {
-  const type = note.raw_json?.model_type ?? note.raw_json?.type;
-  return typeof type === "string" ? type : "note";
+  const type = note.raw_json?.model_type ?? note.raw_json?.type ?? note.raw_json?.note_type ?? note.raw_json?.noteType;
+  return type === undefined || type === null ? "note" : String(type);
+}
+
+function isVideoType(value: unknown): boolean {
+  const text = String(value ?? "").trim().toLowerCase();
+  return text === "1" || text.includes("video") || text.includes("视频");
+}
+
+function getSavedNoteMediaType(note: SavedNote): "video" | "image" {
+  if (isVideoType(note.media_type) || isVideoType(note.note_type)) return "video";
+  if (note.video_url || note.video_addr) return "video";
+  if (isVideoType(getRawNoteType(note))) return "video";
+  return "image";
 }
 
 function getNotePublishTime(note: SavedNote): string {
@@ -264,7 +279,8 @@ function createTableColumns(context: ContentLibraryRenderContext<SavedNote>): Co
 function renderCardGrid(context: ContentLibraryRenderContext<SavedNote>) {
   return h(Row, { gutter: [16, 16] }, context.controller.items.map((note) => {
     const cover = getSavedNoteCoverUrl(note);
-    const kind = getRawNoteType(note);
+    const mediaType = getSavedNoteMediaType(note);
+    const isVideo = mediaType === "video";
     const publishTime = getNotePublishTime(note);
     const engagement = getNoteEngagement(note);
     return h(Col, { xs: 12, sm: 8, md: 6, lg: 4, xl: 4, key: note.id },
@@ -278,7 +294,7 @@ function renderCardGrid(context: ContentLibraryRenderContext<SavedNote>) {
           cover
             ? h("img", { src: cover, alt: note.title, referrerPolicy: "no-referrer", style: { width: "100%", aspectRatio: "1/1", objectFit: "cover", display: "block" } })
             : h("div", { style: { width: "100%", aspectRatio: "1/1", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.2)", fontSize: 28 } }, h(PictureOutlined)),
-          h(Tag, { color: kind.includes("video") ? "purple" : "blue", style: { position: "absolute", top: 8, right: 8 }, icon: kind.includes("video") ? h(PlayCircleOutlined) : h(PictureOutlined) }, kind.includes("video") ? "视频" : "图文"),
+          h(Tag, { color: isVideo ? "purple" : "blue", style: { position: "absolute", top: 8, right: 8 }, icon: isVideo ? h(PlayCircleOutlined) : h(PictureOutlined) }, isVideo ? "视频" : "图文"),
         ),
       },
       h(Card.Meta, {
@@ -575,8 +591,8 @@ function SystemAnalysisButton({
   async function analyze() {
     setIsLoading(true);
     controller.setDetailError(null);
-    controller.setDetailActionMessage("正在调用系统模型分析这篇笔记，请保持页面打开…");
-    const loadingMessage = message.loading("正在进行系统分析…", 0);
+    controller.setDetailActionMessage(`正在调用系统模型分析这篇笔记（${SYSTEM_ANALYSIS_CREDIT_LABEL}），请保持页面打开…`);
+    const loadingMessage = message.loading(`正在进行系统分析（${SYSTEM_ANALYSIS_CREDIT_LABEL}）…`, 0);
     try {
       const result = await analyzeSavedNote(selectedNote.id);
       await controller.refreshSelectedItem();
@@ -602,7 +618,7 @@ function SystemAnalysisButton({
     disabled: isLoading,
     onClick: () => void analyze(),
     size: "small",
-  }, hasSystemAnalysis ? "重新系统分析" : "系统分析");
+  }, `${hasSystemAnalysis ? "重新系统分析" : "系统分析"}（${SYSTEM_ANALYSIS_CREDIT_LABEL}）`);
 }
 
 function renderBatchSystemAnalysisAction(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {
@@ -616,6 +632,7 @@ function BatchSystemAnalysisButton({
 }) {
   const [isLoading, setIsLoading] = React.useState(false);
   const selectedCount = controller.selectedItemIds.length;
+  const estimatedCreditCost = selectedCount * SYSTEM_ANALYSIS_CREDIT_COST;
 
   async function analyzeSelected() {
     const noteIds = [...controller.selectedItemIds];
@@ -625,8 +642,8 @@ function BatchSystemAnalysisButton({
     }
 
     setIsLoading(true);
-    controller.setBatchActionMessage(`正在系统分析 ${noteIds.length} 条笔记，请保持页面打开…`);
-    const loadingMessage = message.loading(`正在系统分析 ${noteIds.length} 条笔记…`, 0);
+    controller.setBatchActionMessage(`正在系统分析 ${noteIds.length} 条笔记，预计消耗 ${noteIds.length * SYSTEM_ANALYSIS_CREDIT_COST} 积分，请保持页面打开…`);
+    const loadingMessage = message.loading(`正在系统分析 ${noteIds.length} 条笔记（预计消耗 ${noteIds.length * SYSTEM_ANALYSIS_CREDIT_COST} 积分）…`, 0);
     let successCount = 0;
     let failedCount = 0;
 
@@ -666,7 +683,8 @@ function BatchSystemAnalysisButton({
     disabled: isLoading || !selectedCount,
     onClick: () => void analyzeSelected(),
     size: "small",
-  }, selectedCount ? `系统分析 ${selectedCount} 条` : "系统分析");
+    title: selectedCount ? `预计消耗 ${estimatedCreditCost} 积分` : SYSTEM_ANALYSIS_BATCH_CREDIT_LABEL,
+  }, selectedCount ? `系统分析 ${selectedCount} 条（消耗 ${estimatedCreditCost} 积分）` : `系统分析（${SYSTEM_ANALYSIS_BATCH_CREDIT_LABEL}）`);
 }
 
 function renderFeishuToolbar(context: { controller: ContentLibraryRenderContext<SavedNote>["controller"] }) {

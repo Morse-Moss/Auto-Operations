@@ -58,6 +58,15 @@ const candidateStatusOptions = [
   { value: "imported", label: "已入库" },
   { value: "all", label: "全部候选" },
 ];
+const candidateSortOptions = [
+  { value: "latest", label: "按最新" },
+  { value: "engagement", label: "按总互动" },
+  { value: "likes", label: "按点赞" },
+  { value: "collects", label: "按收藏" },
+  { value: "comments", label: "按评论" },
+  { value: "shares", label: "按转发" },
+];
+type CandidateSortBy = (typeof candidateSortOptions)[number]["value"];
 const defaultReadiness: DataAcquisitionReadiness = {
   available: false,
   status: "checking",
@@ -134,6 +143,7 @@ export function XhsDataAcquisitionPage() {
   const [candidates, setCandidates] = useState<DataAcquisitionCandidate[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([]);
   const [candidateStatus, setCandidateStatus] = useState<string>(searchParams.get("status") || "pending");
+  const [candidateSortBy, setCandidateSortBy] = useState<CandidateSortBy>(searchParams.get("sort_by") || "latest");
   const [selectedRunId, setSelectedRunId] = useState<number | undefined>(parseRunId(searchParams.get("run_id")));
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>(parseRunIds(searchParams.get("run_ids")));
   const [loading, setLoading] = useState(false);
@@ -172,7 +182,7 @@ export function XhsDataAcquisitionPage() {
   const selectedAllPending = selectedCandidateIds.length > 0 && selectedPendingCount === selectedCandidateIds.length;
   const selectedAllExcluded = selectedCandidateIds.length > 0 && selectedExcludedCount === selectedCandidateIds.length;
 
-  function syncUrl(nextRunId: number | undefined, nextStatus: string, nextRunIds = selectedRunIds) {
+  function syncUrl(nextRunId: number | undefined, nextStatus: string, nextRunIds = selectedRunIds, nextSortBy = candidateSortBy) {
     const next = new URLSearchParams(searchParams);
     if (nextRunIds.length) {
       next.delete("run_id");
@@ -186,10 +196,12 @@ export function XhsDataAcquisitionPage() {
     }
     if (nextStatus && nextStatus !== "pending") next.set("status", nextStatus);
     else next.delete("status");
+    if (nextSortBy && nextSortBy !== "latest") next.set("sort_by", nextSortBy);
+    else next.delete("sort_by");
     setSearchParams(next, { replace: true });
   }
 
-  async function loadPageData(nextRunId = selectedRunId, nextStatus = candidateStatus, nextRunIds = selectedRunIds) {
+  async function loadPageData(nextRunId = selectedRunId, nextStatus = candidateStatus, nextRunIds = selectedRunIds, nextSortBy = candidateSortBy) {
     setLoading(true);
     try {
       const statusParam = nextStatus === "all" ? undefined : nextStatus;
@@ -200,6 +212,7 @@ export function XhsDataAcquisitionPage() {
           run_id: nextRunIds.length ? undefined : nextRunId,
           run_ids: nextRunIds.length ? nextRunIds : undefined,
           status: statusParam,
+          sort_by: nextSortBy,
           page_size: nextRunIds.length ? 500 : 50,
         }),
       ]);
@@ -215,7 +228,7 @@ export function XhsDataAcquisitionPage() {
   }
 
   useEffect(() => {
-    void loadPageData(selectedRunId, candidateStatus, selectedRunIds);
+    void loadPageData(selectedRunId, candidateStatus, selectedRunIds, candidateSortBy);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -237,13 +250,19 @@ export function XhsDataAcquisitionPage() {
     return () => { cancelled = true; };
   }, [keywordGroupId]);
 
-  function updateCandidateView(nextRunId: number | undefined, nextStatus = candidateStatus, nextRunIds: number[] = []) {
+  function updateCandidateView(
+    nextRunId: number | undefined,
+    nextStatus = candidateStatus,
+    nextRunIds: number[] = [],
+    nextSortBy = candidateSortBy,
+  ) {
     setSelectedRunId(nextRunId);
     setSelectedRunIds(nextRunIds);
     setCandidateStatus(nextStatus);
+    setCandidateSortBy(nextSortBy);
     setSelectedCandidateIds([]);
-    syncUrl(nextRunId, nextStatus, nextRunIds);
-    void loadPageData(nextRunId, nextStatus, nextRunIds);
+    syncUrl(nextRunId, nextStatus, nextRunIds, nextSortBy);
+    void loadPageData(nextRunId, nextStatus, nextRunIds, nextSortBy);
   }
 
   async function handleCreateRun(values: { keyword: string; limit: number; sort: string; note_type: string }) {
@@ -566,6 +585,12 @@ export function XhsDataAcquisitionPage() {
                   style={{ width: 120 }}
                   options={candidateStatusOptions}
                   onChange={(value) => updateCandidateView(selectedRunId, value, selectedRunIds)}
+                />
+                <Select
+                  value={candidateSortBy}
+                  style={{ width: 128 }}
+                  options={candidateSortOptions}
+                  onChange={(value) => updateCandidateView(selectedRunId, candidateStatus, selectedRunIds, value)}
                 />
                 <Button icon={<RollbackOutlined />} onClick={() => void handleRestoreSelected()} disabled={!selectedAllExcluded} loading={actionLoading}>
                   恢复

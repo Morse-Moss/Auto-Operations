@@ -150,6 +150,9 @@ def test_xhs_data_acquisition_keyword_group_links_open_data_account_workbench():
     assert "createDataAcquisitionRun" in source
     assert "run_ids" in source
     assert "setSelectedRunIds" in source
+    assert "candidateSortOptions" in source
+    assert "candidateSortBy" in source
+    assert "sort_by: nextSortBy" in source
     assert "shouldShowKeywordGroupCrawler" not in source
 
 
@@ -596,6 +599,9 @@ def test_library_page_preserves_delete_and_media_logic():
     assert "deleteSavedNote" in adapter_source
     assert "删除" in adapter_source
     assert "function getSavedNoteCoverUrl" in adapter_source
+    assert "function getSavedNoteMediaType" in adapter_source
+    assert "note.media_type" in adapter_source
+    assert "note.video_url" in adapter_source
     assert 'referrerPolicy: "no-referrer"' in adapter_source
 
 
@@ -6512,6 +6518,46 @@ def test_notes_library_list_returns_only_current_user_saved_notes(tmp_path):
         assert payload["page_size"] == 20
         assert payload["items"][0]["note_id"] == "owner-note-001"
         assert payload["items"][0]["title"] == "我的内容库笔记"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_notes_library_list_exposes_video_media_type_for_regular_users(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.app.api.notes._download_asset", lambda _url, _user_id, _asset_type: "")
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(tmp_path, "library-video-owner")
+    try:
+        save_response = client.post(
+            "/api/notes/batch-save",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "account_id": account_id,
+                "notes": [
+                    {
+                        "note_id": "library-video-note-001",
+                        "title": "Video note",
+                        "content": "A saved video note",
+                        "author_name": "Video author",
+                        "cover_url": "https://images.example/video-cover.jpg",
+                        "video_url": "https://videos.example/video.mp4",
+                        "raw": {"noteType": 1},
+                    }
+                ],
+            },
+        )
+        assert save_response.status_code == 200
+
+        list_response = client.get(
+            "/api/notes?platform=xhs",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert list_response.status_code == 200
+        item = list_response.json()["items"][0]
+        assert item["note_id"] == "library-video-note-001"
+        assert item["media_type"] == "video"
+        assert item["note_type"] == "video"
+        assert item["video_url"]
+        assert "raw_json" not in item
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 

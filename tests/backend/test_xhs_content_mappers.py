@@ -164,6 +164,17 @@ def test_extracts_raw_note_type_and_publish_timestamp():
     assert mapping.publish_timestamp_ms == 1710000000000
 
 
+def test_normalizes_numeric_and_camel_case_video_note_type():
+    direct = map_xhs_content(note_id="typed-video-note", raw={"noteType": 1})
+    nested = map_xhs_content(
+        note_id="typed-normal-note",
+        raw={"data": {"items": [{"note_card": {"note_type": 2}}]}},
+    )
+
+    assert direct.note_type == "video"
+    assert nested.note_type == "normal"
+
+
 def test_normalizes_comment_payload_and_nested_replies_without_route_dependency():
     raw_payload = {
         "data": {

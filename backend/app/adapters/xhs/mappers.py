@@ -48,7 +48,16 @@ def map_xhs_content(
     )
 
     return XhsContentMapping(
-        note_type=_first_text(payload.get("model_type"), payload.get("type"), payload.get("note_type"), note_card.get("type"), "note"),
+        note_type=_first_note_type(
+            payload.get("model_type"),
+            payload.get("type"),
+            payload.get("note_type"),
+            payload.get("noteType"),
+            note_card.get("type"),
+            note_card.get("note_type"),
+            note_card.get("noteType"),
+            "note",
+        ),
         note_url=_build_note_url(note_id, payload, note_card),
         author_profile_url=_build_author_profile_url(payload, note_card),
         tags=_extract_tags(payload, note_card),
@@ -103,6 +112,37 @@ def _first_text(*values: Any) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _first_note_type(*values: Any) -> str:
+    for value in values:
+        normalized = _normalize_note_type(value)
+        if normalized:
+            return normalized
+    return "note"
+
+
+def _normalize_note_type(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        numeric = int(value)
+        if numeric == 1:
+            return "video"
+        if numeric == 2:
+            return "normal"
+        return ""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered == "1" or "video" in lowered or "视频" in text:
+        return "video"
+    if lowered == "2" or "normal" in lowered or "image" in lowered or "图文" in text:
+        return "normal"
+    return text
 
 
 def _as_int(value: Any) -> int:
