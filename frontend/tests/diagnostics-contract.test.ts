@@ -66,5 +66,25 @@ assert.match(
   /复制诊断信息/,
   "ErrorBoundary should let users copy diagnostic information",
 );
+assert.match(
+  errorBoundarySource,
+  /\/logo\.png/,
+  "ErrorBoundary should use the canonical Tavix logo asset",
+);
+assert.match(
+  errorBoundarySource,
+  /TAVIX OPERATIONS PLATFORM/,
+  "ErrorBoundary should identify the Tavix product",
+);
+assert.match(
+  errorBoundarySource,
+  /拓效自动化运营系统/,
+  "ErrorBoundary should show the Chinese Tavix product name",
+);
+assert.match(
+  errorBoundarySource,
+  /letterSpacing: 0/,
+  "ErrorBoundary brand text should use the product typography spacing rule",
+);
 
 console.log("diagnostics-contract tests passed");

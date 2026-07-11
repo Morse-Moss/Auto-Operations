@@ -370,23 +370,22 @@ export function AppShell() {
                   width: 30,
                   height: 30,
                   borderRadius: 8,
-                  display: "grid",
-                  placeItems: "center",
-                  color: "#fff",
-                  background: `linear-gradient(135deg, ${palette.brand}, #12b886)`,
-                  boxShadow: isDark ? "0 8px 20px rgba(18,184,134,.16)" : "0 8px 20px rgba(31,111,235,.18)",
+                  background: "#fff",
+                  border: `1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(31,111,235,0.12)"}`,
+                  boxShadow: isDark ? "0 8px 20px rgba(31,111,235,.12)" : "0 8px 20px rgba(31,111,235,.16)",
                   flexShrink: 0,
+                  overflow: "hidden",
                 }}
               >
-                <ControlOutlined />
+                <img src="/logo.png" alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               </div>
               {!shellCollapsed && (
                 <div style={{ minWidth: 0 }}>
                   <Text strong ellipsis style={{ display: "block", color: palette.text, fontSize: 13, lineHeight: "18px" }}>
-                    自动化运营系统
+                    拓效自动化运营系统
                   </Text>
                   <Text ellipsis style={{ display: "block", color: palette.muted, fontSize: 11, lineHeight: "16px" }}>
-                    Beta 多租户工作台
+                    Tavix Beta 多租户工作台
                   </Text>
                 </div>
               )}

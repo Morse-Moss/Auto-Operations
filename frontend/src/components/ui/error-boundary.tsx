@@ -27,11 +27,29 @@ const pageStyle: CSSProperties = {
 
 const panelStyle: CSSProperties = {
   width: "min(760px, 100%)",
-  border: "1px solid #263244",
+  border: "1px solid rgba(41, 76, 255, 0.34)",
   borderRadius: 8,
   background: "#111827",
   padding: 24,
   boxShadow: "0 18px 56px rgba(0, 0, 0, 0.28)",
+};
+
+const brandStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  minWidth: 0,
+  marginBottom: 24,
+};
+
+const logoStyle: CSSProperties = {
+  width: 44,
+  height: 44,
+  flexShrink: 0,
+  borderRadius: 10,
+  objectFit: "cover",
+  background: "#fff",
+  boxShadow: "0 10px 28px rgba(41, 76, 255, 0.22)",
 };
 
 const diagnosticStyle: CSSProperties = {
@@ -125,6 +143,19 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     return (
       <main style={pageStyle}>
         <section style={panelStyle} aria-live="assertive">
+          <div style={brandStyle}>
+            <img src="/logo.png" alt="拓效" style={logoStyle} />
+            <div style={{ minWidth: 0 }}>
+              <Typography.Text
+                style={{ display: "block", color: "#69a7ff", fontSize: 11, fontWeight: 700, letterSpacing: 0 }}
+              >
+                TAVIX OPERATIONS PLATFORM
+              </Typography.Text>
+              <Typography.Text strong style={{ display: "block", color: "#f4f7fb", fontSize: 16 }}>
+                拓效自动化运营系统
+              </Typography.Text>
+            </div>
+          </div>
           <Typography.Title level={2} style={{ color: "#e5edf8", marginTop: 0, marginBottom: 8 }}>
             页面加载失败
           </Typography.Title>

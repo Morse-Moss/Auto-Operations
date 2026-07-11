@@ -21,6 +21,7 @@ from backend.app.api.platforms.xhs import analysis_center, analytics, crawl, cre
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLimitExceeded
+from backend.app.services.rate_limit_service import record_rate_limit_failure
 from backend.app.services.scheduler_service import run_due_auto_tasks, shutdown_due_publish_scheduler, start_due_publish_scheduler
 from backend.app.services.usage_quota_service import UsageQuotaInsufficientError
 
@@ -38,7 +39,7 @@ class ClientErrorReport(BaseModel):
     request_id: str = Field(default="", max_length=120)
     user_agent: str = Field(default="", max_length=512)
     timestamp: str = Field(default="", max_length=80)
-    extra: dict[str, Any] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict, max_length=20)
 
 
 def _runtime_version() -> dict[str, str]:
@@ -57,6 +58,10 @@ def _runtime_version() -> dict[str, str]:
 def _safe_request_id(value: str | None) -> str:
     request_id = "".join(ch for ch in (value or "").strip() if ch.isalnum() or ch in "-_:.")
     return request_id[:120] or uuid4().hex
+
+
+def _safe_log_text(value: str, max_length: int) -> str:
+    return " ".join(value.split())[:max_length]
 
 
 @asynccontextmanager
@@ -143,17 +148,18 @@ def create_app() -> FastAPI:
 
     @app.post("/api/client-errors", status_code=202, tags=["diagnostics"])
     def client_errors(report: ClientErrorReport, request: Request) -> dict[str, Any]:
+        record_rate_limit_failure(request, "client-errors")
         request_id = _safe_request_id(
             request.headers.get(REQUEST_ID_HEADER) or report.request_id or getattr(request.state, "request_id", "")
         )
         logger.warning(
             "client_error event_type=%s request_id=%s app_version=%s url=%s message=%s stack=%s extra_keys=%s",
-            report.event_type,
+            _safe_log_text(report.event_type, 80),
             request_id,
-            report.app_version,
-            report.url,
-            report.message,
-            report.stack[:4000],
+            _safe_log_text(report.app_version, 120),
+            _safe_log_text(report.url, 2048),
+            _safe_log_text(report.message, 2000),
+            _safe_log_text(report.stack, 4000),
             sorted(report.extra.keys()),
         )
         return {"accepted": True, "request_id": request_id}

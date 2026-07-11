@@ -186,17 +186,16 @@ export function LoginPage() {
                     width: 48,
                     height: 48,
                     borderRadius: 8,
-                    background: "#ff2442",
-                    color: "#fff",
+                    background: "#ffffff",
+                    border: "1px solid rgba(31, 111, 235, 0.16)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    fontSize: 21,
-                    fontWeight: 800,
-                    boxShadow: "0 16px 32px rgba(255, 36, 66, 0.22)",
+                    overflow: "hidden",
+                    boxShadow: "0 16px 32px rgba(31, 111, 235, 0.16)",
                   }}
                 >
-                  X
+                  <img src="/logo.png" alt="拓效" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                 </div>
                 <div>
                   <Text
@@ -208,10 +207,10 @@ export function LoginPage() {
                       letterSpacing: 0,
                     }}
                   >
-                    XHS OPERATIONS PLATFORM
+                    TAVIX OPERATIONS PLATFORM
                   </Text>
                   <Text strong style={{ color: "#172033", fontSize: 18 }}>
-                    小红书智能运营工作台
+                    拓效自动化运营系统
                   </Text>
                 </div>
               </Space>

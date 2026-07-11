@@ -27,7 +27,7 @@ export function PlatformSectionPage({
   return (
     <div>
       <PageHeader
-        eyebrow={`自动化运营系统 / ${platformLabel}`}
+        eyebrow={`拓效自动化运营系统 / ${platformLabel}`}
         title={title}
         description={description}
         action={(
