@@ -5,13 +5,13 @@ from datetime import timedelta
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import encrypt_text
 from backend.app.main import app
-from backend.app.models import AiDraft, ApiLog, ModelConfig, Note, Task, UsageLedger, User
+from backend.app.models import AiDraft, ApiLog, ModelCapabilityDefault, ModelConfig, Note, Task, UsageLedger, User
 from test_support.beta_invites import create_test_invite_code
 
 client = TestClient(app)
@@ -21,6 +21,40 @@ def _override_database(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'usage-quota-test.db'}", connect_args={"check_same_thread": False})
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
+
+    @event.listens_for(TestingSessionLocal, "before_commit")
+    def bind_new_default_models(session):
+        new_configs = [
+            item
+            for item in session.new
+            if isinstance(item, ModelConfig) and item.is_default
+        ]
+        if not new_configs:
+            return
+        capability_configs = {}
+        for config in new_configs:
+            owner = session.get(User, config.user_id)
+            if owner is not None:
+                owner.role = "admin"
+                owner.status = "active"
+            if config.model_type == "text":
+                capability_configs["text"] = config
+            elif config.model_type == "image" and config.provider == "openai-compatible":
+                capability_configs["vision"] = config
+                capability_configs["image_generation"] = config
+        session.flush()
+        for capability, config in capability_configs.items():
+            binding = session.scalar(
+                select(ModelCapabilityDefault).where(
+                    ModelCapabilityDefault.capability == capability
+                )
+            )
+            if binding is None:
+                binding = ModelCapabilityDefault(capability=capability)
+                session.add(binding)
+            binding.model_config_id = config.id
+            binding.updated_by_user_id = config.user_id
+        session.flush()
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -1172,7 +1206,7 @@ def test_model_config_test_charges_one_credit_per_attempt(tmp_path, monkeypatch)
 
         monkeypatch.setattr(model_configs_api.http_requests, "post", fake_post, raising=False)
         responses = [
-            client.post(f"/api/model-configs/{config_id}/test", headers=_auth_headers(registered["access_token"]))
+            client.post(f"/api/model-configs/{config_id}/test?capability=text", headers=_auth_headers(registered["access_token"]))
             for _ in range(2)
         ]
 
@@ -1252,7 +1286,7 @@ def test_model_config_test_credit_shortage_returns_402_without_provider_call(tmp
             db.close()
 
         monkeypatch.setattr(model_configs_api.http_requests, "post", fake_post, raising=False)
-        response = client.post(f"/api/model-configs/{config_id}/test", headers=_auth_headers(registered["access_token"]))
+        response = client.post(f"/api/model-configs/{config_id}/test?capability=text", headers=_auth_headers(registered["access_token"]))
 
         assert response.status_code == 402
         assert response.json()["code"] == "usage_quota_insufficient"

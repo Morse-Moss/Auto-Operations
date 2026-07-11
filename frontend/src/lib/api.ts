@@ -73,6 +73,8 @@ import type {
   KeywordGroupDetail,
   KeywordGroupPayload,
   DoubaoMainModelConfigResult,
+  ModelCapability,
+  ModelCapabilityDefault,
   ModelConfig,
   ModelConfigPayload,
   ModelType,
@@ -1422,6 +1424,21 @@ export async function createModelConfig(payload: ModelConfigPayload): Promise<Mo
   return response.data;
 }
 
+export async function fetchModelCapabilityDefaults(): Promise<{ items: ModelCapabilityDefault[] }> {
+  const response = await http.get<{ items: ModelCapabilityDefault[] }>("/model-configs/capability-defaults");
+  return response.data;
+}
+
+export async function setModelCapabilityDefault(
+  capability: ModelCapability,
+  modelConfigId: number
+): Promise<ModelCapabilityDefault> {
+  const response = await http.put<ModelCapabilityDefault>(`/model-configs/capability-defaults/${capability}`, {
+    model_config_id: modelConfigId
+  });
+  return response.data;
+}
+
 export async function configureDoubaoMainModels(apiKey: string): Promise<DoubaoMainModelConfigResult> {
   const response = await http.post<DoubaoMainModelConfigResult>("/model-configs/doubao-main", { api_key: apiKey });
   return response.data;
@@ -1437,8 +1454,13 @@ export async function updateModelConfig(configId: number, payload: Partial<Model
   return response.data;
 }
 
-export async function testModelConfig(configId: number): Promise<{ id: number; status: string; message: string }> {
-  const response = await http.post<{ id: number; status: string; message: string }>(`/model-configs/${configId}/test`);
+export async function testModelConfig(
+  configId: number,
+  capability?: ModelCapability
+): Promise<{ id: number; status: string; message: string }> {
+  const response = await http.post<{ id: number; status: string; message: string }>(`/model-configs/${configId}/test`, undefined, {
+    params: capability ? { capability } : undefined
+  });
   return response.data;
 }
 

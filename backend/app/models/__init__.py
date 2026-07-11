@@ -1,4 +1,4 @@
-from backend.app.models.ai import DEFAULT_TEXT_MODEL_NAME, AiDraft, AiGeneratedAsset, DraftAiScoreResult, DraftAsset, ModelConfig
+from backend.app.models.ai import DEFAULT_TEXT_MODEL_NAME, AiDraft, AiGeneratedAsset, DraftAiScoreResult, DraftAsset, ModelCapabilityDefault, ModelConfig
 from backend.app.models.analysis_report import AnalysisReport
 from backend.app.models.api_log import ApiLog
 from backend.app.models.auto_task import AutoTask
@@ -59,6 +59,7 @@ __all__ = [
     "KeywordDiscoveryRun",
     "KeywordGroup",
     "LoginSession",
+    "ModelCapabilityDefault",
     "ModelConfig",
     "MonitoringSnapshot",
     "MonitoringTarget",

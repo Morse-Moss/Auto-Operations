@@ -5,75 +5,102 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.security import decrypt_text
-from backend.app.models import ModelConfig, User
+from backend.app.models import ModelCapabilityDefault, ModelConfig, User
 
-ModelCapability = str
+MODEL_CAPABILITIES = ("text", "vision", "image_generation")
 IMAGE_GENERATION_PROVIDERS = {"runninghub-ai-app", "openai-compatible"}
 VISION_PROVIDERS = {"volcengine-ark", "openai-compatible"}
 
 
-def _supports_capability(config: ModelConfig, capability: ModelCapability | None) -> bool:
-    if capability is None:
-        return True
-    if capability == "image_generation":
-        return config.provider in IMAGE_GENERATION_PROVIDERS
-    if capability == "vision":
-        return config.provider in VISION_PROVIDERS
-    if capability == "text":
-        return config.model_type == "text"
-    return True
+def supported_capabilities(config: ModelConfig) -> list[str]:
+    supported: list[str] = []
+    if config.model_type == "text":
+        supported.append("text")
+    if config.model_type == "image" and config.provider in VISION_PROVIDERS:
+        supported.append("vision")
+    if config.model_type == "image" and config.provider in IMAGE_GENERATION_PROVIDERS:
+        supported.append("image_generation")
+    return supported
 
 
-def _first_supported(configs: list[ModelConfig], capability: ModelCapability | None) -> ModelConfig | None:
-    for config in configs:
-        if _supports_capability(config, capability):
-            return config
-    return None
+def assigned_capabilities(db: Session, model_config_id: int) -> list[str]:
+    return list(
+        db.scalars(
+            select(ModelCapabilityDefault.capability)
+            .where(ModelCapabilityDefault.model_config_id == model_config_id)
+            .order_by(ModelCapabilityDefault.capability.asc())
+        ).all()
+    )
 
 
-def get_default_model_config(
+def _capability_binding(db: Session, capability: str) -> ModelCapabilityDefault | None:
+    if capability not in MODEL_CAPABILITIES:
+        raise ValueError(f"Unsupported model capability: {capability}")
+    return db.scalar(
+        select(ModelCapabilityDefault).where(
+            ModelCapabilityDefault.capability == capability
+        )
+    )
+
+
+def _active_admin_owner(db: Session, config: ModelConfig) -> User | None:
+    owner = db.get(User, config.user_id)
+    if owner is None or owner.role != "admin" or owner.status != "active":
+        return None
+    return owner
+
+
+def get_model_config_for_capability(
     db: Session,
-    *,
-    user_id: int,
-    model_type: str,
-    capability: ModelCapability | None = None,
+    capability: str,
 ) -> ModelConfig | None:
-    user_configs = db.scalars(
-        select(ModelConfig).where(
-            ModelConfig.user_id == user_id,
-            ModelConfig.model_type == model_type,
-            ModelConfig.is_default.is_(True),
-        )
-    ).all()
-    config = _first_supported(user_configs, capability)
-    if config is not None:
-        return config
-
-    admin_configs = db.scalars(
-        select(ModelConfig)
-        .join(User, User.id == ModelConfig.user_id)
-        .where(
-            User.role == "admin",
-            User.status == "active",
-            ModelConfig.model_type == model_type,
-        )
-        .order_by(ModelConfig.is_default.desc(), ModelConfig.id.asc())
-    ).all()
-    return _first_supported(admin_configs, capability)
+    binding = _capability_binding(db, capability)
+    if binding is None:
+        return None
+    config = db.get(ModelConfig, binding.model_config_id)
+    if config is None or _active_admin_owner(db, config) is None:
+        return None
+    if capability not in supported_capabilities(config):
+        return None
+    if not config.model_name or not config.base_url or not config.encrypted_api_key:
+        return None
+    return config
 
 
-def require_default_model_context(
+def _capability_error(capability: str, code: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={"code": code, "capability": capability},
+    )
+
+
+def require_model_capability_context(
     db: Session,
-    *,
-    user_id: int,
-    model_type: str,
-    capability: ModelCapability | None = None,
+    capability: str,
 ) -> tuple[ModelConfig, str]:
-    model_config = get_default_model_config(db, user_id=user_id, model_type=model_type, capability=capability)
-    if model_config is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Default {model_type} model is not configured",
+    binding = _capability_binding(db, capability)
+    if binding is None:
+        raise _capability_error(
+            capability,
+            "MODEL_CAPABILITY_DEFAULT_NOT_CONFIGURED",
         )
-    api_key = decrypt_text(model_config.encrypted_api_key) if model_config.encrypted_api_key else ""
-    return model_config, api_key
+    config = db.get(ModelConfig, binding.model_config_id)
+    if config is None or _active_admin_owner(db, config) is None:
+        raise _capability_error(capability, "MODEL_CAPABILITY_DEFAULT_INVALID")
+    if capability not in supported_capabilities(config):
+        raise _capability_error(
+            capability,
+            "MODEL_CAPABILITY_DEFAULT_INCOMPATIBLE",
+        )
+    if not config.model_name or not config.base_url or not config.encrypted_api_key:
+        raise _capability_error(capability, "MODEL_CAPABILITY_DEFAULT_INCOMPLETE")
+    try:
+        api_key = decrypt_text(config.encrypted_api_key)
+    except Exception as exc:
+        raise _capability_error(
+            capability,
+            "MODEL_CAPABILITY_DEFAULT_INVALID",
+        ) from exc
+    if not api_key:
+        raise _capability_error(capability, "MODEL_CAPABILITY_DEFAULT_INCOMPLETE")
+    return config, api_key

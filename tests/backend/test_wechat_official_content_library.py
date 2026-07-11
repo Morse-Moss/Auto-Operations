@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
 from test_support.beta_invites import create_test_invite_code
+from test_support.model_capabilities import bind_test_model_capability
 from backend.app.core.security import encrypt_text
 from backend.app.models import (
     ModelConfig,
@@ -287,18 +288,17 @@ def test_hotspot_analysis_uses_admin_default_doubao_for_regular_user(tmp_path, m
             admin = User(username="content-library-doubao-admin", password_hash="hashed", role="admin", status="active")
             db.add(admin)
             db.flush()
-            db.add(
-                ModelConfig(
-                    user_id=admin.id,
-                    name="Doubao Text",
-                    model_type="text",
-                    provider="volcengine-ark",
-                    model_name="doubao-seed-2-0-mini-260428",
-                    base_url="https://ark.cn-beijing.volces.com/api/v3",
-                    encrypted_api_key=encrypt_text("sk-doubao-text"),
-                    is_default=True,
-                )
+            config = ModelConfig(
+                user_id=admin.id,
+                name="Doubao Text",
+                model_type="text",
+                provider="volcengine-ark",
+                model_name="doubao-seed-2-0-mini-260428",
+                base_url="https://ark.cn-beijing.volces.com/api/v3",
+                encrypted_api_key=encrypt_text("sk-doubao-text"),
+                is_default=True,
             )
+            bind_test_model_capability(db, config=config, capability="text")
             db.add(
                 WechatOfficialArticleSnapshot(
                     article_id=article_id,
@@ -816,7 +816,8 @@ def test_analyze_hotspots_uses_fake_ai_json_and_degrades_on_invalid_json(tmp_pat
             assert article is not None
             account = db.get(WechatOfficialCrawlAccount, article.account_id)
             assert account is not None
-            db.add(ModelConfig(user_id=account.user_id, name="Fake Text", model_type="text", provider="openai", model_name="fake", base_url="https://example.test", encrypted_api_key=encrypt_text("fake-key"), is_default=True))
+            config = ModelConfig(user_id=account.user_id, name="Fake Text", model_type="text", provider="openai", model_name="fake", base_url="https://example.test", encrypted_api_key=encrypt_text("fake-key"), is_default=True)
+            bind_test_model_capability(db, config=config, capability="text")
             db.commit()
 
         class FakeClient:

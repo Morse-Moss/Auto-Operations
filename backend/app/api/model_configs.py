@@ -12,9 +12,14 @@ from sqlalchemy.orm import Session
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_tenant_context, require_admin_user
 from backend.app.core.security import encrypt_text
-from backend.app.models import DEFAULT_TEXT_MODEL_NAME, ApiLog, ModelConfig, User
+from backend.app.models import DEFAULT_TEXT_MODEL_NAME, ApiLog, ModelCapabilityDefault, ModelConfig, User
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import RUNNINGHUB_DEFAULT_BASE_URL
+from backend.app.services.model_config_service import (
+    MODEL_CAPABILITIES,
+    assigned_capabilities,
+    supported_capabilities,
+)
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 
 router = APIRouter(prefix="/model-configs", tags=["model-configs"])
@@ -52,7 +57,11 @@ class DoubaoMainConfigRequest(BaseModel):
     api_key: str = Field(min_length=1)
 
 
-def _serialize_config(config: ModelConfig) -> dict:
+class CapabilityDefaultUpdateRequest(BaseModel):
+    model_config_id: int = Field(gt=0)
+
+
+def _serialize_config(db: Session, config: ModelConfig) -> dict:
     return {
         "id": config.id,
         "name": config.name,
@@ -62,6 +71,35 @@ def _serialize_config(config: ModelConfig) -> dict:
         "base_url": config.base_url,
         "has_api_key": bool(config.encrypted_api_key),
         "is_default": config.is_default,
+        "supported_capabilities": supported_capabilities(config),
+        "assigned_capabilities": assigned_capabilities(db, config.id),
+    }
+
+
+def _serialize_capability_default(db: Session, capability: str) -> dict:
+    binding = db.scalar(
+        select(ModelCapabilityDefault).where(
+            ModelCapabilityDefault.capability == capability
+        )
+    )
+    config = db.get(ModelConfig, binding.model_config_id) if binding else None
+    owner = db.get(User, config.user_id) if config else None
+    if binding is None:
+        binding_status = "not_configured"
+    elif (
+        config is None
+        or owner is None
+        or owner.role != "admin"
+        or owner.status != "active"
+        or capability not in supported_capabilities(config)
+    ):
+        binding_status = "invalid"
+    else:
+        binding_status = "configured"
+    return {
+        "capability": capability,
+        "model_config": _serialize_config(db, config) if config else None,
+        "status": binding_status,
     }
 
 
@@ -89,6 +127,26 @@ def _clear_default_for_type(db: Session, user_id: int, model_type: str) -> None:
     ).all()
     for config in configs:
         config.is_default = False
+
+
+def _upsert_capability_binding(
+    db: Session,
+    *,
+    capability: str,
+    config: ModelConfig,
+    updated_by_user_id: int,
+) -> ModelCapabilityDefault:
+    binding = db.scalar(
+        select(ModelCapabilityDefault).where(
+            ModelCapabilityDefault.capability == capability
+        )
+    )
+    if binding is None:
+        binding = ModelCapabilityDefault(capability=capability)
+        db.add(binding)
+    binding.model_config_id = config.id
+    binding.updated_by_user_id = updated_by_user_id
+    return binding
 
 
 def _upsert_doubao_main_config(db: Session, *, current_user: User, model_type: str, name: str, api_key: str) -> ModelConfig:
@@ -124,7 +182,14 @@ def _redact_api_key(message: object, api_key: str) -> str:
     return redacted
 
 
-def _record_model_test_attempt(db: Session, *, current_user: User, config: ModelConfig, result_status: str) -> None:
+def _record_model_test_attempt(
+    db: Session,
+    *,
+    current_user: User,
+    config: ModelConfig,
+    capability: str,
+    result_status: str,
+) -> None:
     db.add(
         ApiLog(
             user_id=current_user.id,
@@ -136,10 +201,57 @@ def _record_model_test_attempt(db: Session, *, current_user: User, config: Model
                 "model_config_id": config.id,
                 "model_type": config.model_type,
                 "provider": config.provider,
+                "capability": capability,
             },
         )
     )
     db.commit()
+
+
+@router.get("/capability-defaults")
+def get_capability_defaults(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    return {
+        "items": [
+            _serialize_capability_default(db, capability)
+            for capability in MODEL_CAPABILITIES
+        ]
+    }
+
+
+@router.put("/capability-defaults/{capability}")
+def update_capability_default(
+    capability: str,
+    payload: CapabilityDefaultUpdateRequest,
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    if capability not in MODEL_CAPABILITIES:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "MODEL_CAPABILITY_NOT_FOUND", "capability": capability},
+        )
+    config = _get_owned_config(db, current_user, payload.model_config_id)
+    if capability not in supported_capabilities(config):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "MODEL_CAPABILITY_INCOMPATIBLE", "capability": capability},
+        )
+    if not config.model_name or not config.base_url or not config.encrypted_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "MODEL_CONFIG_INCOMPLETE", "capability": capability},
+        )
+    _upsert_capability_binding(
+        db,
+        capability=capability,
+        config=config,
+        updated_by_user_id=current_user.id,
+    )
+    db.commit()
+    return _serialize_capability_default(db, capability)
 
 
 @router.get("")
@@ -154,7 +266,7 @@ def get_model_configs(
     if model_type:
         statement = statement.where(ModelConfig.model_type == model_type)
     configs = db.scalars(statement.order_by(ModelConfig.id.desc())).all()
-    return paginated([_serialize_config(config) for config in configs], page, page_size)
+    return paginated([_serialize_config(db, config) for config in configs], page, page_size)
 
 
 @router.post("")
@@ -179,7 +291,7 @@ def create_model_config(
     db.add(config)
     db.commit()
     db.refresh(config)
-    return _serialize_config(config)
+    return _serialize_config(db, config)
 
 
 @router.post("/doubao-main")
@@ -202,12 +314,25 @@ def configure_doubao_main_models(
         name="Doubao Seed 2.0 Mini Vision",
         api_key=payload.api_key,
     )
+    db.flush()
+    _upsert_capability_binding(
+        db,
+        capability="text",
+        config=text_config,
+        updated_by_user_id=current_user.id,
+    )
+    _upsert_capability_binding(
+        db,
+        capability="vision",
+        config=vision_config,
+        updated_by_user_id=current_user.id,
+    )
     db.commit()
     db.refresh(text_config)
     db.refresh(vision_config)
     return {
-        "text": _serialize_config(text_config),
-        "vision": _serialize_config(vision_config),
+        "text": _serialize_config(db, text_config),
+        "vision": _serialize_config(db, vision_config),
     }
 
 
@@ -215,12 +340,22 @@ def configure_doubao_main_models(
 def test_model_config(
     config_id: int,
     request: Request,
+    capability: str = Query(..., pattern="^(text|vision|image_generation)$"),
     current_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
     from backend.app.core.security import decrypt_text
 
     config = _get_owned_config(db, current_user, config_id)
+    resolved_capability = capability
+    if resolved_capability not in supported_capabilities(config):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "MODEL_CAPABILITY_INCOMPATIBLE",
+                "capability": resolved_capability,
+            },
+        )
     if not config.encrypted_api_key:
         return {"id": config.id, "status": "error", "message": "未配置 API Key"}
 
@@ -246,26 +381,51 @@ def test_model_config(
         feature_key=MODEL_TEST_FEATURE_KEY,
         bucket=CREDITS_BUCKET,
         amount=credit_cost_for_feature(MODEL_TEST_FEATURE_KEY),
-        idempotency_key=usage_idempotency_key(request, f"{MODEL_TEST_FEATURE_KEY}:{current_user.id}:{config.id}"),
-        request_summary={"model_config_id": config.id, "model_type": config.model_type, "provider": config.provider},
+        idempotency_key=usage_idempotency_key(
+            request,
+            f"{MODEL_TEST_FEATURE_KEY}:{current_user.id}:{config.id}:{resolved_capability}",
+        ),
+        request_summary={
+            "model_config_id": config.id,
+            "model_type": config.model_type,
+            "provider": config.provider,
+            "capability": resolved_capability,
+        },
         model_config_id=config.id,
         provider=config.provider,
     )
 
     def finish(result: dict) -> dict:
-        _record_model_test_attempt(db, current_user=current_user, config=config, result_status=result["status"])
+        _record_model_test_attempt(
+            db,
+            current_user=current_user,
+            config=config,
+            capability=resolved_capability,
+            result_status=result["status"],
+        )
         UsageQuotaService(db).commit(usage_reservation.id)
         return result
 
     try:
-        if config.provider == "runninghub-ai-app":
+        if resolved_capability == "image_generation" and config.provider == "runninghub-ai-app":
             resp = http_requests.get(
                 f"{base_url}/api/webapp/apiCallDemo",
                 headers={"Authorization": f"Bearer {api_key}", "Host": "www.runninghub.cn"},
                 params={"apiKey": api_key, "webappId": "2046760522573418497"},
                 timeout=15,
             )
-        elif config.model_type == "image":
+        elif resolved_capability == "image_generation":
+            resp = http_requests.post(
+                f"{base_url}/images/generations",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": config.model_name,
+                    "prompt": "生成一张用于验证图片模型连接的简单测试图",
+                    "response_format": "url",
+                },
+                timeout=180,
+            )
+        elif resolved_capability == "vision":
             resp = http_requests.post(
                 f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -360,7 +520,7 @@ def update_model_config(
 
     db.commit()
     db.refresh(config)
-    return _serialize_config(config)
+    return _serialize_config(db, config)
 
 
 @router.delete("/{config_id}")
@@ -370,6 +530,12 @@ def delete_model_config(
     db: Session = Depends(get_db),
 ):
     config = _get_owned_config(db, current_user, config_id)
+    capabilities = assigned_capabilities(db, config.id)
+    if capabilities:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "MODEL_CONFIG_IN_USE", "capabilities": capabilities},
+        )
     db.delete(config)
     db.commit()
     return {"id": config_id, "status": "deleted"}
@@ -386,4 +552,4 @@ def set_default_model_config(
     config.is_default = True
     db.commit()
     db.refresh(config)
-    return _serialize_config(config)
+    return _serialize_config(db, config)

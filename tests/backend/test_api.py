@@ -7611,6 +7611,164 @@ def test_sensitive_config_routes_require_admin_role(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def _create_capability_test_model_config(token: str, **overrides) -> dict:
+    payload = {
+        "name": "Capability Test Model",
+        "model_type": "image",
+        "provider": "openai-compatible",
+        "model_name": "test-model",
+        "base_url": "https://api.example.test/v1",
+        "api_key": "sk-test",
+        "is_default": False,
+    }
+    payload.update(overrides)
+    response = client.post(
+        "/api/model-configs",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _assign_capability_default(token: str, capability: str, model_config_id: int) -> dict:
+    response = client.put(
+        f"/api/model-configs/capability-defaults/{capability}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model_config_id": model_config_id},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_admin_can_assign_distinct_vision_and_image_generation_capability_defaults(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    admin_token = _register_and_get_admin_access_token("capability-default-admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    try:
+        vision = _create_capability_test_model_config(
+            admin_token,
+            name="Vision",
+            provider="volcengine-ark",
+            model_name="doubao-seed-2-0-mini-260428",
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+        )
+        generation = _create_capability_test_model_config(
+            admin_token,
+            name="RunningHub",
+            provider="runninghub-ai-app",
+            model_name="runninghub-image-g",
+            base_url="https://www.runninghub.cn",
+        )
+
+        vision_response = client.put(
+            "/api/model-configs/capability-defaults/vision",
+            headers=headers,
+            json={"model_config_id": vision["id"]},
+        )
+        generation_response = client.put(
+            "/api/model-configs/capability-defaults/image_generation",
+            headers=headers,
+            json={"model_config_id": generation["id"]},
+        )
+        response = client.get(
+            "/api/model-configs/capability-defaults",
+            headers=headers,
+        )
+
+        assert vision_response.status_code == 200
+        assert generation_response.status_code == 200
+        assert response.status_code == 200
+        by_capability = {
+            item["capability"]: item
+            for item in response.json()["items"]
+        }
+        assert by_capability["text"]["model_config"] is None
+        assert by_capability["vision"]["model_config"]["provider"] == "volcengine-ark"
+        assert by_capability["image_generation"]["model_config"]["provider"] == "runninghub-ai-app"
+        assert vision_response.json()["model_config"]["assigned_capabilities"] == ["vision"]
+        assert generation_response.json()["model_config"]["assigned_capabilities"] == ["image_generation"]
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_capability_default_assignment_rejects_incompatible_model(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    admin_token = _register_and_get_admin_access_token("capability-incompatible-admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    try:
+        text_config = _create_capability_test_model_config(
+            admin_token,
+            model_type="text",
+            provider="volcengine-ark",
+        )
+
+        response = client.put(
+            "/api/model-configs/capability-defaults/image_generation",
+            headers=headers,
+            json={"model_config_id": text_config["id"]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == {
+            "code": "MODEL_CAPABILITY_INCOMPATIBLE",
+            "capability": "image_generation",
+        }
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_bound_model_config_cannot_be_deleted(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    admin_token = _register_and_get_admin_access_token("bound-config-admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    try:
+        config = _create_capability_test_model_config(
+            admin_token,
+            provider="runninghub-ai-app",
+            model_name="runninghub-image-g",
+            base_url="https://www.runninghub.cn",
+        )
+        assigned = client.put(
+            "/api/model-configs/capability-defaults/image_generation",
+            headers=headers,
+            json={"model_config_id": config["id"]},
+        )
+        assert assigned.status_code == 200
+
+        response = client.delete(
+            f"/api/model-configs/{config['id']}",
+            headers=headers,
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == {
+            "code": "MODEL_CONFIG_IN_USE",
+            "capabilities": ["image_generation"],
+        }
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_normal_user_cannot_manage_capability_defaults(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    user_token = _register_and_get_access_token("capability-default-user")
+    headers = {"Authorization": f"Bearer {user_token}"}
+    try:
+        assert client.get(
+            "/api/model-configs/capability-defaults",
+            headers=headers,
+        ).status_code == 403
+        response = client.put(
+            "/api/model-configs/capability-defaults/vision",
+            headers=headers,
+            json={"model_config_id": 1},
+        )
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_model_configs_create_list_filter_and_encrypt_api_key(tmp_path):
     from backend.app.core.database import get_db
     from backend.app.core.security import decrypt_text
@@ -7721,6 +7879,19 @@ def test_admin_can_quick_configure_doubao_main_models_without_exposing_api_key(t
             assert "api_key" not in item
             assert "encrypted_api_key" not in item
 
+        defaults_response = client.get(
+            "/api/model-configs/capability-defaults",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert defaults_response.status_code == 200
+        by_capability = {
+            item["capability"]: item
+            for item in defaults_response.json()["items"]
+        }
+        assert by_capability["text"]["model_config"]["id"] == payload["text"]["id"]
+        assert by_capability["vision"]["model_config"]["id"] == payload["vision"]["id"]
+        assert by_capability["image_generation"]["model_config"] is None
+
         repeat = client.post(
             "/api/model-configs/doubao-main",
             headers={"Authorization": f"Bearer {admin_token}"},
@@ -7785,7 +7956,10 @@ def test_model_config_test_uses_runninghub_default_base_url_when_blank(tmp_path,
         assert response.status_code == 200
         config_id = response.json()["id"]
 
-        test_response = client.post(f"/api/model-configs/{config_id}/test", headers={"Authorization": f"Bearer {token}"})
+        test_response = client.post(
+            f"/api/model-configs/{config_id}/test?capability=image_generation",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
         assert test_response.status_code == 200
         assert test_response.json()["status"] == "ok"
@@ -7832,7 +8006,10 @@ def test_model_config_test_checks_openai_compatible_image_models_with_chat_visio
         assert response.status_code == 200
         config_id = response.json()["id"]
 
-        test_response = client.post(f"/api/model-configs/{config_id}/test", headers={"Authorization": f"Bearer {token}"})
+        test_response = client.post(
+            f"/api/model-configs/{config_id}/test?capability=vision",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
         assert test_response.status_code == 200
         assert test_response.json()["status"] == "ok"
@@ -7844,6 +8021,105 @@ def test_model_config_test_checks_openai_compatible_image_models_with_chat_visio
         assert content[0]["type"] == "image_url"
         assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
         assert "images/generations" not in captured["url"]
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_openai_image_generation_model_test_calls_images_generation_endpoint(tmp_path, monkeypatch):
+    import backend.app.api.model_configs as model_configs_api
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"data":[{"url":"https://cdn.example.test/test.png"}]}'
+
+        def json(self):
+            return {"data": [{"url": "https://cdn.example.test/test.png"}]}
+
+    def fake_post(url, **kwargs):
+        captured.update(url=url, json=kwargs["json"], headers=kwargs["headers"])
+        return FakeResponse()
+
+    db_dependency = _override_database(tmp_path)
+    admin_token = _register_and_get_admin_access_token("generation-test-admin")
+    try:
+        config = _create_capability_test_model_config(
+            admin_token,
+            model_name="image-generation-model",
+            base_url="https://api.example.test/v1",
+        )
+        monkeypatch.setattr(model_configs_api.http_requests, "post", fake_post)
+
+        response = client.post(
+            f"/api/model-configs/{config['id']}/test?capability=image_generation",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+        assert captured["url"] == "https://api.example.test/v1/images/generations"
+        assert captured["json"]["model"] == "image-generation-model"
+        assert captured["headers"]["Authorization"] == "Bearer sk-test"
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_model_test_requires_explicit_capability(tmp_path, monkeypatch):
+    import backend.app.api.model_configs as model_configs_api
+
+    def unexpected_post(*args, **kwargs):
+        raise AssertionError("provider must not be called without an explicit capability")
+
+    db_dependency = _override_database(tmp_path)
+    admin_token = _register_and_get_admin_access_token("explicit-capability-test-admin")
+    try:
+        config = _create_capability_test_model_config(
+            admin_token,
+            model_type="text",
+            provider="openai-compatible",
+        )
+        monkeypatch.setattr(model_configs_api.http_requests, "post", unexpected_post)
+
+        response = client.post(
+            f"/api/model-configs/{config['id']}/test",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        assert response.status_code == 422
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_model_test_rejects_capability_not_supported_by_config(tmp_path, monkeypatch):
+    import backend.app.api.model_configs as model_configs_api
+
+    db_dependency = _override_database(tmp_path)
+    admin_token = _register_and_get_admin_access_token("incompatible-test-admin")
+    try:
+        text_config = _create_capability_test_model_config(
+            admin_token,
+            model_type="text",
+            provider="volcengine-ark",
+        )
+        monkeypatch.setattr(
+            model_configs_api.http_requests,
+            "post",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("incompatible capability must not call the provider")
+            ),
+        )
+
+        response = client.post(
+            f"/api/model-configs/{text_config['id']}/test?capability=vision",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == {
+            "code": "MODEL_CAPABILITY_INCOMPATIBLE",
+            "capability": "vision",
+        }
     finally:
         app.dependency_overrides.pop(db_dependency, None)
 
@@ -7904,6 +8180,8 @@ def test_openai_compatible_image_describe_converts_local_media_to_base64(tmp_pat
 def test_image_generation_prefers_runninghub_when_doubao_is_default_vision_model(tmp_path, monkeypatch):
     import backend.app.api.ai as ai_api
     from backend.app.api.ai import get_image_ai_client
+    from backend.app.core.database import get_db
+    from backend.app.models import User
 
     class FakeGenerationClient:
         def __init__(self):
@@ -7919,33 +8197,51 @@ def test_image_generation_prefers_runninghub_when_doubao_is_default_vision_model
     admin_token = _register_and_get_admin_access_token("image-generation-routing-admin")
     try:
         app.dependency_overrides[get_image_ai_client] = lambda: fake_client
+        monkeypatch.setattr(ai_api, "RunningHubImageClient", lambda: fake_client)
         monkeypatch.setattr(ai_api, "_download_public_http_image", lambda url: (base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="), "image/png"))
-        client.post(
-            "/api/model-configs",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "Doubao Vision",
-                "model_type": "image",
-                "provider": "volcengine-ark",
-                "model_name": "doubao-seed-2-0-mini-260428",
-                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-                "api_key": "sk-doubao",
-                "is_default": True,
-            },
+        stale_config = _create_capability_test_model_config(
+            admin_token,
+            name="Stale OpenAI Image",
+            provider="openai-compatible",
+            model_name="stale-image-model",
+            api_key="sk-stale-image",
         )
-        generation_config = client.post(
-            "/api/model-configs",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "Image Generation",
-                "model_type": "image",
-                "provider": "openai-compatible",
-                "model_name": "image-generation-model",
-                "base_url": "https://api.example.test/v1",
-                "api_key": "sk-image-generation",
-                "is_default": False,
-            },
-        ).json()
+        vision_config = _create_capability_test_model_config(
+            admin_token,
+            name="Doubao Vision",
+            provider="volcengine-ark",
+            model_name="doubao-seed-2-0-mini-260428",
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            api_key="sk-doubao",
+            is_default=True,
+        )
+        generation_config = _create_capability_test_model_config(
+            admin_token,
+            name="RunningHub Image Generation",
+            provider="runninghub-ai-app",
+            model_name="runninghub-image-g",
+            base_url="https://www.runninghub.cn",
+            api_key="sk-runninghub",
+        )
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        assert client.put(
+            "/api/model-configs/capability-defaults/vision",
+            headers=headers,
+            json={"model_config_id": vision_config["id"]},
+        ).status_code == 200
+        assert client.put(
+            "/api/model-configs/capability-defaults/image_generation",
+            headers=headers,
+            json={"model_config_id": generation_config["id"]},
+        ).status_code == 200
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            owner = db.scalar(select(User).where(User.username == "image-generation-routing-owner"))
+            assert owner is not None
+            owner_user_id = owner.id
+        finally:
+            db.close()
 
         response = client.post(
             "/api/ai/images/generate",
@@ -7955,10 +8251,178 @@ def test_image_generation_prefers_runninghub_when_doubao_is_default_vision_model
 
         assert response.status_code == 200
         assert fake_client.calls == [
-            ("openai-compatible", "image-generation-model", "sk-image-generation", "生成一张配图", None, None, "1:1")
+            ("runninghub-ai-app", "runninghub-image-g", "sk-runninghub", "生成一张配图", None, owner_user_id, "1:1")
         ]
+        assert stale_config["id"] < generation_config["id"]
         tasks = client.get("/api/tasks?platform=xhs", headers={"Authorization": f"Bearer {owner_token}"}).json()["items"]
         assert tasks[0]["payload"]["model_config_id"] == generation_config["id"]
+    finally:
+        app.dependency_overrides.pop(get_image_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_unbound_image_generation_fails_before_quota_or_concurrency_reservation(tmp_path):
+    from sqlalchemy import func
+
+    from backend.app.api.ai import get_image_ai_client
+    from backend.app.core.database import get_db
+    from backend.app.models import BetaConcurrencyLease, UsageLedger
+
+    class UnexpectedGenerationClient:
+        def generate_image(self, **kwargs):
+            raise AssertionError("provider must not be called without an explicit capability binding")
+
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("unbound-image-generation-owner")
+    admin_token = _register_and_get_admin_access_token("unbound-image-generation-admin")
+    try:
+        app.dependency_overrides[get_image_ai_client] = lambda: UnexpectedGenerationClient()
+        _create_capability_test_model_config(
+            admin_token,
+            name="Unbound Image Generation",
+            provider="openai-compatible",
+            model_name="unbound-image-model",
+            is_default=True,
+        )
+
+        response = client.post(
+            "/api/ai/images/generate",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"prompt": "不应调用上游", "save_to_assets": False},
+        )
+
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "MODEL_CAPABILITY_DEFAULT_NOT_CONFIGURED"
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            assert db.scalar(select(func.count(UsageLedger.id))) == 0
+            assert db.scalar(select(func.count(BetaConcurrencyLease.id))) == 0
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(get_image_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_async_image_generation_hides_provider_url_for_unauthorized_failure(tmp_path, monkeypatch):
+    import backend.app.api.ai as ai_api
+
+    from backend.app.api.ai import get_image_ai_client
+
+    class UnauthorizedGenerationClient:
+        def generate_image(self, **kwargs):
+            response = requests.Response()
+            response.status_code = 401
+            response.url = "https://private-provider.example/images/generations"
+            error = requests.HTTPError(
+                "401 Client Error: Unauthorized for url: https://private-provider.example/images/generations",
+                response=response,
+            )
+            raise ValueError(
+                "图片生成失败: 401 Client Error: Unauthorized for url: https://private-provider.example/images/generations"
+            ) from error
+
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("unauthorized-image-owner")
+    admin_token = _register_and_get_admin_access_token("unauthorized-image-admin")
+    try:
+        app.dependency_overrides[get_image_ai_client] = lambda: UnauthorizedGenerationClient()
+        monkeypatch.setattr(
+            ai_api,
+            "SessionLocal",
+            app.dependency_overrides[db_dependency].sessionmaker,
+        )
+        config = _create_capability_test_model_config(
+            admin_token,
+            name="Unauthorized Image Provider",
+            provider="openai-compatible",
+            model_name="unauthorized-image-model",
+            api_key="sk-private-provider",
+        )
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        assert client.put(
+            "/api/model-configs/capability-defaults/image_generation",
+            headers=headers,
+            json={"model_config_id": config["id"]},
+        ).status_code == 200
+
+        started = client.post(
+            "/api/ai/images/generate-async",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"prompt": "触发鉴权失败", "save_to_assets": False},
+        )
+        assert started.status_code == 200
+        task = client.get(
+            f"/api/tasks/{started.json()['task_id']}",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        ).json()
+
+        assert task["status"] == "failed"
+        assert task["payload"]["error_code"] == "MODEL_PROVIDER_UNAUTHORIZED"
+        assert task["payload"]["error"] == "图片生成模型鉴权失败，请管理员检查模型配置"
+        assert "private-provider.example" not in str(task["payload"])
+        assert "sk-private-provider" not in str(task["payload"])
+    finally:
+        app.dependency_overrides.pop(get_image_ai_client, None)
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_sync_image_generation_hides_provider_url_for_unauthorized_failure(tmp_path):
+    from backend.app.api.ai import get_image_ai_client
+
+    class UnauthorizedGenerationClient:
+        def generate_image(self, **kwargs):
+            response = requests.Response()
+            response.status_code = 401
+            response.url = "https://private-provider.example/images/generations"
+            error = requests.HTTPError(
+                "401 Client Error: Unauthorized for url: https://private-provider.example/images/generations",
+                response=response,
+            )
+            raise ValueError(
+                "图片生成失败: 401 Client Error: Unauthorized for url: https://private-provider.example/images/generations"
+            ) from error
+
+    db_dependency = _override_database(tmp_path)
+    owner_token = _register_and_get_access_token("sync-unauthorized-image-owner")
+    admin_token = _register_and_get_admin_access_token("sync-unauthorized-image-admin")
+    try:
+        app.dependency_overrides[get_image_ai_client] = lambda: UnauthorizedGenerationClient()
+        config = _create_capability_test_model_config(
+            admin_token,
+            name="Sync Unauthorized Image Provider",
+            provider="openai-compatible",
+            model_name="sync-unauthorized-image-model",
+            api_key="sk-private-provider",
+        )
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        assert client.put(
+            "/api/model-configs/capability-defaults/image_generation",
+            headers=headers,
+            json={"model_config_id": config["id"]},
+        ).status_code == 200
+
+        response = client.post(
+            "/api/ai/images/generate",
+            headers={"Authorization": f"Bearer {owner_token}"},
+            json={"prompt": "同步触发鉴权失败", "save_to_assets": False},
+        )
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == {
+            "code": "MODEL_PROVIDER_UNAUTHORIZED",
+            "message": "图片生成模型鉴权失败，请管理员检查模型配置",
+        }
+        tasks = client.get(
+            "/api/tasks?platform=xhs",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        ).json()["items"]
+        assert tasks[0]["status"] == "failed"
+        assert tasks[0]["payload"]["error_code"] == "MODEL_PROVIDER_UNAUTHORIZED"
+        assert tasks[0]["payload"]["error"] == "图片生成模型鉴权失败，请管理员检查模型配置"
+        assert tasks[0]["payload"]["provider"] == "openai-compatible"
+        assert "private-provider.example" not in str(tasks[0]["payload"])
+        assert "sk-private-provider" not in str(tasks[0]["payload"])
     finally:
         app.dependency_overrides.pop(get_image_ai_client, None)
         app.dependency_overrides.pop(db_dependency, None)
@@ -7967,7 +8431,7 @@ def test_image_generation_prefers_runninghub_when_doubao_is_default_vision_model
 def test_system_note_analysis_uses_admin_default_doubao_models_for_regular_user(tmp_path):
     from backend.app.core.database import get_db
     from backend.app.core.security import encrypt_text
-    from backend.app.models import ModelConfig, Note, NoteAsset, PlatformAccount, User
+    from backend.app.models import ModelCapabilityDefault, ModelConfig, Note, NoteAsset, PlatformAccount, User
     from backend.app.services.note_analysis_service import analyze_note_system
 
     class FakeTextClient:
@@ -8004,28 +8468,45 @@ def test_system_note_analysis_uses_admin_default_doubao_models_for_regular_user(
             )
             db.add(note)
             db.flush()
+            text_config = ModelConfig(
+                user_id=admin.id,
+                name="Doubao Text",
+                model_type="text",
+                provider="volcengine-ark",
+                model_name="doubao-seed-2-0-mini-260428",
+                base_url="https://ark.cn-beijing.volces.com/api/v3",
+                encrypted_api_key=encrypt_text("sk-doubao-text"),
+                is_default=True,
+            )
+            vision_config = ModelConfig(
+                user_id=admin.id,
+                name="Doubao Vision",
+                model_type="image",
+                provider="volcengine-ark",
+                model_name="doubao-seed-2-0-mini-260428",
+                base_url="https://ark.cn-beijing.volces.com/api/v3",
+                encrypted_api_key=encrypt_text("sk-doubao-vision"),
+                is_default=True,
+            )
             db.add_all(
                 [
                     NoteAsset(note_id=note.id, asset_type="image", url="https://example.test/cover.png", local_path="", sort_order=0),
-                    ModelConfig(
-                        user_id=admin.id,
-                        name="Doubao Text",
-                        model_type="text",
-                        provider="volcengine-ark",
-                        model_name="doubao-seed-2-0-mini-260428",
-                        base_url="https://ark.cn-beijing.volces.com/api/v3",
-                        encrypted_api_key=encrypt_text("sk-doubao-text"),
-                        is_default=True,
+                    text_config,
+                    vision_config,
+                ]
+            )
+            db.flush()
+            db.add_all(
+                [
+                    ModelCapabilityDefault(
+                        capability="text",
+                        model_config_id=text_config.id,
+                        updated_by_user_id=admin.id,
                     ),
-                    ModelConfig(
-                        user_id=admin.id,
-                        name="Doubao Vision",
-                        model_type="image",
-                        provider="volcengine-ark",
-                        model_name="doubao-seed-2-0-mini-260428",
-                        base_url="https://ark.cn-beijing.volces.com/api/v3",
-                        encrypted_api_key=encrypt_text("sk-doubao-vision"),
-                        is_default=True,
+                    ModelCapabilityDefault(
+                        capability="vision",
+                        model_config_id=vision_config.id,
+                        updated_by_user_id=admin.id,
                     ),
                 ]
             )
@@ -8213,8 +8694,11 @@ def test_ai_rewrite_note_requires_owned_draft_and_default_text_model(tmp_path):
             headers={"Authorization": f"Bearer {owner_token}"},
             json={"draft_id": draft_id},
         )
-        assert no_model_response.status_code == 400
-        assert "Default text model" in no_model_response.json()["detail"]
+        assert no_model_response.status_code == 503
+        assert no_model_response.json()["detail"] == {
+            "code": "MODEL_CAPABILITY_DEFAULT_NOT_CONFIGURED",
+            "capability": "text",
+        }
 
         intruder_response = client.post(
             "/api/ai/rewrite-note",
@@ -8266,6 +8750,7 @@ def test_ai_rewrite_note_returns_preview_candidate_without_overwriting_owned_dra
             },
         )
         assert model_response.status_code == 200
+        _assign_capability_default(admin_token, "text", model_response.json()["id"])
 
         draft_response = client.post(
             "/api/drafts",
@@ -8376,6 +8861,7 @@ def _create_default_text_model(token: str, model_name: str = "gpt-score-test"):
         },
     )
     assert response.status_code == 200
+    _assign_capability_default(token, "text", response.json()["id"])
     return response.json()
 
 
@@ -8397,8 +8883,11 @@ def test_draft_ai_score_requires_owned_draft_and_default_text_model(tmp_path):
             headers={"Authorization": f"Bearer {owner_token}"},
             json={},
         )
-        assert no_model_response.status_code == 400
-        assert "Default text model" in no_model_response.json()["detail"]
+        assert no_model_response.status_code == 503
+        assert no_model_response.json()["detail"] == {
+            "code": "MODEL_CAPABILITY_DEFAULT_NOT_CONFIGURED",
+            "capability": "text",
+        }
 
         intruder_response = client.post(
             f"/api/drafts/{draft_id}/ai-score",
@@ -8618,6 +9107,7 @@ def test_ai_text_generation_endpoints_use_default_model_and_create_tasks(tmp_pat
             },
         )
         assert model_response.status_code == 200
+        _assign_capability_default(admin_token, "text", model_response.json()["id"])
 
         generate_response = client.post(
             "/api/ai/generate-note",
@@ -9070,6 +9560,8 @@ def test_ai_image_routes_use_default_model_store_assets_and_enforce_scope(tmp_pa
             },
         )
         assert model_response.status_code == 200
+        _assign_capability_default(admin_token, "vision", model_response.json()["id"])
+        _assign_capability_default(admin_token, "image_generation", model_response.json()["id"])
 
         generate_response = client.post(
             "/api/ai/images/generate-cover",
@@ -9164,6 +9656,7 @@ def test_ai_image_generate_asset_import_failure_returns_clear_failure(tmp_path, 
             },
         )
         assert model_response.status_code == 200
+        _assign_capability_default(admin_token, "image_generation", model_response.json()["id"])
 
         sync_response = tolerant_client.post(
             "/api/ai/images/generate",

@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, encrypt_text, hash_password
 from backend.app.main import app
-from backend.app.models import FeishuIntegrationConfig, Note, NoteAnalysisResult, NoteAsset, User
+from backend.app.models import FeishuIntegrationConfig, ModelCapabilityDefault, Note, NoteAnalysisResult, NoteAsset, User
 from backend.app.services import feishu_bitable_service
 
 client = TestClient(app)
@@ -33,7 +33,12 @@ def _override_database(tmp_path, name="feishu-integration.db"):
 def _create_user(SessionLocal, username="feishu-owner"):
     db = SessionLocal()
     try:
-        user = User(username=username, password_hash=hash_password("secret123"))
+        user = User(
+            username=username,
+            password_hash=hash_password("secret123"),
+            role="admin",
+            status="active",
+        )
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -636,8 +641,16 @@ def test_real_push_service_uploads_cover_attachment_and_uses_legacy_field_aliase
         user_id = _create_user(SessionLocal)
         db = SessionLocal()
         try:
+            admin = User(
+                username="feishu-model-admin",
+                password_hash=hash_password("secret123"),
+                role="admin",
+                status="active",
+            )
+            db.add(admin)
+            db.flush()
             model = feishu_bitable_service.ModelConfig(
-                user_id=user_id,
+                user_id=admin.id,
                 name="text",
                 model_type="text",
                 provider="openai-compatible",
@@ -657,6 +670,14 @@ def test_real_push_service_uploads_cover_attachment_and_uses_legacy_field_aliase
                 raw_json={"cover_url": "https://img.example.test/cover.jpg", "tags": ["装修", "避坑"]},
             )
             db.add_all([model, note])
+            db.flush()
+            db.add(
+                ModelCapabilityDefault(
+                    capability="text",
+                    model_config_id=model.id,
+                    updated_by_user_id=admin.id,
+                )
+            )
             db.commit()
             db.refresh(note)
             note_id = note.id

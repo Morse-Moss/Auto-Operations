@@ -166,7 +166,6 @@ def test_beta_api_lists_only_current_user_data(tmp_path):
             ("/api/ai/images/assets", "items"),
             ("/api/publish/jobs", "items"),
             ("/api/tasks", "items"),
-            ("/api/model-configs", "items"),
             ("/api/xhs/analytics/analysis/reports", None),
         ]
         for path, items_key in expectations:
@@ -175,6 +174,12 @@ def test_beta_api_lists_only_current_user_data(tmp_path):
             payload = response.json()
             items = payload if items_key is None else payload[items_key]
             assert items == [], path
+
+        model_configs = client.get(
+            "/api/model-configs",
+            headers=_auth_headers(intruder["access_token"]),
+        )
+        assert model_configs.status_code == 403
 
         owner_response = client.get("/api/tasks", headers=_auth_headers(owner["access_token"]))
         assert owner_response.status_code == 200
@@ -252,7 +257,7 @@ def test_beta_api_rejects_cross_user_publish_task_model_and_report_operations(tm
             client.get(f"/api/tasks/{ids['task_id']}", headers=headers),
             client.post(f"/api/tasks/{ids['task_id']}/cancel", headers=headers),
             client.post(f"/api/tasks/{ids['task_id']}/retry", headers=headers),
-            client.post(f"/api/model-configs/{ids['model_config_id']}/test", headers=headers),
+            client.post(f"/api/model-configs/{ids['model_config_id']}/test?capability=text", headers=headers),
             client.patch(f"/api/model-configs/{ids['model_config_id']}", headers=headers, json={"name": "takeover"}),
             client.delete(f"/api/model-configs/{ids['model_config_id']}", headers=headers),
             client.post(f"/api/model-configs/{ids['model_config_id']}/set-default", headers=headers),
@@ -265,6 +270,6 @@ def test_beta_api_rejects_cross_user_publish_task_model_and_report_operations(tm
             ),
         ]
 
-        assert [response.status_code for response in responses] == [404] * len(responses)
+        assert [response.status_code for response in responses] == [404] * 10 + [403] * 4 + [404] * 3
     finally:
         app.dependency_overrides.pop(db_dependency, None)

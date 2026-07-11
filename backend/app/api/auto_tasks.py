@@ -29,7 +29,7 @@ from backend.app.models import (
 )
 from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import OpenAICompatibleTextClient
-from backend.app.services.model_config_service import get_default_model_config
+from backend.app.services.model_config_service import get_model_config_for_capability
 
 router = APIRouter(prefix="/auto-tasks", tags=["auto-tasks"])
 
@@ -401,7 +401,7 @@ def run_auto_task(
     db.flush()
 
     # 5. AI rewrite using the task's instruction
-    model_config = get_default_model_config(db, user_id=current_user.id, model_type="text", capability="text")
+    model_config = get_model_config_for_capability(db, "text")
     if model_config is None:
         tracking_task.status = "failed"
         tracking_task.progress = 100

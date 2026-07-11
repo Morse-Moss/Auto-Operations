@@ -29,7 +29,7 @@ from backend.app.models import (
     Task,
     User,
 )
-from backend.app.services.model_config_service import get_default_model_config
+from backend.app.services.model_config_service import get_model_config_for_capability
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 
@@ -429,7 +429,7 @@ def run_monitoring_refresh_once(platform: str = "xhs") -> dict[str, Any]:
 
 
 def _get_text_model_for_user(db: Session, user_id: int):
-    config = get_default_model_config(db, user_id=user_id, model_type="text", capability="text")
+    config = get_model_config_for_capability(db, "text")
     if not config or not config.encrypted_api_key:
         return None, ""
     return config, decrypt_text(config.encrypted_api_key)

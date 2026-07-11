@@ -452,8 +452,20 @@ def _override_database(tmp_path):
 
 
 def _register(username: str) -> dict:
+    from backend.app.core.database import get_db
+    from backend.app.models import User
+
     response = client.post("/api/auth/register", json={"username": username, "password": "secret123", "invite_code": create_test_invite_code()})
     assert response.status_code == 200
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        user = db.get(User, response.json()["user"]["id"])
+        assert user is not None
+        user.role = "admin"
+        user.status = "active"
+        db.commit()
+    finally:
+        db.close()
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 

@@ -28,7 +28,7 @@ from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 from backend.app.services.asset_storage_policy import asset_owner_prefix
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLeaseGuard, BetaConcurrencyService, acquire_image_generation_leases
-from backend.app.services.model_config_service import get_default_model_config, require_default_model_context
+from backend.app.services.model_config_service import require_model_capability_context
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
@@ -112,26 +112,12 @@ def _serialize_draft(draft: AiDraft) -> dict:
     }
 
 
-def _get_default_text_model(db: Session, current_user: User) -> ModelConfig:
-    config = get_default_model_config(db, user_id=current_user.id, model_type="text")
-    if config is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Default text model is not configured")
-    return config
-
-
-def _get_default_image_model(db: Session, current_user: User) -> ModelConfig:
-    config = get_default_model_config(db, user_id=current_user.id, model_type="image")
-    if config is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Default image model is not configured")
-    return config
-
-
 def _text_model_context(db: Session, current_user: User) -> tuple[ModelConfig, str]:
-    return require_default_model_context(db, user_id=current_user.id, model_type="text", capability="text")
+    return require_model_capability_context(db, "text")
 
 
-def _image_model_context(db: Session, current_user: User, *, capability: str | None = None) -> tuple[ModelConfig, str]:
-    return require_default_model_context(db, user_id=current_user.id, model_type="image", capability=capability)
+def _image_model_context(db: Session, current_user: User, *, capability: str) -> tuple[ModelConfig, str]:
+    return require_model_capability_context(db, capability)
 
 
 def _image_client_for_model(model_config: ModelConfig, fallback_client: ImageAiClient) -> ImageAiClient:
@@ -148,6 +134,31 @@ def _redact_sensitive_text(message: str, sensitive_values: list[str] | None = No
     redacted = re.sub(r"(?i)\b(apiKey|api_key)=([^&\s]+)", r"\1=[REDACTED]", redacted)
     redacted = re.sub(r"(?i)(Authorization:\s*Bearer\s+)([^\s,;]+)", r"\1[REDACTED]", redacted)
     return redacted
+
+
+def _provider_http_status(exc: Exception) -> int | None:
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        response = getattr(current, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _public_image_generation_error(exc: Exception) -> tuple[str, str]:
+    if _provider_http_status(exc) in {401, 403}:
+        return (
+            "MODEL_PROVIDER_UNAUTHORIZED",
+            "图片生成模型鉴权失败，请管理员检查模型配置",
+        )
+    return (
+        "MODEL_PROVIDER_FAILED",
+        "图片生成模型调用失败，请稍后重试或联系管理员",
+    )
 
 
 def _serialize_generated_asset(asset: AiGeneratedAsset) -> dict[str, Any]:
@@ -460,6 +471,7 @@ def _recorded_image_task(
     action: Callable[[], Any],
     sensitive_values: list[str] | None = None,
     usage_reservation_id: int | None = None,
+    provider: str | None = None,
 ):
     task = Task(
         user_id=current_user.id,
@@ -473,16 +485,30 @@ def _recorded_image_task(
     db.flush()
     try:
         result = action()
-    except ValueError as exc:
-        redacted_error = _redact_sensitive_text(str(exc), sensitive_values)
-        if usage_reservation_id is not None:
-            UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
-        task.status = "failed"
-        task.progress = 100
-        task.payload = {**(task.payload or {}), "error": redacted_error}
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=redacted_error) from exc
     except Exception as exc:
+        if provider is not None and (
+            not isinstance(exc, ValueError) or _provider_http_status(exc) is not None
+        ):
+            error_code, public_error = _public_image_generation_error(exc)
+            if usage_reservation_id is not None:
+                UsageQuotaService(db).refund(
+                    usage_reservation_id,
+                    failure_reason=public_error,
+                )
+            task.status = "failed"
+            task.progress = 100
+            task.payload = {
+                **(task.payload or {}),
+                "error_code": error_code,
+                "error": public_error,
+                "provider": provider,
+            }
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={"code": error_code, "message": public_error},
+            ) from exc
+
         redacted_error = _redact_sensitive_text(str(exc), sensitive_values)
         if usage_reservation_id is not None:
             UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
@@ -490,6 +516,11 @@ def _recorded_image_task(
         task.progress = 100
         task.payload = {**(task.payload or {}), "error": redacted_error}
         db.commit()
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=redacted_error,
+            ) from exc
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI image generation failed: {redacted_error}") from exc
 
     if usage_reservation_id is not None:
@@ -538,24 +569,22 @@ def _run_async_image_generate_task(task_id: int, current_user_id: int, model_con
                     reference_images=[str(item) for item in refs] or None,
                     aspect_ratio=str(payload.get("aspect_ratio") or "auto"),
                 )
-        except ValueError as exc:
-            redacted_error = _redact_sensitive_text(str(exc), [api_key])
-            if isinstance(usage_reservation_id, int):
-                UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
-            task.status = "failed"
-            task.progress = 100
-            task.finished_at = shanghai_now()
-            task.payload = {**(task.payload or {}), "error": redacted_error}
-            db.commit()
-            return
         except Exception as exc:
-            redacted_error = _redact_sensitive_text(str(exc), [api_key])
+            error_code, public_error = _public_image_generation_error(exc)
             if isinstance(usage_reservation_id, int):
-                UsageQuotaService(db).refund(usage_reservation_id, failure_reason=redacted_error)
+                UsageQuotaService(db).refund(
+                    usage_reservation_id,
+                    failure_reason=public_error,
+                )
             task.status = "failed"
             task.progress = 100
             task.finished_at = shanghai_now()
-            task.payload = {**(task.payload or {}), "error": f"AI image generation failed: {redacted_error}"}
+            task.payload = {
+                **(task.payload or {}),
+                "error_code": error_code,
+                "error": public_error,
+                "provider": model_config.provider,
+            }
             db.commit()
             return
 
@@ -913,6 +942,7 @@ def generate_cover(
             ),
             sensitive_values=[api_key],
             usage_reservation_id=usage_reservation.id,
+            provider=model_config.provider,
         )
         try:
             asset = _create_generated_image_asset(
@@ -1014,6 +1044,7 @@ def generate_image(
             action=run_generate_image,
             sensitive_values=[api_key],
             usage_reservation_id=usage_reservation.id,
+            provider=model_config.provider,
         )
         response_data: dict = {"url": result.get("url") or "", "raw": result.get("raw")}
         if payload.save_to_assets:

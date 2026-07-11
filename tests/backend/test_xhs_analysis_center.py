@@ -21,6 +21,7 @@ from backend.app.models.user import User
 from backend.app.services.usage_quota_service import UsageQuotaService, get_or_create_default_tenant_context
 from backend.app.services.xhs_analysis_center_service import AnalysisValidationError, XhsAnalysisCenterService
 from test_support.beta_invites import create_test_invite_code
+from test_support.model_capabilities import bind_test_model_capability
 
 
 @pytest.fixture
@@ -172,7 +173,7 @@ def _create_text_model_config_via_db(username: str) -> int:
             encrypted_api_key=encrypt_text("sk-analysis-secret"),
             is_default=True,
         )
-        db.add(config)
+        bind_test_model_capability(db, config=config, capability="text")
         db.commit()
         db.refresh(config)
         return config.id

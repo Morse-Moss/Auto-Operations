@@ -11,6 +11,7 @@ from backend.app.core.security import create_access_token, hash_password, encryp
 from backend.app.main import app
 from backend.app.models import ModelConfig, Note, NoteAnalysisResult, NoteAsset, User
 from backend.app.services import feishu_bitable_service, note_analysis_service, scheduler_service
+from test_support.model_capabilities import bind_test_model_capability
 
 client = TestClient(app)
 
@@ -288,18 +289,17 @@ def test_system_note_analysis_uses_default_text_model_and_ignores_text_cover_typ
         )
         db = SessionLocal()
         try:
-            db.add(
-                ModelConfig(
-                    user_id=user_id,
-                    name="Default Text",
-                    model_type="text",
-                    provider="openai-compatible",
-                    model_name="fake-text-model",
-                    base_url="https://example.test/v1",
-                    encrypted_api_key=encrypt_text("fake-key"),
-                    is_default=True,
-                )
+            config = ModelConfig(
+                user_id=user_id,
+                name="Default Text",
+                model_type="text",
+                provider="openai-compatible",
+                model_name="fake-text-model",
+                base_url="https://example.test/v1",
+                encrypted_api_key=encrypt_text("fake-key"),
+                is_default=True,
             )
+            bind_test_model_capability(db, config=config, capability="text")
             db.commit()
         finally:
             db.close()
@@ -361,18 +361,17 @@ def test_text_model_helpers_use_admin_default_doubao_for_regular_user(tmp_path, 
         try:
             admin = db.get(User, admin_id)
             admin.role = "admin"
-            db.add(
-                ModelConfig(
-                    user_id=admin_id,
-                    name="Doubao Text",
-                    model_type="text",
-                    provider="volcengine-ark",
-                    model_name="doubao-seed-2-0-mini-260428",
-                    base_url="https://ark.cn-beijing.volces.com/api/v3",
-                    encrypted_api_key=encrypt_text("sk-doubao-text"),
-                    is_default=True,
-                )
+            config = ModelConfig(
+                user_id=admin_id,
+                name="Doubao Text",
+                model_type="text",
+                provider="volcengine-ark",
+                model_name="doubao-seed-2-0-mini-260428",
+                base_url="https://ark.cn-beijing.volces.com/api/v3",
+                encrypted_api_key=encrypt_text("sk-doubao-text"),
+                is_default=True,
             )
+            bind_test_model_capability(db, config=config, capability="text")
             db.commit()
 
             config, api_key = scheduler_service._get_text_model_for_user(db, user_id)
@@ -419,18 +418,17 @@ def test_system_note_analysis_uses_default_image_model_for_cover_type(tmp_path):
         )
         db = SessionLocal()
         try:
-            db.add(
-                ModelConfig(
-                    user_id=user_id,
-                    name="Default Image",
-                    model_type="image",
-                    provider="openai-compatible",
-                    model_name="fake-vision-model",
-                    base_url="https://example.test/v1",
-                    encrypted_api_key=encrypt_text("fake-image-key"),
-                    is_default=True,
-                )
+            config = ModelConfig(
+                user_id=user_id,
+                name="Default Image",
+                model_type="image",
+                provider="openai-compatible",
+                model_name="fake-vision-model",
+                base_url="https://example.test/v1",
+                encrypted_api_key=encrypt_text("fake-image-key"),
+                is_default=True,
             )
+            bind_test_model_capability(db, config=config, capability="vision")
             db.add(NoteAsset(note_id=note_id, asset_type="image", url="https://images.example/cover.jpg", local_path="", sort_order=0))
             db.commit()
 
@@ -473,30 +471,28 @@ def test_system_note_analysis_keeps_text_result_when_image_model_fails(tmp_path)
         )
         db = SessionLocal()
         try:
-            db.add(
-                ModelConfig(
-                    user_id=user_id,
-                    name="Default Text",
-                    model_type="text",
-                    provider="openai-compatible",
-                    model_name="fake-text-model",
-                    base_url="https://example.test/v1",
-                    encrypted_api_key=encrypt_text("fake-key"),
-                    is_default=True,
-                )
+            text_config = ModelConfig(
+                user_id=user_id,
+                name="Default Text",
+                model_type="text",
+                provider="openai-compatible",
+                model_name="fake-text-model",
+                base_url="https://example.test/v1",
+                encrypted_api_key=encrypt_text("fake-key"),
+                is_default=True,
             )
-            db.add(
-                ModelConfig(
-                    user_id=user_id,
-                    name="Default Image",
-                    model_type="image",
-                    provider="openai-compatible",
-                    model_name="fake-vision-model",
-                    base_url="https://example.test/v1",
-                    encrypted_api_key=encrypt_text("fake-image-key"),
-                    is_default=True,
-                )
+            image_config = ModelConfig(
+                user_id=user_id,
+                name="Default Image",
+                model_type="image",
+                provider="openai-compatible",
+                model_name="fake-vision-model",
+                base_url="https://example.test/v1",
+                encrypted_api_key=encrypt_text("fake-image-key"),
+                is_default=True,
             )
+            bind_test_model_capability(db, config=text_config, capability="text")
+            bind_test_model_capability(db, config=image_config, capability="vision")
             db.commit()
 
             class FakeTextClient:

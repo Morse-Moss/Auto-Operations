@@ -19,7 +19,7 @@ from backend.app.services.feishu_bitable_service import (
     normalize_multi_select,
     normalize_search_attribute,
 )
-from backend.app.services.model_config_service import get_default_model_config
+from backend.app.services.model_config_service import get_model_config_for_capability
 
 SYSTEM_ANALYSIS_SOURCE = "system"
 SYSTEM_ANALYSIS_DONE_STATUS = "\u5df2\u5b8c\u6210"
@@ -197,7 +197,7 @@ def _content_structure(title: str, body: str) -> str:
 def _text_model_analysis(db: Session, *, user_id: int, note: Note, text_client: Any | None) -> dict[str, Any]:
     if text_client is None:
         text_client = OpenAICompatibleTextClient()
-    model_config = get_default_model_config(db, user_id=user_id, model_type="text", capability="text")
+    model_config = get_model_config_for_capability(db, "text")
     if model_config is None or not model_config.encrypted_api_key:
         return {}
     api_key = decrypt_text(model_config.encrypted_api_key)
@@ -249,7 +249,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 def _cover_type_from_image_model(db: Session, *, note: Note, image_client: Any | None) -> str:
     if image_client is None:
         image_client = OpenAICompatibleImageClient()
-    model_config = get_default_model_config(db, user_id=note.user_id, model_type="image", capability="vision")
+    model_config = get_model_config_for_capability(db, "vision")
     if model_config is None or not model_config.encrypted_api_key:
         return ""
     try:

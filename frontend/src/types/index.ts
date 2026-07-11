@@ -1476,6 +1476,7 @@ export type CreateDraftPayload = {
 };
 
 export type ModelType = "text" | "image";
+export type ModelCapability = "text" | "vision" | "image_generation";
 
 export type ModelConfig = {
   id: number;
@@ -1486,6 +1487,14 @@ export type ModelConfig = {
   base_url: string;
   has_api_key: boolean;
   is_default: boolean;
+  supported_capabilities: ModelCapability[];
+  assigned_capabilities: ModelCapability[];
+};
+
+export type ModelCapabilityDefault = {
+  capability: ModelCapability;
+  model_config: ModelConfig | null;
+  status: "configured" | "not_configured" | "invalid";
 };
 
 export type ModelConfigPayload = {

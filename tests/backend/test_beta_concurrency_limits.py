@@ -10,7 +10,7 @@ from backend.app.core.database import Base, get_db
 from backend.app.core.security import encrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.main import app
-from backend.app.models import BetaConcurrencyLease, ModelConfig, Task, UsageLedger, User
+from backend.app.models import BetaConcurrencyLease, ModelCapabilityDefault, ModelConfig, Task, UsageLedger, User
 from backend.app.services.usage_quota_service import get_or_create_default_tenant_context
 from test_support.beta_invites import create_test_invite_code
 
@@ -56,18 +56,32 @@ def _with_db(action):
 
 
 def _create_image_model(db: Session, user_id: int) -> None:
-    db.add(
-        ModelConfig(
-            user_id=user_id,
-            name="Default Image",
-            model_type="image",
-            provider="openai-compatible",
-            model_name="gpt-image-concurrency-test",
-            base_url="https://api.example.test/v1",
-            encrypted_api_key=encrypt_text("sk-image-secret"),
-            is_default=True,
+    user = db.get(User, user_id)
+    assert user is not None
+    user.role = "admin"
+    user.status = "active"
+    config = ModelConfig(
+        user_id=user_id,
+        name="Default Image",
+        model_type="image",
+        provider="openai-compatible",
+        model_name="gpt-image-concurrency-test",
+        base_url="https://api.example.test/v1",
+        encrypted_api_key=encrypt_text("sk-image-secret"),
+        is_default=True,
+    )
+    db.add(config)
+    db.flush()
+    binding = db.scalar(
+        select(ModelCapabilityDefault).where(
+            ModelCapabilityDefault.capability == "image_generation"
         )
     )
+    if binding is None:
+        binding = ModelCapabilityDefault(capability="image_generation")
+        db.add(binding)
+    binding.model_config_id = config.id
+    binding.updated_by_user_id = user_id
     db.commit()
 
 

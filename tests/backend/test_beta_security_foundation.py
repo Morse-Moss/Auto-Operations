@@ -21,6 +21,7 @@ from backend.app.models import (
 )
 from backend.app.services.asset_storage_policy import asset_owner_prefix
 from test_support.beta_invites import create_test_invite_code
+from test_support.model_capabilities import bind_test_model_capability
 
 client = TestClient(app)
 
@@ -293,18 +294,17 @@ def test_async_image_asset_save_failure_refunds_reserved_quota(tmp_path, monkeyp
         registered = _register("async-asset-failure-owner")
         db = next(app.dependency_overrides[get_db]())
         try:
-            db.add(
-                __import__("backend.app.models", fromlist=["ModelConfig"]).ModelConfig(
-                    user_id=registered["user"]["id"],
-                    name="Default Image",
-                    model_type="image",
-                    provider="openai-compatible",
-                    model_name="gpt-image-quota-test",
-                    base_url="https://api.example.test/v1",
-                    encrypted_api_key=encrypt_text("sk-image-secret"),
-                    is_default=True,
-                )
+            config = __import__("backend.app.models", fromlist=["ModelConfig"]).ModelConfig(
+                user_id=registered["user"]["id"],
+                name="Default Image",
+                model_type="image",
+                provider="openai-compatible",
+                model_name="gpt-image-quota-test",
+                base_url="https://api.example.test/v1",
+                encrypted_api_key=encrypt_text("sk-image-secret"),
+                is_default=True,
             )
+            bind_test_model_capability(db, config=config, capability="image_generation")
             db.commit()
         finally:
             db.close()

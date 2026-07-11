@@ -1,6 +1,5 @@
 import {
   ApiOutlined,
-  CheckCircleOutlined,
   DeleteOutlined,
   EditOutlined,
   FileImageOutlined,
@@ -8,13 +7,11 @@ import {
   PlusOutlined,
   ReloadOutlined,
   RobotOutlined,
-  StarOutlined,
 } from "@ant-design/icons";
 import {
   Alert,
   Button,
   Card,
-  Checkbox,
   Col,
   Empty,
   Form,
@@ -22,6 +19,7 @@ import {
   Popconfirm,
   Row,
   Segmented,
+  Select,
   Space,
   Spin,
   Tag,
@@ -35,15 +33,16 @@ import {
   configureDoubaoMainModels,
   createModelConfig,
   deleteModelConfig,
+  fetchModelCapabilityDefaults,
   fetchModelConfigs,
-  setDefaultModelConfig,
   apiErrorMessage,
   getUsageLimitError,
+  setModelCapabilityDefault,
   testModelConfig,
   updateModelConfig,
 } from "../../lib/api";
 import { useUsageBalance } from "../../hooks/use-usage-balance";
-import type { ModelConfig, ModelConfigPayload, ModelType } from "../../types";
+import type { ModelCapability, ModelCapabilityDefault, ModelConfig, ModelConfigPayload, ModelType } from "../../types";
 
 const { Text } = Typography;
 const DOUBAO_MAIN_MODEL = "doubao-seed-2-0-mini-260428";
@@ -56,7 +55,14 @@ const emptyForm: ModelConfigPayload = {
   model_name: DOUBAO_MAIN_MODEL,
   base_url: VOLCENGINE_ARK_BASE_URL,
   api_key: "",
-  is_default: true,
+  is_default: false,
+};
+
+const capabilityOrder: ModelCapability[] = ["text", "vision", "image_generation"];
+const capabilityMeta: Record<ModelCapability, { label: string; description: string }> = {
+  text: { label: "文本生成", description: "改写、草稿与分析文本" },
+  vision: { label: "图片理解", description: "图片描述与内容理解" },
+  image_generation: { label: "图片生成", description: "文生图与参考图生图" },
 };
 
 function defaultModelName(type: ModelType): string {
@@ -99,8 +105,11 @@ export function ModelConfigPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [testingId, setTestingId] = useState<number | null>(null);
-  const [testResults, setTestResults] = useState<Record<number, { status: string; message: string }>>({});
+  const [capabilityDefaults, setCapabilityDefaults] = useState<ModelCapabilityDefault[]>([]);
+  const [capabilitySelections, setCapabilitySelections] = useState<Partial<Record<ModelCapability, number>>>({});
+  const [savingCapability, setSavingCapability] = useState<ModelCapability | null>(null);
+  const [testingKey, setTestingKey] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { status: string; message: string }>>({});
   const [doubaoApiKey, setDoubaoApiKey] = useState("");
   const [isConfiguringDoubao, setIsConfiguringDoubao] = useState(false);
   const usage = useUsageBalance();
@@ -117,8 +126,19 @@ export function ModelConfigPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await fetchModelConfigs();
-      setConfigs(result.items);
+      const [configResult, defaultResult] = await Promise.all([
+        fetchModelConfigs(),
+        fetchModelCapabilityDefaults(),
+      ]);
+      setConfigs(configResult.items);
+      setCapabilityDefaults(defaultResult.items);
+      setCapabilitySelections(
+        Object.fromEntries(
+          defaultResult.items
+            .filter((item) => item.model_config)
+            .map((item) => [item.capability, item.model_config?.id])
+        ) as Partial<Record<ModelCapability, number>>
+      );
     } catch {
       setError("模型配置加载失败。");
     } finally {
@@ -147,17 +167,12 @@ export function ModelConfigPage() {
     try {
       if (editingId) {
         const updated = await updateModelConfig(editingId, payload);
-        setConfigs((current) => current.map((c) => c.id === updated.id ? updated : (updated.is_default && c.model_type === updated.model_type ? { ...c, is_default: false } : c)));
+        setConfigs((current) => current.map((config) => config.id === updated.id ? updated : config));
         setMessage(`${typeLabel(updated.model_type)}配置已更新。`);
         setEditingId(null);
       } else {
         const created = await createModelConfig(payload);
-        setConfigs((current) => {
-          const withoutOldDefault = created.is_default
-            ? current.map((config) => config.model_type === created.model_type ? { ...config, is_default: false } : config)
-            : current;
-          return [created, ...withoutOldDefault];
-        });
+        setConfigs((current) => [created, ...current]);
         setMessage(`${typeLabel(created.model_type)}配置已保存。`);
       }
       setForm(defaultFormForType(form.model_type));
@@ -177,7 +192,7 @@ export function ModelConfigPage() {
       model_name: config.model_name,
       base_url: config.base_url,
       api_key: "",
-      is_default: config.is_default,
+      is_default: false,
     });
     setMessage(null);
     setError(null);
@@ -199,41 +214,50 @@ export function ModelConfigPage() {
         setForm(defaultFormForType(form.model_type));
       }
       setMessage("配置已删除。");
-    } catch {
-      setError("配置删除失败。");
+    } catch (err) {
+      setError(apiErrorMessage(err, "配置删除失败。"));
     }
   }
 
-  async function handleTest(configId: number) {
-    setTestingId(configId);
+  async function handleTest(configId: number, capability: ModelCapability) {
+    const resultKey = `${configId}:${capability}`;
+    setTestingKey(resultKey);
     try {
-      const result = await testModelConfig(configId);
-      setTestResults((prev) => ({ ...prev, [configId]: { status: result.status, message: result.message } }));
+      const result = await testModelConfig(configId, capability);
+      setTestResults((prev) => ({ ...prev, [resultKey]: { status: result.status, message: result.message } }));
     } catch (err) {
       const limitError = getUsageLimitError(err);
-      setTestResults((prev) => ({ ...prev, [configId]: { status: "error", message: limitError?.message || apiErrorMessage(err, "检查请求失败") } }));
+      setTestResults((prev) => ({ ...prev, [resultKey]: { status: "error", message: limitError?.message || apiErrorMessage(err, "检查请求失败") } }));
     } finally {
-      setTestingId(null);
+      setTestingKey(null);
     }
   }
 
-  async function handleSetDefault(config: ModelConfig) {
+  async function handleSetCapabilityDefault(capability: ModelCapability) {
+    const modelConfigId = capabilitySelections[capability];
+    if (!modelConfigId) {
+      setError(`请先为${capabilityMeta[capability].label}选择模型。`);
+      return;
+    }
+    setSavingCapability(capability);
     setError(null);
     setMessage(null);
     try {
-      const updated = await setDefaultModelConfig(config.id);
+      const updated = await setModelCapabilityDefault(capability, modelConfigId);
+      setCapabilityDefaults((current) => current.map((item) => item.capability === capability ? updated : item));
       setConfigs((current) =>
-        current.map((item) =>
-          item.model_type === updated.model_type
-            ? { ...item, is_default: item.id === updated.id }
-            : item
-        )
+        current.map((config) => ({
+          ...config,
+          assigned_capabilities: config.id === modelConfigId
+            ? Array.from(new Set([...config.assigned_capabilities.filter((item) => item !== capability), capability]))
+            : config.assigned_capabilities.filter((item) => item !== capability),
+        }))
       );
-      setMessage(
-        `${updated.name} 已设为默认${typeLabel(updated.model_type)}。`
-      );
-    } catch {
-      setError("默认模型切换失败。");
+      setMessage(`${capabilityMeta[capability].label}已切换为 ${updated.model_config?.name || "所选模型"}。`);
+    } catch (err) {
+      setError(apiErrorMessage(err, `${capabilityMeta[capability].label}路由保存失败。`));
+    } finally {
+      setSavingCapability(null);
     }
   }
 
@@ -248,20 +272,9 @@ export function ModelConfigPage() {
     setError(null);
     try {
       const result = await configureDoubaoMainModels(apiKey);
-      setConfigs((current) => {
-        const configured = [result.text, result.vision];
-        const configuredIds = new Set(configured.map((item) => item.id));
-        const updated = current
-          .filter((item) => !configuredIds.has(item.id))
-          .map((item) => (
-            item.model_type === result.text.model_type || item.model_type === result.vision.model_type
-              ? { ...item, is_default: false }
-              : item
-          ));
-        return [...configured, ...updated];
-      });
+      await loadConfigs();
       setDoubaoApiKey("");
-      setMessage("豆包主力模型已配置为文本和图片分析默认模型。");
+      setMessage(`豆包主力模型已更新：${result.text.name}、${result.vision.name}。`);
     } catch (err) {
       setError(apiErrorMessage(err, "豆包主力模型配置失败。"));
     } finally {
@@ -298,7 +311,7 @@ export function ModelConfigPage() {
         description={<>
           主力模型使用火山方舟：Provider <Typography.Text code>volcengine-ark</Typography.Text>，Base URL <Typography.Text code>{VOLCENGINE_ARK_BASE_URL}</Typography.Text>，模型名称 <Typography.Text code>{DOUBAO_MAIN_MODEL}</Typography.Text>。<br />
           同一个 Doubao 配置可以分别保存为文本模型和图片分析模型；图片生成仍需单独使用支持生成的服务。<br />
-          模型连接测试会按积分计费；余额不足时不会请求模型服务。
+          模型连接测试会按积分计费；余额不足时不会请求模型服务。图片生成连接测试会真实调用上游，可能消耗上游额度。
         </>}
       />
 
@@ -324,6 +337,68 @@ export function ModelConfigPage() {
           style={{ marginBottom: 16 }}
         />
       )}
+
+      <Card
+        title="能力路由"
+        extra={<Text type="secondary">管理员统一指定，全系统立即使用</Text>}
+        style={{ ...cardStyle, marginBottom: 24 }}
+      >
+        <Row gutter={[16, 16]}>
+          {capabilityOrder.map((capability) => {
+            const route = capabilityDefaults.find((item) => item.capability === capability);
+            const compatibleConfigs = configs.filter((config) => config.supported_capabilities.includes(capability));
+            return (
+              <Col xs={24} md={8} key={capability}>
+                <Card
+                  size="small"
+                  style={{
+                    height: "100%",
+                    background: "#262626",
+                    borderColor: route?.status === "configured" ? "#245b92" : "#5c3030",
+                  }}
+                >
+                  <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                    <Space style={{ width: "100%", justifyContent: "space-between" }}>
+                      <Text strong>{capabilityMeta[capability].label}</Text>
+                      <Tag color={route?.status === "configured" ? "blue" : "error"}>
+                        {route?.status === "configured" ? "已配置" : route?.status === "invalid" ? "配置失效" : "尚未配置"}
+                      </Tag>
+                    </Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {capabilityMeta[capability].description}
+                    </Text>
+                    <Text style={{ minHeight: 22 }}>
+                      {route?.model_config
+                        ? `${route.model_config.name} · ${route.model_config.provider}`
+                        : "选择模型后，相关 AI 任务才会启用"}
+                    </Text>
+                    <Select<number>
+                      value={capabilitySelections[capability]}
+                      onChange={(value) => setCapabilitySelections((current) => ({ ...current, [capability]: value }))}
+                      options={compatibleConfigs.map((config) => ({
+                        value: config.id,
+                        label: `${config.name} · ${config.model_name}`,
+                      }))}
+                      placeholder={compatibleConfigs.length ? "选择默认模型" : "暂无兼容模型"}
+                      disabled={compatibleConfigs.length === 0}
+                      style={{ width: "100%" }}
+                    />
+                    <Button
+                      type="primary"
+                      block
+                      loading={savingCapability === capability}
+                      disabled={!capabilitySelections[capability]}
+                      onClick={() => void handleSetCapabilityDefault(capability)}
+                    >
+                      保存路由
+                    </Button>
+                  </Space>
+                </Card>
+              </Col>
+            );
+          })}
+        </Row>
+      </Card>
 
       <Row gutter={[24, 24]}>
         <Col xs={24} lg={8}>
@@ -454,19 +529,6 @@ export function ModelConfigPage() {
                     placeholder="保存后只显示是否已配置"
                   />
                 </Form.Item>
-                <Form.Item>
-                  <Checkbox
-                    checked={form.is_default}
-                    onChange={(e) =>
-                      setForm((current) => ({
-                        ...current,
-                        is_default: e.target.checked,
-                      }))
-                    }
-                  >
-                    设为该类型默认模型
-                  </Checkbox>
-                </Form.Item>
                 <Button
                   type="primary"
                   htmlType="submit"
@@ -535,14 +597,13 @@ export function ModelConfigPage() {
                             }}
                           >
                             <Text strong>{config.name}</Text>
-                            {config.is_default && (
-                              <Tag
-                                icon={<StarOutlined />}
-                                color="blue"
-                              >
-                                默认
-                              </Tag>
-                            )}
+                            <Space size={4} wrap>
+                              {config.assigned_capabilities.map((capability) => (
+                                <Tag key={capability} color="blue">
+                                  {capabilityMeta[capability].label}
+                                </Tag>
+                              ))}
+                            </Space>
                           </Space>
                           <div style={{ marginTop: 4, marginBottom: 4 }}>
                             <Text>{config.model_name || "未填写模型名称"}</Text>
@@ -569,22 +630,20 @@ export function ModelConfigPage() {
                             </Text>
                           </div>
                           <Space size={4} wrap>
-                            <Button
-                              size="small"
-                              icon={<CheckCircleOutlined />}
-                              disabled={config.is_default}
-                              onClick={() => handleSetDefault(config)}
-                            >
-                              {config.is_default ? "当前默认" : "设为默认"}
-                            </Button>
-                            <Button
-                              size="small"
-                              icon={<ApiOutlined />}
-                              loading={testingId === config.id}
-                              onClick={() => void handleTest(config.id)}
-                            >
-                              检查
-                            </Button>
+                            {config.supported_capabilities.map((capability) => {
+                              const resultKey = `${config.id}:${capability}`;
+                              return (
+                                <Button
+                                  key={capability}
+                                  size="small"
+                                  icon={<ApiOutlined />}
+                                  loading={testingKey === resultKey}
+                                  onClick={() => void handleTest(config.id, capability)}
+                                >
+                                  测试{capabilityMeta[capability].label}
+                                </Button>
+                              );
+                            })}
                             <Button
                               size="small"
                               icon={<EditOutlined />}
@@ -596,14 +655,17 @@ export function ModelConfigPage() {
                               <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
                             </Popconfirm>
                           </Space>
-                          {testResults[config.id] && (
-                            <div style={{ marginTop: 6 }}>
-                              <Tag color={testResults[config.id].status === "ok" ? "success" : "error"}>
-                                {testResults[config.id].status === "ok" ? "连接正常" : "连接失败"}
-                              </Tag>
-                              <Text type="secondary" style={{ fontSize: 11 }}>{testResults[config.id].message}</Text>
-                            </div>
-                          )}
+                          {config.supported_capabilities.map((capability) => {
+                            const result = testResults[`${config.id}:${capability}`];
+                            return result ? (
+                              <div key={capability} style={{ marginTop: 6 }}>
+                                <Tag color={result.status === "ok" ? "success" : "error"}>
+                                  {capabilityMeta[capability].label} · {result.status === "ok" ? "连接正常" : "连接失败"}
+                                </Tag>
+                                <Text type="secondary" style={{ fontSize: 11 }}>{result.message}</Text>
+                              </div>
+                            ) : null;
+                          })}
                         </Card>
                       ))}
                     </Space>

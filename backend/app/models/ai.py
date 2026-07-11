@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -25,6 +25,25 @@ class ModelConfig(Base):
     base_url: Mapped[str] = mapped_column(Text, default="")
     encrypted_api_key: Mapped[str] = mapped_column(Text, default="")
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ModelCapabilityDefault(Base):
+    __tablename__ = "model_capability_defaults"
+    __table_args__ = (UniqueConstraint("capability", name="uq_model_capability_defaults_capability"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    capability: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_config_id: Mapped[int] = mapped_column(
+        ForeignKey("model_configs.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    updated_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now)
 
 
 class AiDraft(Base):
