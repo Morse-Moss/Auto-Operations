@@ -267,7 +267,7 @@ def test_planned_platform_dry_run_fails_closed_before_adapter_use(tmp_path):
             assert result["ok"] is False
             assert result["publish_blocked"] is True
             assert result["policy"]["allowed"] is False
-            assert result["policy"]["blocked_reason"] == "capability_planned"
+            assert result["policy"]["blocked_reason"] == "platform_planned"
             assert _checks_by_code(result)["policy"]["status"] == "blocked"
             assert TrapCreatorAdapter.init_called is False
             assert TrapCreatorAdapter.upload_called is False
