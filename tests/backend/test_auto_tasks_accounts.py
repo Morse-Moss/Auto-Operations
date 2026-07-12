@@ -28,12 +28,20 @@ def _user(db, username="owner"):
     return user
 
 
-def _account(db, user_id: int, *, sub_type: str, status: str = "active", with_cookie: bool = True) -> PlatformAccount:
+def _account(
+    db,
+    user_id: int,
+    *,
+    sub_type: str,
+    status: str = "active",
+    with_cookie: bool = True,
+    external_user_id: str | None = None,
+) -> PlatformAccount:
     account = PlatformAccount(
         user_id=user_id,
         platform="xhs",
         sub_type=sub_type,
-        external_user_id=f"{sub_type}-{status}-{with_cookie}",
+        external_user_id=external_user_id or f"{sub_type}-{status}-{with_cookie}",
         nickname=f"{sub_type} account",
         status=status,
     )
@@ -70,8 +78,22 @@ def test_resolve_auto_task_account_rebinds_deleted_creator_to_active_creator_wit
 def test_resolve_auto_task_account_keeps_active_bound_account_with_cookie():
     db = _session()
     user = _user(db)
-    bound_creator = _account(db, user.id, sub_type="creator", status="active", with_cookie=True)
-    other_creator = _account(db, user.id, sub_type="creator", status="active", with_cookie=True)
+    bound_creator = _account(
+        db,
+        user.id,
+        sub_type="creator",
+        status="active",
+        with_cookie=True,
+        external_user_id="creator-bound",
+    )
+    other_creator = _account(
+        db,
+        user.id,
+        sub_type="creator",
+        status="active",
+        with_cookie=True,
+        external_user_id="creator-other",
+    )
     pc = _account(db, user.id, sub_type="pc", status="active", with_cookie=True)
     task = AutoTask(
         user_id=user.id,
