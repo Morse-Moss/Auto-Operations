@@ -41,3 +41,19 @@ def ensure_mysql_alembic_version_table(connection) -> None:
                 f"VARCHAR({ALEMBIC_VERSION_NUM_LENGTH}) NOT NULL"
             )
         )
+
+
+def prepare_mysql_alembic_connection(connection) -> None:
+    """Finish MySQL compatibility preflight before Alembic owns transactions."""
+    if connection.dialect.name not in {"mysql", "mariadb"}:
+        ensure_mysql_alembic_version_table(connection)
+        return
+
+    if connection.in_transaction():
+        raise RuntimeError(
+            "MySQL Alembic compatibility preflight requires a transaction-free connection"
+        )
+
+    ensure_mysql_alembic_version_table(connection)
+    if connection.in_transaction():
+        connection.commit()

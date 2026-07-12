@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from types import ModuleType
 from unittest.mock import patch
 
+import pytest
 import sqlalchemy as sa
-from sqlalchemy.dialects import mysql
+from sqlalchemy.dialects import mysql, sqlite
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -92,12 +95,21 @@ class _FakeInspector:
 
 
 class _FakeConnection:
-    def __init__(self) -> None:
-        self.dialect = mysql.dialect()
+    def __init__(self, dialect=None, in_transaction: bool = False) -> None:
+        self.dialect = dialect or mysql.dialect()
+        self._in_transaction = in_transaction
+        self.commit_count = 0
         self.statements: list[str] = []
 
     def execute(self, statement) -> None:
         self.statements.append(str(statement))
+
+    def in_transaction(self) -> bool:
+        return self._in_transaction
+
+    def commit(self) -> None:
+        self.commit_count += 1
+        self._in_transaction = False
 
 
 def test_draft_assets_mysql_migration_does_not_set_defaults_on_text_columns():
@@ -163,6 +175,121 @@ def test_mysql_alembic_version_table_is_widened_when_existing_column_is_short(mo
     assert connection.statements == [
         "ALTER TABLE alembic_version MODIFY version_num VARCHAR(128) NOT NULL"
     ]
+
+
+def test_prepare_mysql_alembic_connection_commits_preflight_autobegin(monkeypatch):
+    from backend.app.core import alembic_compat
+
+    connection = _FakeConnection()
+
+    def inspect_with_autobegin(_connection):
+        connection._in_transaction = True
+        return _FakeInspector([{"name": "version_num", "type": sa.String(length=128)}])
+
+    monkeypatch.setattr(
+        alembic_compat,
+        "inspect",
+        inspect_with_autobegin,
+    )
+
+    alembic_compat.prepare_mysql_alembic_connection(connection)
+
+    assert connection.statements == []
+    assert connection.commit_count == 1
+    assert connection.in_transaction() is False
+
+
+def test_mysql_preflight_commits_before_alembic_context_configure(monkeypatch):
+    from alembic import context as alembic_context
+    from backend.app.core import alembic_compat
+
+    connection = _FakeConnection()
+    events: list[str] = []
+
+    def inspect_with_autobegin(_connection):
+        connection._in_transaction = True
+        events.append("inspect")
+        return _FakeInspector([{"name": "version_num", "type": sa.String(length=128)}])
+
+    original_commit = connection.commit
+
+    def record_commit() -> None:
+        original_commit()
+        events.append("commit")
+
+    @contextmanager
+    def connect():
+        yield connection
+
+    @contextmanager
+    def begin_transaction():
+        yield
+
+    def configure(**_kwargs) -> None:
+        assert connection.commit_count == 1
+        assert connection.in_transaction() is False
+        events.append("configure")
+
+    fake_config = SimpleNamespace(
+        config_file_name=None,
+        config_ini_section="alembic",
+        get_main_option=lambda _name: "mysql+pymysql://",
+        get_section=lambda _name, _default: {},
+    )
+    fake_engine = SimpleNamespace(connect=connect)
+
+    monkeypatch.setenv("DATABASE_URL", "mysql+pymysql://")
+    monkeypatch.setattr(connection, "commit", record_commit)
+    monkeypatch.setattr(alembic_compat, "inspect", inspect_with_autobegin)
+    monkeypatch.setattr(sa, "engine_from_config", lambda *_args, **_kwargs: fake_engine)
+    monkeypatch.setattr(alembic_context, "config", fake_config, raising=False)
+    monkeypatch.setattr(alembic_context, "is_offline_mode", lambda: False)
+    monkeypatch.setattr(alembic_context, "configure", configure)
+    monkeypatch.setattr(alembic_context, "begin_transaction", begin_transaction)
+    monkeypatch.setattr(alembic_context, "run_migrations", lambda: events.append("migrate"))
+
+    path = PROJECT_ROOT / "backend" / "alembic" / "env.py"
+    spec = importlib.util.spec_from_file_location("test_alembic_env", path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    assert events == ["inspect", "commit", "configure", "migrate"]
+
+
+def test_prepare_mysql_alembic_connection_rejects_existing_transaction(monkeypatch):
+    from backend.app.core import alembic_compat
+
+    connection = _FakeConnection(in_transaction=True)
+    inspect_count = 0
+
+    def record_inspect(_connection):
+        nonlocal inspect_count
+        inspect_count += 1
+        return _FakeInspector([{"name": "version_num", "type": sa.String(length=128)}])
+
+    monkeypatch.setattr(
+        alembic_compat,
+        "inspect",
+        record_inspect,
+    )
+
+    with pytest.raises(RuntimeError, match="transaction-free"):
+        alembic_compat.prepare_mysql_alembic_connection(connection)
+
+    assert connection.commit_count == 0
+    assert inspect_count == 0
+
+
+def test_prepare_mysql_alembic_connection_does_not_commit_sqlite():
+    from backend.app.core import alembic_compat
+
+    connection = _FakeConnection(dialect=sqlite.dialect(), in_transaction=True)
+
+    alembic_compat.prepare_mysql_alembic_connection(connection)
+
+    assert connection.commit_count == 0
 
 
 def test_wechat_official_tombstones_uses_mysql_safe_url_index_column():
