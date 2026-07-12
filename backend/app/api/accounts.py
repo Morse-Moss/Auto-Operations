@@ -200,12 +200,21 @@ def check_account(
             user_info = validate_huitun_login_state(cookies_text)
         else:
             adapter = _select_adapter(account.sub_type or "pc", pc_adapter, creator_adapter)
-            user_info = adapter.get_user_info(decode_cookie_text(cookies_text))
-            try:
-                self_profile = self_profile_adapter.get_self_profile(cookie_header_from_text(cookies_text))
-                user_info = enrich_user_info_with_xhs_self_profile(user_info, self_profile)
-            except Exception:
-                pass
+            if account.sub_type == "pc":
+                basic_profile_error: Exception | None = None
+                try:
+                    user_info = adapter.get_user_info(decode_cookie_text(cookies_text))
+                except Exception as exc:
+                    basic_profile_error = exc
+                    user_info = {"external_user_id": account.external_user_id or ""}
+                try:
+                    self_profile = self_profile_adapter.get_self_profile(cookie_header_from_text(cookies_text))
+                    user_info = enrich_user_info_with_xhs_self_profile(user_info, self_profile)
+                except Exception:
+                    if basic_profile_error is not None:
+                        raise basic_profile_error
+            else:
+                user_info = adapter.get_user_info(decode_cookie_text(cookies_text))
         account.status = "active"
         account.status_message = ""
         account.nickname = user_info.get("nickname", account.nickname)

@@ -100,7 +100,16 @@ export function XhsDiscoveryPage() {
 
   async function loadAccounts() {
     setIsLoadingAccounts(true); setError(null);
-    try { const loaded = await fetchAccounts("xhs"); setAccounts(loaded); const first = loaded.find((a) => a.sub_type === "pc"); setSelectedAccountId((c) => c ?? first?.id ?? null); }
+    try {
+      const loaded = await fetchAccounts("xhs");
+      setAccounts(loaded);
+      const active = loaded.find((account) => account.sub_type === "pc" && account.status === "active");
+      const first = loaded.find((account) => account.sub_type === "pc");
+      setSelectedAccountId((currentId) => {
+        const current = loaded.find((account) => account.id === currentId && account.sub_type === "pc");
+        return current?.status === "active" ? current.id : active?.id ?? first?.id ?? null;
+      });
+    }
     catch { setError("账号列表加载失败。"); } finally { setIsLoadingAccounts(false); }
   }
 
@@ -195,7 +204,13 @@ export function XhsDiscoveryPage() {
     finally { setLoadingCommentNoteIds((c) => c.filter((id) => id !== note.note_id)); }
   }
 
-  useEffect(() => { void loadAccounts(); void loadSavedNoteIds(); }, []);
+  useEffect(() => {
+    void loadAccounts();
+    void loadSavedNoteIds();
+    const refreshAccounts = () => void loadAccounts();
+    window.addEventListener("focus", refreshAccounts);
+    return () => window.removeEventListener("focus", refreshAccounts);
+  }, []);
 
   const noPcAccount = !isLoadingAccounts && pcAccounts.length === 0;
   const selImgUrls = selectedNote ? getNoteImageUrls(selectedNote) : [];

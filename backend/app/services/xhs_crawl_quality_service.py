@@ -114,6 +114,8 @@ def search_failure_kind(message: str, raw_payload: object | None) -> str:
         raw_message = str(raw_payload.get("msg") or raw_payload.get("message") or "")
         raw_code = raw_payload.get("code")
     combined = f"{message} {raw_message}"
+    if "无登录信息" in combined or "登录信息为空" in combined:
+        return "xhs_account_expired"
     if raw_code == -100 or any(marker in combined for marker in ("登录已过期", "鐧诲綍宸茶繃鏈", "锟斤拷录锟窖癸拷锟斤拷")):
         return "xhs_account_expired"
     if is_xhs_rate_limit_signal(message=combined):

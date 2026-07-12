@@ -16,6 +16,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text
 from backend.app.models import AccountCookieVersion, PlatformAccount, User
 from backend.app.services.mock_data import sample_notes
+from backend.app.services.xhs_crawl_quality_service import search_failure_kind
 from backend.app.services.xhs_detail_recovery import (
     build_user_message,
     evaluate_detail_quality,
@@ -241,7 +242,11 @@ def _without_raw(value: Any) -> Any:
     return value
 
 
-def _get_owned_pc_account_cookies(db: Session, current_user: User, account_id: int) -> str:
+def _get_owned_pc_account_and_cookies(
+    db: Session,
+    current_user: User,
+    account_id: int,
+) -> tuple[PlatformAccount, str]:
     account = db.get(PlatformAccount, account_id)
     if (
         account is None
@@ -258,7 +263,12 @@ def _get_owned_pc_account_cookies(db: Session, current_user: User, account_id: i
     ).first()
     if cookie_version is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account has no cookies")
-    return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+    return account, _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+
+
+def _get_owned_pc_account_cookies(db: Session, current_user: User, account_id: int) -> str:
+    _account, cookies = _get_owned_pc_account_and_cookies(db, current_user, account_id)
+    return cookies
 
 
 def _is_missing_login_message(message: str | None) -> bool:
@@ -273,7 +283,7 @@ def search_notes(
     db: Session = Depends(get_db),
     adapter_factory=Depends(get_xhs_pc_api_adapter_factory),
 ):
-    cookies = _get_owned_pc_account_cookies(db, current_user, payload.account_id)
+    account, cookies = _get_owned_pc_account_and_cookies(db, current_user, payload.account_id)
     success, message, raw_payload = adapter_factory(cookies).search_note(
         payload.keyword,
         page=payload.page,
@@ -285,8 +295,8 @@ def search_notes(
         geo=payload.geo,
     )
     if not success:
-        if _is_missing_login_message(message):
-            account = db.get(PlatformAccount, payload.account_id)
+        failure_kind = search_failure_kind(message or "", raw_payload)
+        if _is_missing_login_message(message) or failure_kind == "xhs_account_expired":
             account.status = "expired"
             account.status_message = XHS_LOGIN_EXPIRED_MESSAGE
             db.commit()

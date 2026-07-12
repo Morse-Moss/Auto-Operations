@@ -4,10 +4,13 @@ import base64
 import io
 import json
 import logging
+from datetime import timedelta
+from functools import wraps
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.xhs.creator_login_adapter import XhsCreatorLoginAdapter
@@ -15,6 +18,7 @@ from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
 from backend.app.core.security import decrypt_text, encrypt_text
+from backend.app.core.time import shanghai_now
 from backend.app.models import LoginSession, PlatformAccount, User
 from backend.app.adapters.xhs.pc_api_adapter import XhsPcApiAdapter
 from backend.app.services.account_service import (
@@ -26,6 +30,7 @@ from backend.app.services.account_service import (
 
 router = APIRouter(prefix="/xhs/login-sessions", tags=["xhs-login-sessions"])
 logger = logging.getLogger(__name__)
+POLL_CLAIM_TIMEOUT_SECONDS = 90
 
 
 class PcQrCodeRequest(BaseModel):
@@ -77,6 +82,112 @@ def _qr_data_url(qr_url: str) -> str:
     image.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def _login_session_payload(db: Session, session: LoginSession) -> dict:
+    account_payload = None
+    if session.platform_account_id:
+        account = db.get(PlatformAccount, session.platform_account_id)
+        if account is not None:
+            account_payload = serialize_account(account)
+    return {
+        "session_id": session.id,
+        "status": session.status,
+        "qr_url": session.qr_url,
+        "account": account_payload,
+        "creator_account": None,
+    }
+
+
+def _claim_login_session_poll(db: Session, session_id: int) -> bool:
+    now = shanghai_now()
+    stale_before = now - timedelta(seconds=POLL_CLAIM_TIMEOUT_SECONDS)
+    result = db.execute(
+        update(LoginSession)
+        .where(
+            LoginSession.id == session_id,
+            LoginSession.status.in_(("pending", "scanned")),
+            or_(
+                LoginSession.poll_in_progress.is_(False),
+                LoginSession.poll_in_progress.is_(None),
+                LoginSession.poll_started_at.is_(None),
+                LoginSession.poll_started_at < stale_before,
+            ),
+        )
+        .values(poll_in_progress=True, poll_started_at=now)
+    )
+    db.commit()
+    return result.rowcount == 1
+
+
+def _release_login_session_poll(db: Session, session_id: int) -> None:
+    db.execute(
+        update(LoginSession)
+        .where(LoginSession.id == session_id)
+        .values(poll_in_progress=False, poll_started_at=None)
+    )
+    db.commit()
+
+
+def _persist_login_session_poll_result(
+    db: Session,
+    session_id: int,
+    *,
+    result_status: str,
+    encrypted_temp_cookies: str,
+    platform_account_id: int | None = None,
+) -> bool:
+    result = db.execute(
+        update(LoginSession)
+        .where(
+            LoginSession.id == session_id,
+            LoginSession.status.in_(("pending", "scanned")),
+            LoginSession.poll_in_progress.is_(True),
+        )
+        .values(
+            status=result_status,
+            encrypted_temp_cookies=encrypted_temp_cookies,
+            platform_account_id=platform_account_id,
+            poll_in_progress=False,
+            poll_started_at=None,
+        )
+    )
+    return result.rowcount == 1
+
+
+def _expire_previous_qr_sessions(db: Session, *, user_id: int, sub_type: str) -> None:
+    db.execute(
+        update(LoginSession)
+        .where(
+            LoginSession.user_id == user_id,
+            LoginSession.platform == "xhs",
+            LoginSession.sub_type == sub_type,
+            LoginSession.login_method == "qr",
+            LoginSession.status.in_(("pending", "scanned")),
+        )
+        .values(status="expired")
+    )
+
+
+def _serialized_login_session_poll(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        session_id = kwargs["session_id"]
+        current_user = kwargs["current_user"]
+        db = kwargs["db"]
+        session = db.get(LoginSession, session_id)
+        if session is None or session.user_id != current_user.id or session.status in {"confirmed", "expired"}:
+            return func(*args, **kwargs)
+        if not _claim_login_session_poll(db, session_id):
+            db.expire_all()
+            return _login_session_payload(db, db.get(LoginSession, session_id))
+        try:
+            return func(*args, **kwargs)
+        finally:
+            db.rollback()
+            _release_login_session_poll(db, session_id)
+
+    return wrapper
 
 
 def get_pc_login_adapter() -> XhsPcLoginAdapter:
@@ -217,6 +328,7 @@ def pc_qrcode(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"XHS PC QR code generation failed: {exc}",
         ) from exc
+    _expire_previous_qr_sessions(db, user_id=current_user.id, sub_type="pc")
     session = LoginSession(
         user_id=current_user.id,
         platform="xhs",
@@ -253,6 +365,7 @@ def creator_qrcode(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"XHS Creator QR code generation failed: {exc}",
         ) from exc
+    _expire_previous_qr_sessions(db, user_id=current_user.id, sub_type="creator")
     session = LoginSession(
         user_id=current_user.id,
         platform="xhs",
@@ -274,6 +387,7 @@ def creator_qrcode(
 
 
 @router.get("/{session_id}")
+@_serialized_login_session_poll
 def login_session(
     session_id: int,
     current_user: User = Depends(get_current_user),
@@ -285,7 +399,7 @@ def login_session(
     if session is None or session.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Login session not found")
     if session.status in {"confirmed", "expired"}:
-        return {"session_id": session.id, "status": session.status, "qr_url": session.qr_url}
+        return _login_session_payload(db, session)
     if session.sub_type not in {"pc", "creator"} or not session.qr_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported login session")
 
@@ -324,14 +438,18 @@ def login_session(
         result = creator_adapter.check_qrcode_status(session.qr_id, cookies)
         account_sub_type = "creator"
         user_info = creator_adapter.get_user_info(result["cookies"]) if result["status"] == "confirmed" else None
-    session.status = result["status"]
-    session.encrypted_temp_cookies = encrypt_text(
+    db.refresh(session)
+    if session.status == "expired":
+        return _login_session_payload(db, session)
+
+    encrypted_result_cookies = encrypt_text(
         _dump_temp_state(result["cookies"], sync_creator=sync_creator)
     )
 
     account_payload = None
     creator_account_payload = None
-    if session.status == "confirmed":
+    account_id = None
+    if result["status"] == "confirmed":
         account, action = _create_account_from_login(
             db=db,
             user_id=current_user.id,
@@ -339,6 +457,7 @@ def login_session(
             user_info=user_info,
             cookies=result["cookies"],
         )
+        account_id = account.id
         account_payload = serialize_account(account, action)
         if account_sub_type == "pc" and sync_creator:
             creator_account_payload = _sync_creator_account_from_pc_login(
@@ -348,7 +467,19 @@ def login_session(
                 creator_adapter=creator_adapter,
             )
 
+    if not _persist_login_session_poll_result(
+        db,
+        session.id,
+        result_status=result["status"],
+        encrypted_temp_cookies=encrypted_result_cookies,
+        platform_account_id=account_id,
+    ):
+        db.rollback()
+        db.expire_all()
+        return _login_session_payload(db, db.get(LoginSession, session.id))
     db.commit()
+    db.expire_all()
+    session = db.get(LoginSession, session.id)
     return {
         "session_id": session.id,
         "status": session.status,

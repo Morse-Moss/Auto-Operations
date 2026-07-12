@@ -68,16 +68,17 @@ function accountMetrics(account: PlatformAccount): NonNullable<PlatformAccountCa
     ];
   }
 
+  const redId = profileValue(account, "red_id");
   if (account.sub_type === "creator") {
-    const redId = profileValue(account, "red_id");
     return [
       { key: "type", title: "类型", value: "Creator" },
-      ...(redId ? [{ key: "red_id", title: "小红书号", value: redId }] : []),
+      ...(redId ? [{ key: "red_id", title: "小红书号", value: redId, span: 16, groupSeparator: "" }] : []),
     ];
   }
 
   return [
     { key: "type", title: "类型", value: "PC" },
+    ...(redId ? [{ key: "red_id", title: "小红书号", value: redId, span: 16, groupSeparator: "" }] : []),
     { key: "followers", title: "粉丝", value: profileValue(account, "followers") || "-" },
     { key: "following", title: "关注", value: profileValue(account, "following") || "-" },
     { key: "likes", title: "获赞", value: profileValue(account, "likes") || "-" },

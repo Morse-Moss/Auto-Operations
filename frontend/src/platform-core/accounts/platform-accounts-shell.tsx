@@ -72,10 +72,11 @@ export function PlatformAccountsShell({
                     {item.metrics?.length ? (
                       <Row gutter={[12, 12]}>
                         {item.metrics.map((metric) => (
-                          <Col key={metric.key} span={8}>
+                          <Col key={metric.key} span={metric.span ?? 8}>
                             <Statistic
                               title={metric.title}
                               value={metric.value}
+                              groupSeparator={metric.groupSeparator}
                               prefix={metric.prefix}
                               suffix={metric.suffix}
                             />
