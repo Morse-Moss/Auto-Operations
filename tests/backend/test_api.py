@@ -1373,6 +1373,36 @@ class FakePcLoginAdapter:
         }
 
 
+class BlockingScannedPcLoginAdapter(FakePcLoginAdapter):
+    def __init__(self):
+        import threading
+
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.lock = threading.Lock()
+        self.poll_count = 0
+
+    def check_qrcode_status(self, qr_id, code, cookies):
+        assert qr_id == "qr-123"
+        assert code == "code-123"
+        assert cookies == {"a1": "temp-a1"}
+        with self.lock:
+            self.poll_count += 1
+        self.entered.set()
+        assert self.release.wait(timeout=5)
+        return {"status": "scanned", "cookies": cookies}
+
+
+class BlockingConfirmedPcLoginAdapter(BlockingScannedPcLoginAdapter):
+    def check_qrcode_status(self, qr_id, code, cookies):
+        super().check_qrcode_status(qr_id, code, cookies)
+        return {
+            "status": "confirmed",
+            "cookies": {"a1": "superseded-a1", "web_session": "superseded-session"},
+            "user_info": {"external_user_id": "superseded-user"},
+        }
+
+
 class FakeCreatorLoginAdapter:
     def create_qrcode(self):
         return {
@@ -2160,6 +2190,14 @@ def test_xhs_pc_qrcode_login_session_persists_and_confirms_account(tmp_path):
         assert polled["account"]["nickname"] == "cat"
         assert polled["creator_account"] is None
 
+        replay_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert replay_response.status_code == 200
+        assert replay_response.json()["status"] == "confirmed"
+        assert replay_response.json()["account"]["nickname"] == "cat"
+
         accounts_response = client.get(
             "/api/accounts?platform=xhs",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -2182,6 +2220,105 @@ def test_xhs_pc_qrcode_login_session_persists_and_confirms_account(tmp_path):
         finally:
             db.close()
     finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_pc_qrcode_poll_is_serialized(tmp_path):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+
+    db_dependency = _override_database(tmp_path)
+    adapter = BlockingScannedPcLoginAdapter()
+    app.dependency_overrides[get_pc_login_adapter] = lambda: adapter
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    try:
+        access_token = _register_and_get_access_token("serialized-qr-poll-operator")
+        created = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                client.get,
+                f"/api/xhs/login-sessions/{created['session_id']}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert adapter.entered.wait(timeout=3)
+            second = executor.submit(
+                client.get,
+                f"/api/xhs/login-sessions/{created['session_id']}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            time.sleep(0.2)
+            adapter.release.set()
+            responses = [first.result(timeout=5), second.result(timeout=5)]
+
+        assert all(response.status_code == 200 for response in responses)
+        assert adapter.poll_count == 1
+    finally:
+        adapter.release.set()
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_pc_qrcode_superseded_inflight_poll_cannot_confirm(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    adapter = BlockingConfirmedPcLoginAdapter()
+    monkeypatch.setattr(
+        "backend.app.api.login_sessions.XhsPcApiAdapter.get_self_info",
+        lambda self: {"success": True, "data": {"basic_info": {"nickname": "superseded profile"}}},
+    )
+    app.dependency_overrides[get_pc_login_adapter] = lambda: adapter
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    try:
+        access_token = _register_and_get_access_token("superseded-qr-poll-operator")
+        first_session = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            first_poll = executor.submit(
+                client.get,
+                f"/api/xhs/login-sessions/{first_session['session_id']}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert adapter.entered.wait(timeout=3)
+            second_session = client.post(
+                "/api/xhs/login-sessions/pc/qrcode",
+                headers={"Authorization": f"Bearer {access_token}"},
+            ).json()
+            adapter.release.set()
+            first_response = first_poll.result(timeout=5)
+
+        assert first_response.status_code == 200
+        assert first_response.json()["status"] == "expired"
+        assert second_session["session_id"] != first_session["session_id"]
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_first = db.get(LoginSession, first_session["session_id"])
+            stored_second = db.get(LoginSession, second_session["session_id"])
+            assert stored_first.status == "expired"
+            assert stored_second.status == "pending"
+            assert db.query(PlatformAccount).count() == 0
+            assert db.query(AccountCookieVersion).count() == 0
+        finally:
+            db.close()
+    finally:
+        adapter.release.set()
         app.dependency_overrides.pop(db_dependency, None)
         app.dependency_overrides.pop(get_pc_login_adapter, None)
         app.dependency_overrides.pop(get_creator_login_adapter, None)
@@ -2307,6 +2444,45 @@ def test_xhs_pc_qrcode_login_updates_existing_account_for_same_external_user(tmp
         app.dependency_overrides.pop(get_pc_login_adapter, None)
         app.dependency_overrides.pop(get_pc_account_adapter, None)
         app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_platform_account_identity_is_unique(tmp_path):
+    from sqlalchemy.exc import IntegrityError
+
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, User
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        _register_and_get_access_token("unique-xhs-account-owner")
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            user = db.query(User).filter(User.username == "unique-xhs-account-owner").one()
+            db.add_all(
+                [
+                    PlatformAccount(
+                        user_id=user.id,
+                        platform="xhs",
+                        sub_type="pc",
+                        external_user_id="same-xhs-identity",
+                        nickname="first",
+                    ),
+                    PlatformAccount(
+                        user_id=user.id,
+                        platform="xhs",
+                        sub_type="pc",
+                        external_user_id="same-xhs-identity",
+                        nickname="second",
+                    ),
+                ]
+            )
+            with pytest.raises(IntegrityError):
+                db.commit()
+        finally:
+            db.rollback()
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
 
 
 def test_xhs_pc_qrcode_login_falls_back_to_self_profile_when_confirmed_user_info_fails(tmp_path, monkeypatch):
@@ -2511,6 +2687,64 @@ def test_xhs_identity_only_upsert_reuses_matching_account_profile(tmp_path):
         app.dependency_overrides.pop(db_dependency, None)
 
 
+def test_xhs_account_upsert_recovers_from_concurrent_identity_insert(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.models import AccountCookieVersion, PlatformAccount, User
+    from backend.app.services.account_service import upsert_platform_account_from_login
+
+    db_dependency = _override_database(tmp_path)
+    try:
+        _register_and_get_access_token("concurrent-account-upsert-owner")
+        db = next(app.dependency_overrides[get_db]())
+        competitor_db = app.dependency_overrides[get_db].sessionmaker()
+        try:
+            user = db.query(User).filter(User.username == "concurrent-account-upsert-owner").one()
+            original_flush = db.flush
+            inserted = False
+
+            def flush_after_competing_insert(*args, **kwargs):
+                nonlocal inserted
+                if not inserted:
+                    inserted = True
+                    competitor = PlatformAccount(
+                        user_id=user.id,
+                        platform="xhs",
+                        sub_type="pc",
+                        external_user_id="concurrent-xhs-user",
+                        nickname="racing placeholder",
+                        status="expired",
+                    )
+                    competitor_db.add(competitor)
+                    competitor_db.commit()
+                return original_flush(*args, **kwargs)
+
+            db.flush = flush_after_competing_insert
+            account, action = upsert_platform_account_from_login(
+                db=db,
+                user_id=user.id,
+                platform="xhs",
+                sub_type="pc",
+                user_info={
+                    "external_user_id": "concurrent-xhs-user",
+                    "nickname": "current profile",
+                    "profile": {"followers": "18"},
+                },
+                cookies_text='{"a1":"current-a1","web_session":"current-session"}',
+            )
+            db.commit()
+
+            assert action == "updated"
+            assert account.nickname == "current profile"
+            assert account.status == "active"
+            assert db.query(PlatformAccount).count() == 1
+            assert db.query(AccountCookieVersion).filter_by(platform_account_id=account.id).count() == 1
+        finally:
+            competitor_db.close()
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_xhs_accounts_with_empty_external_ids_do_not_share_profile():
     import json
 
@@ -2651,6 +2885,48 @@ def test_xhs_complete_profile_upsert_preserves_old_non_empty_values_without_pend
             db.close()
     finally:
         app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_xhs_self_profile_success_clears_pending_marker():
+    from backend.app.services.account_service import enrich_user_info_with_xhs_self_profile
+
+    enriched = enrich_user_info_with_xhs_self_profile(
+        {
+            "external_user_id": "pending-profile-user",
+            "profile": {"profile_sync_status": "pending"},
+        },
+        {
+            "success": True,
+            "data": {
+                "basic_info": {
+                    "nickname": "profile ready",
+                    "images": "https://example.test/profile-ready.webp",
+                    "red_id": "profile-ready-red-id",
+                },
+                "interactions": [
+                    {"type": "fans", "count": "8"},
+                    {"type": "follows", "count": "3"},
+                    {"type": "interaction", "count": "315"},
+                ],
+            },
+        },
+    )
+
+    assert enriched["nickname"] == "profile ready"
+    assert enriched["profile"]["followers"] == "8"
+    assert "profile_sync_status" not in enriched["profile"]
+
+
+def test_xhs_self_profile_invalid_response_preserves_user_info():
+    from backend.app.services.account_service import enrich_user_info_with_xhs_self_profile
+
+    user_info = {
+        "external_user_id": "existing-profile-user",
+        "nickname": "existing profile",
+        "profile": {"followers": "18"},
+    }
+
+    assert enrich_user_info_with_xhs_self_profile(user_info, None) == user_info
 
 
 def test_xhs_pc_qrcode_login_returns_controlled_error_when_confirmed_profile_fetch_fails(tmp_path, monkeypatch):
@@ -3367,6 +3643,44 @@ def test_account_check_refreshes_xhs_self_profile_metrics(tmp_path):
         app.dependency_overrides.pop(get_xhs_self_profile_adapter, None)
 
 
+def test_account_check_uses_self_profile_when_basic_profile_fails(tmp_path):
+    from backend.app.api.accounts import (
+        get_creator_account_adapter,
+        get_pc_account_adapter,
+        get_xhs_self_profile_adapter,
+    )
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_pc_account_adapter] = lambda: FakeCookieAccountAdapter()
+    app.dependency_overrides[get_creator_account_adapter] = lambda: FailingCreatorExchangeAdapter()
+    app.dependency_overrides[get_xhs_self_profile_adapter] = lambda: FakeSelfProfileAdapter()
+    try:
+        access_token = _register_and_get_access_token("profile-fallback-check-operator")
+        imported = client.post(
+            "/api/accounts/import-cookie",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"platform": "xhs", "sub_type": "pc", "cookie_string": "a1=cookie-a1; web_session=session"},
+        ).json()
+
+        app.dependency_overrides[get_pc_account_adapter] = lambda: FailingCookieAccountAdapter()
+        check_response = client.post(
+            f"/api/accounts/{imported['id']}/check",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert check_response.status_code == 200
+        checked = check_response.json()
+        assert checked["status"] == "active"
+        assert checked["nickname"] == "cookie-cat-live"
+        assert checked["profile"]["followers"] == "90"
+        assert "profile_sync_status" not in checked["profile"]
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_account_adapter, None)
+        app.dependency_overrides.pop(get_creator_account_adapter, None)
+        app.dependency_overrides.pop(get_xhs_self_profile_adapter, None)
+
+
 def test_account_check_enforces_ownership_and_marks_expired_on_adapter_failure(tmp_path):
     from backend.app.api.accounts import get_pc_account_adapter
 
@@ -3447,6 +3761,14 @@ class FakeXhsPcSearchAdapter:
                 },
             },
         )
+
+
+class ExpiredXhsPcSearchAdapter:
+    def __init__(self, cookies):
+        self.cookies = cookies
+
+    def search_note(self, keyword, page=1, **kwargs):
+        return False, "无登录信息，或登录信息为空", {"success": False, "code": -100, "msg": "无登录信息，或登录信息为空"}
 
 
 def _create_pc_account_with_cookie(tmp_path, username="search-owner"):
@@ -3610,6 +3932,31 @@ def _create_creator_account_with_cookie(tmp_path, username="creator-owner"):
     return db_dependency, access_token, account_id
 
 
+def test_xhs_owned_pc_account_cookie_helper_preserves_string_contract(tmp_path):
+    from backend.app.api.platforms.xhs.pc import _get_owned_pc_account_cookies
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount, User
+
+    db_dependency, _access_token, account_id = _create_pc_account_with_cookie(
+        tmp_path,
+        "pc-cookie-helper-owner",
+    )
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.get(PlatformAccount, account_id)
+            current_user = db.get(User, account.user_id)
+            cookies = _get_owned_pc_account_cookies(db, current_user, account_id)
+
+            assert isinstance(cookies, str)
+            assert "a1=json-a1" in cookies
+            assert "web_session=json-session" in cookies
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
 def test_xhs_pc_note_search_uses_owned_account_cookie_and_normalizes_results(tmp_path):
     from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
 
@@ -3656,6 +4003,34 @@ def test_xhs_pc_note_search_uses_owned_account_cookie_and_normalizes_results(tmp
         assert note["type"] == "normal"
         assert "raw" not in note
         assert "raw" not in payload
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
+def test_xhs_pc_search_marks_account_expired_for_missing_login_signal(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(tmp_path, "expired-search-owner")
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: ExpiredXhsPcSearchAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "keyword": "早餐", "page": 1},
+        )
+
+        assert response.status_code == 401
+        assert "重新登录" in response.json()["detail"]
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.get(PlatformAccount, account_id)
+            assert account.status == "expired"
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(db_dependency, None)
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)

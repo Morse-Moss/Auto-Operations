@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.core.security import encrypt_text
@@ -146,8 +147,10 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
-def enrich_user_info_with_xhs_self_profile(user_info: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
-    data = response.get("data") if isinstance(response, dict) else {}
+def enrich_user_info_with_xhs_self_profile(user_info: dict[str, Any], response: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(response, dict) or response.get("success") is False:
+        return user_info
+    data = response.get("data")
     if not isinstance(data, dict):
         return user_info
     basic_info = data.get("basic_info")
@@ -164,15 +167,20 @@ def enrich_user_info_with_xhs_self_profile(user_info: dict[str, Any], response: 
             if interaction_type:
                 interaction_counts[str(interaction_type)] = _first_present(item.get("i18n_count"), item.get("count"))
 
+    existing_profile = {
+        key: value
+        for key, value in account_profile_from_user_info(user_info).items()
+        if key != "profile_sync_status"
+    }
     profile = {
-        **account_profile_from_user_info(user_info),
-        "red_id": _first_present(basic_info.get("red_id"), account_profile_from_user_info(user_info).get("red_id"), ""),
-        "description": _first_present(basic_info.get("desc"), account_profile_from_user_info(user_info).get("description"), ""),
-        "ip_location": _first_present(basic_info.get("ip_location"), account_profile_from_user_info(user_info).get("ip_location"), ""),
-        "gender": _first_present(basic_info.get("gender"), account_profile_from_user_info(user_info).get("gender")),
-        "followers": _first_present(interaction_counts.get("fans"), account_profile_from_user_info(user_info).get("followers")),
-        "following": _first_present(interaction_counts.get("follows"), account_profile_from_user_info(user_info).get("following")),
-        "likes": _first_present(interaction_counts.get("interaction"), account_profile_from_user_info(user_info).get("likes")),
+        **existing_profile,
+        "red_id": _first_present(basic_info.get("red_id"), existing_profile.get("red_id"), ""),
+        "description": _first_present(basic_info.get("desc"), existing_profile.get("description"), ""),
+        "ip_location": _first_present(basic_info.get("ip_location"), existing_profile.get("ip_location"), ""),
+        "gender": _first_present(basic_info.get("gender"), existing_profile.get("gender")),
+        "followers": _first_present(interaction_counts.get("fans"), existing_profile.get("followers")),
+        "following": _first_present(interaction_counts.get("follows"), existing_profile.get("following")),
+        "likes": _first_present(interaction_counts.get("interaction"), existing_profile.get("likes")),
         "raw": response,
     }
     return {
@@ -331,7 +339,8 @@ def upsert_platform_account_from_login(
 
     action = "updated" if account is not None else "created"
     now = shanghai_now()
-    if account is None:
+    created = account is None
+    if created:
         account = PlatformAccount(
             user_id=user_id,
             platform=platform,
@@ -339,7 +348,6 @@ def upsert_platform_account_from_login(
             external_user_id=external_user_id,
             created_at=now,
         )
-        db.add(account)
 
     account.nickname = user_info.get("nickname", "") or account.nickname or ""
     account.avatar_url = user_info.get("avatar_url", "") or account.avatar_url or ""
@@ -353,7 +361,24 @@ def upsert_platform_account_from_login(
     )
     account.profile_json = json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
     account.updated_at = now
-    db.flush()
+    if created:
+        try:
+            with db.begin_nested():
+                db.add(account)
+                db.flush()
+        except IntegrityError:
+            if not external_user_id:
+                raise
+            return upsert_platform_account_from_login(
+                db=db,
+                user_id=user_id,
+                platform=platform,
+                sub_type=sub_type,
+                user_info=user_info,
+                cookies_text=cookies_text,
+            )
+    else:
+        db.flush()
     db.add(
         AccountCookieVersion(
             platform_account_id=account.id,

@@ -64,13 +64,13 @@ async function createQrSession(
   inFlightQrSessions.set(key, request);
   try {
     const session = await request;
-    reusableQrSessions.set(key, { session, expiresAt: Date.now() + 1500 });
+    reusableQrSessions.set(key, { session, expiresAt: Date.now() + 30_000 });
     window.setTimeout(() => {
       const current = reusableQrSessions.get(key);
       if (current?.session.session_id === session.session_id) {
         reusableQrSessions.delete(key);
       }
-    }, 1500);
+    }, 30_000);
     return session;
   } finally {
     inFlightQrSessions.delete(key);
@@ -143,7 +143,9 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
     const pollingSessionId = session.session_id;
     const pollingRequestSequence = requestSequenceRef.current;
     let pollingCancelled = false;
-    const interval = window.setInterval(async () => {
+    let timeoutId: number | undefined;
+    const poll = async () => {
+      let shouldContinue = true;
       try {
         const polled = platform === "huitun"
           ? await pollHuitunLoginSession(pollingSessionId)
@@ -161,11 +163,13 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
         if (polled.status === "scanned") {
           setStatusText("已扫码，请在手机端确认登录");
         } else if (polled.status === "expired") {
+          shouldContinue = false;
           if (platform === "xhs" && accountType === "creator") {
             clearPendingCreatorLoginSession(polled.session_id);
           }
           setStatusText("二维码已过期，请刷新");
         } else if (polled.status === "confirmed" && !confirmedRef.current) {
+          shouldContinue = false;
           const confirmedAccount = polled.account ?? polled.creator_account;
           if (platform === "xhs" && accountType === "creator") {
             clearPendingCreatorLoginSession(polled.session_id);
@@ -182,11 +186,17 @@ export function QrLoginPanel({ platform = "xhs", accountType, onConfirmed }: QrL
         }
         setError(accountLoginErrorMessage(caught, "轮询登录状态失败，正在等待下一次尝试。"));
       }
-    }, 2000);
+      if (shouldContinue && !pollingCancelled && pollingRequestSequence === requestSequenceRef.current) {
+        timeoutId = window.setTimeout(() => void poll(), 2000);
+      }
+    };
+    timeoutId = window.setTimeout(() => void poll(), 2000);
 
     return () => {
       pollingCancelled = true;
-      window.clearInterval(interval);
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [platform, accountType, onConfirmed, session?.session_id, session?.status]);
 

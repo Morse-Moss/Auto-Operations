@@ -15,6 +15,8 @@ export type PlatformAccountMetric = {
   key: string;
   title: ReactNode;
   value: string | number;
+  span?: number;
+  groupSeparator?: string;
   suffix?: ReactNode;
   prefix?: ReactNode;
 };
