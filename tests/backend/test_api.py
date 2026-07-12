@@ -118,6 +118,16 @@ def test_xhs_pc_login_sdk_preserves_qrcode_identity_metadata(monkeypatch):
         ({}, {"data": {"webSession": "camel-web-session"}}, "camel-web-session"),
         ({}, {"data": {"session": "direct-session"}}, "direct-session"),
         ({}, {"data": {"result": {"session": "result-session"}}}, "result-session"),
+        (
+            {},
+            {"data": {"session": "generic-session", "web_session": "explicit-web-session"}},
+            "explicit-web-session",
+        ),
+        (
+            {},
+            {"data": {"result": {"session": "generic-result", "webSession": "explicit-result"}}},
+            "explicit-result",
+        ),
     ],
 )
 def test_xhs_pc_login_extracts_web_session_from_supported_response_shapes(
@@ -3545,6 +3555,14 @@ class MissingLoginXhsPcSearchAdapter:
         return False, "无登录信息，或登录信息为空", None
 
 
+class GenericFailureXhsPcSearchAdapter:
+    def __init__(self, cookies):
+        self.cookies = cookies
+
+    def search_note(self, keyword, page=1, **kwargs):
+        return False, "签名校验失败", None
+
+
 def _create_pc_account_with_cookie(tmp_path, username="search-owner"):
     from backend.app.core.database import get_db
     from backend.app.core.security import encrypt_text
@@ -3783,6 +3801,38 @@ def test_xhs_pc_note_search_marks_missing_login_expired(tmp_path):
             account = db.get(PlatformAccount, account_id)
             assert account.status == "expired"
             assert account.status_message == "账号登录已失效，请重新扫码登录"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
+def test_xhs_pc_note_search_keeps_account_active_for_non_login_failure(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(
+        tmp_path,
+        "pc-generic-search-failure-owner",
+    )
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: GenericFailureXhsPcSearchAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "keyword": "低卡早餐"},
+        )
+
+        assert response.status_code == 502
+        assert response.json() == {"detail": "签名校验失败"}
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.get(PlatformAccount, account_id)
+            assert account.status == "active"
+            assert account.status_message == ""
         finally:
             db.close()
     finally:

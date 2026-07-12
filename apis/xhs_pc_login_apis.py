@@ -26,7 +26,7 @@ def _extract_web_session(response_cookies, payload):
     for container in containers:
         if not isinstance(container, dict):
             continue
-        for key in ('session', 'web_session', 'webSession'):
+        for key in ('web_session', 'webSession', 'session'):
             value = container.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
