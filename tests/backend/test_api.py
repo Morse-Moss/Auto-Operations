@@ -3537,6 +3537,14 @@ class FakeXhsPcSearchAdapter:
         )
 
 
+class MissingLoginXhsPcSearchAdapter:
+    def __init__(self, cookies):
+        self.cookies = cookies
+
+    def search_note(self, keyword, page=1, **kwargs):
+        return False, "无登录信息，或登录信息为空", None
+
+
 def _create_pc_account_with_cookie(tmp_path, username="search-owner"):
     from backend.app.core.database import get_db
     from backend.app.core.security import encrypt_text
@@ -3744,6 +3752,39 @@ def test_xhs_pc_note_search_uses_owned_account_cookie_and_normalizes_results(tmp
         assert note["type"] == "normal"
         assert "raw" not in note
         assert "raw" not in payload
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
+def test_xhs_pc_note_search_marks_missing_login_expired(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(
+        tmp_path,
+        "pc-missing-login-owner",
+    )
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: MissingLoginXhsPcSearchAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "keyword": "低卡早餐"},
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "账号登录已失效，请重新扫码登录"}
+        assert "web_session" not in response.text
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.get(PlatformAccount, account_id)
+            assert account.status == "expired"
+            assert account.status_message == "账号登录已失效，请重新扫码登录"
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(db_dependency, None)
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
