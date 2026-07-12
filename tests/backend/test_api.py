@@ -108,6 +108,38 @@ def test_xhs_pc_login_sdk_preserves_qrcode_identity_metadata(monkeypatch):
     assert api.last_qrcode_status_data == {"codeStatus": 1, "userId": "qr-user-1", "result": {}}
 
 
+@pytest.mark.parametrize(
+    ("response_cookies", "payload", "expected"),
+    [
+        ({"web_session": "cookie-session"}, {}, "cookie-session"),
+        ({}, {"data": {"login_info": {"session": "legacy-session"}}}, "legacy-session"),
+        ({}, {"data": {"loginInfo": {"session": "camel-session"}}}, "camel-session"),
+        ({}, {"data": {"web_session": "snake-session"}}, "snake-session"),
+        ({}, {"data": {"webSession": "camel-web-session"}}, "camel-web-session"),
+        ({}, {"data": {"session": "direct-session"}}, "direct-session"),
+        ({}, {"data": {"result": {"session": "result-session"}}}, "result-session"),
+        (
+            {},
+            {"data": {"session": "generic-session", "web_session": "explicit-web-session"}},
+            "explicit-web-session",
+        ),
+        (
+            {},
+            {"data": {"result": {"session": "generic-result", "webSession": "explicit-result"}}},
+            "explicit-result",
+        ),
+    ],
+)
+def test_xhs_pc_login_extracts_web_session_from_supported_response_shapes(
+    response_cookies,
+    payload,
+    expected,
+):
+    from apis.xhs_pc_login_apis import _extract_web_session
+
+    assert _extract_web_session(response_cookies, payload) == expected
+
+
 def test_xhs_pc_login_adapter_maps_qrcode_user_id(monkeypatch):
     from apis.xhs_pc_login_apis import XHSLoginApi
     from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
@@ -123,6 +155,23 @@ def test_xhs_pc_login_adapter_maps_qrcode_user_id(monkeypatch):
     result = XhsPcLoginAdapter().check_qrcode_status("qr-123", "code-123", {"a1": "temp-a1"})
 
     assert result["status"] == "confirmed"
+    assert result["user_info"] == {"external_user_id": "qr-user-1"}
+
+
+def test_xhs_pc_login_adapter_requires_web_session_for_confirmation(monkeypatch):
+    from apis.xhs_pc_login_apis import XHSLoginApi
+    from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
+
+    def fake_check_qrcode_status(self, qr_id, code, cookies):
+        self.last_qrcode_status_data = {"codeStatus": 2, "userId": "qr-user-1"}
+        return True, "success", dict(cookies)
+
+    monkeypatch.setattr(XHSLoginApi, "check_qrcode_status", fake_check_qrcode_status)
+
+    result = XhsPcLoginAdapter().check_qrcode_status("qr-123", "code-123", {"a1": "temp-a1"})
+
+    assert result["status"] == "scanned"
+    assert result["cookies"] == {"a1": "temp-a1"}
     assert result["user_info"] == {"external_user_id": "qr-user-1"}
 
 
@@ -1416,6 +1465,17 @@ class FailingPcProfilesWithQrIdentityAdapter(FailingPcUserInfoAdapter):
         return result
 
 
+class MissingSessionPcQrAdapter(FakePcLoginAdapter):
+    def check_qrcode_status(self, qr_id, code, cookies):
+        assert qr_id == "qr-123"
+        assert code == "code-123"
+        return {
+            "status": "scanned",
+            "cookies": {"a1": "final-a1"},
+            "user_info": {"external_user_id": "qr-identity-user-1"},
+        }
+
+
 class TransientPcPollingAdapter(FakePcLoginAdapter):
     def __init__(self):
         self.poll_count = 0
@@ -2384,6 +2444,44 @@ def test_xhs_pc_qrcode_login_uses_qrcode_identity_when_profile_fetches_fail(tmp_
         try:
             account = db.query(PlatformAccount).one()
             assert account.external_user_id == "qr-identity-user-1"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_pc_qrcode_login_does_not_create_account_without_web_session(tmp_path):
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_pc_login_adapter] = lambda: MissingSessionPcQrAdapter()
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    try:
+        access_token = _register_and_get_access_token("qr-missing-session-operator")
+        created = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+
+        poll_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert poll_response.status_code == 200
+        assert poll_response.json()["status"] == "scanned"
+        assert poll_response.json()["account"] is None
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.get(LoginSession, created["session_id"])
+            assert stored_session.status == "scanned"
+            assert db.query(PlatformAccount).count() == 0
+            assert db.query(AccountCookieVersion).count() == 0
         finally:
             db.close()
     finally:
@@ -3449,6 +3547,22 @@ class FakeXhsPcSearchAdapter:
         )
 
 
+class MissingLoginXhsPcSearchAdapter:
+    def __init__(self, cookies):
+        self.cookies = cookies
+
+    def search_note(self, keyword, page=1, **kwargs):
+        return False, "无登录信息，或登录信息为空", None
+
+
+class GenericFailureXhsPcSearchAdapter:
+    def __init__(self, cookies):
+        self.cookies = cookies
+
+    def search_note(self, keyword, page=1, **kwargs):
+        return False, "签名校验失败", None
+
+
 def _create_pc_account_with_cookie(tmp_path, username="search-owner"):
     from backend.app.core.database import get_db
     from backend.app.core.security import encrypt_text
@@ -3656,6 +3770,71 @@ def test_xhs_pc_note_search_uses_owned_account_cookie_and_normalizes_results(tmp
         assert note["type"] == "normal"
         assert "raw" not in note
         assert "raw" not in payload
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
+def test_xhs_pc_note_search_marks_missing_login_expired(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(
+        tmp_path,
+        "pc-missing-login-owner",
+    )
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: MissingLoginXhsPcSearchAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "keyword": "低卡早餐"},
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "账号登录已失效，请重新扫码登录"}
+        assert "web_session" not in response.text
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.get(PlatformAccount, account_id)
+            assert account.status == "expired"
+            assert account.status_message == "账号登录已失效，请重新扫码登录"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
+def test_xhs_pc_note_search_keeps_account_active_for_non_login_failure(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.models import PlatformAccount
+
+    db_dependency, access_token, account_id = _create_pc_account_with_cookie(
+        tmp_path,
+        "pc-generic-search-failure-owner",
+    )
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: GenericFailureXhsPcSearchAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "keyword": "低卡早餐"},
+        )
+
+        assert response.status_code == 502
+        assert response.json() == {"detail": "签名校验失败"}
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            account = db.get(PlatformAccount, account_id)
+            assert account.status == "active"
+            assert account.status_message == ""
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(db_dependency, None)
         app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)

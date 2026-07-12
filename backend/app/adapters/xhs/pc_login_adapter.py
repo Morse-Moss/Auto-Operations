@@ -28,7 +28,10 @@ class XhsPcLoginAdapter:
 
             api = XHSLoginApi()
             success, message, updated_cookies = api.check_qrcode_status(qr_id, code, cookies)
-        status = "confirmed" if success else "pending"
+        has_web_session = bool(str(updated_cookies.get("web_session") or "").strip())
+        status = "confirmed" if success and has_web_session else "pending"
+        if success and not has_web_session:
+            status = "scanned"
         if "过期" in message or "expired" in message.lower():
             status = "expired"
         if "确认" in message or "confirm" in message.lower():

@@ -25,6 +25,15 @@ from backend.app.services.xhs_detail_recovery import (
 
 router = APIRouter(prefix="/xhs/pc", tags=["xhs-pc"])
 
+XHS_LOGIN_EXPIRED_MESSAGE = "账号登录已失效，请重新扫码登录"
+XHS_MISSING_LOGIN_SIGNALS = (
+    "无登录信息",
+    "登录信息为空",
+    "请先登录",
+    "not logged in",
+    "login required",
+)
+
 
 class SearchNotesRequest(BaseModel):
     account_id: int
@@ -252,6 +261,11 @@ def _get_owned_pc_account_cookies(db: Session, current_user: User, account_id: i
     return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
 
 
+def _is_missing_login_message(message: str | None) -> bool:
+    normalized = str(message or "").strip().lower()
+    return any(signal in normalized for signal in XHS_MISSING_LOGIN_SIGNALS)
+
+
 @router.post("/search/notes")
 def search_notes(
     payload: SearchNotesRequest,
@@ -271,6 +285,15 @@ def search_notes(
         geo=payload.geo,
     )
     if not success:
+        if _is_missing_login_message(message):
+            account = db.get(PlatformAccount, payload.account_id)
+            account.status = "expired"
+            account.status_message = XHS_LOGIN_EXPIRED_MESSAGE
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=XHS_LOGIN_EXPIRED_MESSAGE,
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=message or "XHS note search failed",
