@@ -62,6 +62,7 @@ db.sqlite3
 .claude/
 .superpowers/
 .agent/
+.Codex/worktrees/
 .tmp-codex/
 pytest_tmp_backend/
 compare-shots/
