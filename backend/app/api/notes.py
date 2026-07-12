@@ -37,10 +37,13 @@ from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaS
 from backend.app.services import huitun_live_note_source
 from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
 from backend.app.services.xhs_source_image_extractor import (
-    XhsSourceImageExtractionError,
     canonical_xhs_image_key,
-    fetch_xhs_note_image_urls,
     is_xhs_note_image_url,
+)
+from backend.app.services.xhs_source_image_import_service import (
+    SOURCE_URL_UNAVAILABLE_MESSAGE,
+    SourceImageDetailError,
+    fetch_authenticated_source_images,
 )
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -920,9 +923,17 @@ class ImportSourceImagesRequest(BaseModel):
 
 def _safe_source_image_import_url(source_url: str) -> str:
     parsed = urlparse(str(source_url or "").strip())
-    if not parsed.scheme or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return ""
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    hostname = parsed.hostname
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    authority = f"{hostname}:{port}" if port is not None else hostname
+    return urlunparse((parsed.scheme, authority, parsed.path, "", "", ""))
 
 
 def _legacy_data_acquisition_note_id(source_url: str) -> str:
@@ -956,11 +967,19 @@ def _resolve_source_image_import_url(
         resolved_url = huitun_live_note_source.resolve_note_url(cookie_text, note_id)
     except Exception as exc:
         if fail_on_unresolved:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="source_url_unavailable") from exc
+            raise SourceImageDetailError(
+                "source_url_unavailable",
+                SOURCE_URL_UNAVAILABLE_MESSAGE,
+                422,
+            ) from exc
         return source_url
     if not resolved_url:
         if fail_on_unresolved:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="source_url_unavailable")
+            raise SourceImageDetailError(
+                "source_url_unavailable",
+                SOURCE_URL_UNAVAILABLE_MESSAGE,
+                422,
+            )
         return source_url
     next_raw = dict(raw_json)
     next_raw["note_url"] = resolved_url
@@ -970,36 +989,6 @@ def _resolve_source_image_import_url(
         next_raw["data_acquisition"] = {"original_url": resolved_url}
     note.raw_json = next_raw
     return resolved_url
-
-
-def _note_known_source_image_urls(db: Session, note: Note) -> list[str]:
-    values: list[str] = []
-
-    def collect(value: Any, *, depth: int = 0) -> None:
-        if depth > 8 or len(values) >= 100:
-            return
-        if isinstance(value, str):
-            if is_xhs_note_image_url(value):
-                values.append(value)
-            return
-        if isinstance(value, list):
-            for item in value:
-                collect(item, depth=depth + 1)
-            return
-        if isinstance(value, dict):
-            for item in value.values():
-                collect(item, depth=depth + 1)
-
-    raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
-    collect(raw_json)
-    asset_urls = db.scalars(
-        select(NoteAsset.url)
-        .where(NoteAsset.note_id == note.id, NoteAsset.asset_type == "image")
-        .order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())
-    ).all()
-    for asset_url in asset_urls:
-        collect(asset_url)
-    return _unique_source_image_urls(values)
 
 
 def _source_import_base64_encode(value: bytes) -> str:
@@ -1083,6 +1072,7 @@ def _import_source_image_urls(
     source_urls: list[str],
     source_url: str,
     download: bool,
+    account_id: int | None = None,
 ) -> dict[str, Any]:
     source_urls = _unique_source_image_urls(source_urls)
     existing_assets = db.scalars(
@@ -1153,20 +1143,34 @@ def _import_source_image_urls(
         sort_order += 1
         items.append({"url": image_url, "status": status_text, "asset_id": asset.id, "local_path": local_name, "error": error})
 
+    raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
+    next_raw_json = dict(raw_json)
     if imported_count:
-        raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
         source_image_urls = [item["url"] for item in items if item["status"] != "skipped"]
-        note.raw_json = {
-            **raw_json,
-            "source_image_import": {
-                "source_url": _safe_source_image_import_url(source_url),
-                "total_source_image_count": len(source_urls),
-                "imported_count": imported_count,
-                "downloaded_count": downloaded_count,
-                "failed_count": failed_count,
-            },
-            "image_urls": list(dict.fromkeys([*(raw_json.get("image_urls") if isinstance(raw_json.get("image_urls"), list) else []), *source_image_urls])),
-        }
+        next_raw_json["image_urls"] = list(
+            dict.fromkeys(
+                [
+                    *(raw_json.get("image_urls") if isinstance(raw_json.get("image_urls"), list) else []),
+                    *source_image_urls,
+                ]
+            )
+        )
+    next_raw_json["source_image_import"] = {
+        "status": "partial" if failed_count else "completed",
+        "account_id": account_id,
+        "source_url": _safe_source_image_import_url(source_url),
+        "source_image_keys": [
+            key
+            for image_url in source_urls
+            if (key := canonical_xhs_image_key(image_url))
+        ],
+        "total_source_image_count": len(source_urls),
+        "imported_count": imported_count,
+        "skipped_count": skipped_count,
+        "downloaded_count": downloaded_count,
+        "failed_count": failed_count,
+    }
+    note.raw_json = next_raw_json
     db.commit()
 
     return {
@@ -1179,17 +1183,66 @@ def _import_source_image_urls(
     }
 
 
+def _record_source_image_import_terminal(
+    note: Note,
+    *,
+    source_url: str,
+    error: SourceImageDetailError,
+) -> None:
+    status_by_code = {
+        "xhs_login_required": "login_required",
+        "source_images_not_found": "not_found",
+    }
+    raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
+    note.raw_json = {
+        **raw_json,
+        "source_image_import": {
+            "status": status_by_code.get(error.code, "failed"),
+            "error_code": error.code,
+            "account_id": error.account_id,
+            "source_url": _safe_source_image_import_url(source_url),
+            "total_source_image_count": 0,
+            "imported_count": 0,
+            "skipped_count": 0,
+            "downloaded_count": 0,
+            "failed_count": 0,
+        },
+    }
+
+
 def _refresh_source_image_import_summary(note: Note, image_assets: list[NoteAsset]) -> None:
     raw_json = note.raw_json if isinstance(note.raw_json, dict) else {}
     summary = raw_json.get("source_image_import")
     if not isinstance(summary, dict):
         return
+    stored_keys = summary.get("source_image_keys")
+    if not isinstance(stored_keys, list) or any(
+        not isinstance(key, str) or not key
+        for key in stored_keys
+    ):
+        return
+    source_image_keys = list(dict.fromkeys(stored_keys))
+
+    assets_by_key = {
+        key: asset
+        for asset in image_assets
+        if asset.url and (key := canonical_xhs_image_key(asset.url))
+    }
+    total_count = len(source_image_keys)
+    downloaded_count = sum(
+        1
+        for key in source_image_keys
+        if (asset := assets_by_key.get(key)) is not None and asset.local_path
+    )
+    failed_count = max(total_count - downloaded_count, 0)
     next_summary = {
         **summary,
-        "total_source_image_count": int(summary.get("total_source_image_count") or len(image_assets)),
-        "downloaded_count": sum(1 for asset in image_assets if asset.local_path),
-        "failed_count": sum(1 for asset in image_assets if not asset.local_path),
+        "status": "completed" if failed_count == 0 else "partial",
+        "total_source_image_count": total_count,
+        "downloaded_count": downloaded_count,
+        "failed_count": failed_count,
     }
+    next_summary["source_image_keys"] = source_image_keys
     note.raw_json = {**raw_json, "source_image_import": next_summary}
 
 
@@ -1273,21 +1326,41 @@ def import_source_image_assets(
     payload: ImportSourceImagesRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    adapter_factory=Depends(get_xhs_pc_api_adapter_factory),
 ):
     note = _get_owned_note(db, current_user, note_id)
+    selected_account_id: int | None = None
     if payload.image_urls:
         source_urls = payload.image_urls
+        source_url = _resolve_source_image_import_url(db, note, payload.source_url)
     else:
         if not payload.source_url:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="source_url_or_image_urls_required")
-        source_url = _resolve_source_image_import_url(db, note, payload.source_url, fail_on_unresolved=True)
+        source_url = payload.source_url
         try:
-            source_urls = fetch_xhs_note_image_urls(source_url)
-        except XhsSourceImageExtractionError as exc:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-        if not source_urls:
-            source_urls = _note_known_source_image_urls(db, note)
-    source_url = _resolve_source_image_import_url(db, note, payload.source_url) if payload.image_urls else source_url
+            source_url = _resolve_source_image_import_url(
+                db,
+                note,
+                payload.source_url,
+                fail_on_unresolved=True,
+            )
+            fetched = fetch_authenticated_source_images(
+                db=db,
+                user_id=current_user.id,
+                note=note,
+                source_url=source_url,
+                adapter_factory=adapter_factory,
+            )
+        except SourceImageDetailError as exc:
+            _record_source_image_import_terminal(note, source_url=source_url, error=exc)
+            db.commit()
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"code": exc.code, "message": exc.message},
+            ) from exc
+        source_urls = fetched.image_urls
+        source_url = fetched.source_url
+        selected_account_id = fetched.account_id
 
     return _import_source_image_urls(
         db=db,
@@ -1296,6 +1369,7 @@ def import_source_image_assets(
         source_urls=source_urls,
         source_url=source_url,
         download=payload.download,
+        account_id=selected_account_id,
     )
 
 

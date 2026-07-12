@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
 from backend.app.api.platforms.xhs.data_acquisition import get_data_acquisition_note_source
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, encrypt_text, hash_password
@@ -1367,15 +1368,39 @@ def test_import_source_images_resolves_legacy_data_acquisition_short_link(tmp_pa
         "backend.app.services.huitun_live_note_source.resolve_note_url",
         lambda cookie_text, note_id: resolve_calls.append((cookie_text, note_id)) or resolved_url,
     )
-    monkeypatch.setattr(
-        "backend.app.api.notes.fetch_xhs_note_image_urls",
-        lambda source_url: fetch_calls.append(source_url) or ["https://sns-img-hw.xhscdn.com/notes_pre_post/image-1"],
-    )
     monkeypatch.setattr("backend.app.api.notes._download_asset", lambda *_args: "")
+
+    class FakeAdapter:
+        def __init__(self, _cookies: str):
+            pass
+
+        def get_note_info(self, source_url: str):
+            fetch_calls.append(source_url)
+            return True, "ok", {
+                "image_list": [{"url": "https://sns-img-hw.xhscdn.com/notes_pre_post/image-1"}]
+            }
+
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: FakeAdapter
     try:
         user_id, _account_id, headers = create_user_account_and_headers(SessionLocal)
         db = SessionLocal()
         try:
+            pc_account = PlatformAccount(
+                user_id=user_id,
+                platform="xhs",
+                sub_type="pc",
+                external_user_id="xhs-pc-source-import",
+                nickname="source import account",
+                status="active",
+            )
+            db.add(pc_account)
+            db.flush()
+            db.add(
+                AccountCookieVersion(
+                    platform_account_id=pc_account.id,
+                    encrypted_cookies=encrypt_text("a1=source-import"),
+                )
+            )
             note = Note(
                 user_id=user_id,
                 platform_account_id=0,
@@ -1405,7 +1430,7 @@ def test_import_source_images_resolves_legacy_data_acquisition_short_link(tmp_pa
         assert response.status_code == 200
         assert response.json()["imported_count"] == 1
         assert resolve_calls == [("session=ok", "11548571364")]
-        assert fetch_calls == [resolved_url]
+        assert fetch_calls == ["https://www.xiaohongshu.com/explore/6a4a223c0000000006022abe"]
         db = SessionLocal()
         try:
             note = db.get(Note, note_id)
@@ -1417,6 +1442,7 @@ def test_import_source_images_resolves_legacy_data_acquisition_short_link(tmp_pa
         finally:
             db.close()
     finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
         app.dependency_overrides.pop(get_db, None)
 
 
@@ -1425,10 +1451,12 @@ def test_import_source_images_fails_closed_when_legacy_short_link_cannot_resolve
     bad_url = "https://www.xiaohongshu.com/explore/11548571364"
     fetch_calls: list[str] = []
     monkeypatch.setattr("backend.app.services.huitun_live_note_source.resolve_note_url", lambda _cookie_text, _note_id: "")
-    monkeypatch.setattr(
-        "backend.app.api.notes.fetch_xhs_note_image_urls",
-        lambda source_url: fetch_calls.append(source_url) or ["https://sns-img-hw.xhscdn.com/notes_pre_post/image-1"],
-    )
+
+    class UnexpectedAdapter:
+        def __init__(self, _cookies: str):
+            fetch_calls.append("constructed")
+
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: UnexpectedAdapter
     try:
         user_id, _account_id, headers = create_user_account_and_headers(SessionLocal)
         db = SessionLocal()
@@ -1460,9 +1488,24 @@ def test_import_source_images_fails_closed_when_legacy_short_link_cannot_resolve
         )
 
         assert response.status_code == 422
-        assert response.json()["detail"] == "source_url_unavailable"
+        assert response.json()["detail"] == {
+            "code": "source_url_unavailable",
+            "message": "原文链接不可用，请检查笔记来源后重试。",
+        }
         assert fetch_calls == []
+        db = SessionLocal()
+        try:
+            note = db.get(Note, note_id)
+            assert note is not None
+            summary = note.raw_json["source_image_import"]
+            assert summary["status"] == "failed"
+            assert summary["error_code"] == "source_url_unavailable"
+            assert summary["account_id"] is None
+            assert summary["source_url"] == "https://www.xiaohongshu.com/explore/11548571364"
+        finally:
+            db.close()
     finally:
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
         app.dependency_overrides.pop(get_db, None)
 
 

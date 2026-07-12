@@ -44,6 +44,7 @@ import {
 } from "../../../lib/api";
 import { formatShanghaiTime } from "../../../lib/time";
 import type { NoteAsset, NoteComment, SavedNote } from "../../../types";
+import { getActionErrorMessage, runXhsSourceImageImportAction } from "./xhs-source-image-import-action";
 
 const { Text, Paragraph } = Typography;
 const h = React.createElement;
@@ -438,17 +439,6 @@ function renderComment(comment: NoteComment, replies: NoteComment[]) {
   );
 }
 
-function getActionErrorMessage(error: unknown): string {
-  const responseData = typeof error === "object" && error !== null && "response" in error
-    ? (error as { response?: { data?: unknown } }).response?.data
-    : null;
-  if (typeof responseData === "object" && responseData !== null && "detail" in responseData) {
-    const detail = (responseData as { detail?: unknown }).detail;
-    if (typeof detail === "string" && detail) return detail;
-  }
-  return error instanceof Error ? error.message : "未知错误";
-}
-
 async function copyTextWithFallback(text: string): Promise<void> {
   try {
     if (navigator.clipboard?.writeText) {
@@ -554,15 +544,6 @@ function renderImportSourceImagesButton(
   const isLoading = importingSourceImageNoteIds.has(selectedNote.id);
   const canImport = noteUrl.startsWith("http");
 
-  async function preparePageImportScript(reason: string) {
-    const scriptPayload = await createSavedNoteSourceImageImportScript(selectedNote.id);
-    await copyTextWithFallback(scriptPayload.script);
-    const hint = `${reason}，已复制原文导入脚本。打开作品链接后，在地址栏粘贴并回车，系统会接收并保存页面里的图片。`;
-    controller.setDetailError(null);
-    controller.setDetailActionMessage(hint);
-    message.warning(hint);
-  }
-
   async function importSourceImages() {
     if (!canImport) {
       const errorMessage = "缺少可访问的作品链接，无法补全原文图片。";
@@ -570,40 +551,21 @@ function renderImportSourceImagesButton(
       message.error(errorMessage);
       return;
     }
-    importingSourceImageNoteIds.add(selectedNote.id);
-    controller.setDetailError(null);
-    controller.setDetailActionMessage("正在自动补全原文图片...");
-    try {
-      const result = await importSavedNoteSourceImages(selectedNote.id, { source_url: noteUrl, download: true });
-      await controller.refreshSelectedItem();
-      if (result.total_source_image_count === 0) {
-        await preparePageImportScript("自动补全未识别到新增图片");
-        return;
-      }
-      if (result.imported_count === 0 && result.downloaded_count === 0 && result.failed_count === 0) {
-        await preparePageImportScript("自动补全只识别到已存在图片");
-        return;
-      }
-      const summary = `可自动补全的原文图片已处理：新增 ${result.imported_count} 张，已存在 ${result.skipped_count} 张，已保存 ${result.downloaded_count} 张，失败 ${result.failed_count} 张。`;
-      controller.setDetailError(result.failed_count > 0 ? "部分图片保存失败，请稍后重试或使用原文导入脚本继续处理。" : null);
-      controller.setDetailActionMessage(summary);
-      if (result.failed_count > 0) {
-        message.warning(summary);
-      } else {
-        message.success(summary);
-      }
-    } catch (error) {
-      try {
-        await preparePageImportScript(`自动补全原文图片失败：${getActionErrorMessage(error)}`);
-      } catch (scriptError) {
-        const errorMessage = `自动补全原文图片失败：${getActionErrorMessage(error)}；原文导入脚本复制失败：${getActionErrorMessage(scriptError)}`;
-        controller.setDetailError(errorMessage);
-        controller.setDetailActionMessage(null);
-        message.error(errorMessage);
-      }
-    } finally {
-      importingSourceImageNoteIds.delete(selectedNote.id);
-    }
+    await runXhsSourceImageImportAction({
+      importImages: () => importSavedNoteSourceImages(selectedNote.id, { source_url: noteUrl, download: true }),
+      refreshSelectedItem: controller.refreshSelectedItem,
+      setBusy: (busy) => {
+        if (busy) importingSourceImageNoteIds.add(selectedNote.id);
+        else importingSourceImageNoteIds.delete(selectedNote.id);
+      },
+      setDetailError: controller.setDetailError,
+      setDetailActionMessage: controller.setDetailActionMessage,
+      notify: (kind, text) => {
+        if (kind === "success") message.success(text);
+        else if (kind === "warning") message.warning(text);
+        else message.error(text);
+      },
+    });
   }
 
   return h(Button, {
