@@ -148,6 +148,23 @@ def test_xhs_pc_login_adapter_maps_qrcode_user_id(monkeypatch):
     assert result["user_info"] == {"external_user_id": "qr-user-1"}
 
 
+def test_xhs_pc_login_adapter_requires_web_session_for_confirmation(monkeypatch):
+    from apis.xhs_pc_login_apis import XHSLoginApi
+    from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
+
+    def fake_check_qrcode_status(self, qr_id, code, cookies):
+        self.last_qrcode_status_data = {"codeStatus": 2, "userId": "qr-user-1"}
+        return True, "success", dict(cookies)
+
+    monkeypatch.setattr(XHSLoginApi, "check_qrcode_status", fake_check_qrcode_status)
+
+    result = XhsPcLoginAdapter().check_qrcode_status("qr-123", "code-123", {"a1": "temp-a1"})
+
+    assert result["status"] == "scanned"
+    assert result["cookies"] == {"a1": "temp-a1"}
+    assert result["user_info"] == {"external_user_id": "qr-user-1"}
+
+
 def test_xhs_adapters_isolate_sdk_calls_from_broken_system_proxy():
     adapter_paths = [
         "backend/app/adapters/xhs/creator_login_adapter.py",
@@ -1438,6 +1455,17 @@ class FailingPcProfilesWithQrIdentityAdapter(FailingPcUserInfoAdapter):
         return result
 
 
+class MissingSessionPcQrAdapter(FakePcLoginAdapter):
+    def check_qrcode_status(self, qr_id, code, cookies):
+        assert qr_id == "qr-123"
+        assert code == "code-123"
+        return {
+            "status": "scanned",
+            "cookies": {"a1": "final-a1"},
+            "user_info": {"external_user_id": "qr-identity-user-1"},
+        }
+
+
 class TransientPcPollingAdapter(FakePcLoginAdapter):
     def __init__(self):
         self.poll_count = 0
@@ -2406,6 +2434,44 @@ def test_xhs_pc_qrcode_login_uses_qrcode_identity_when_profile_fetches_fail(tmp_
         try:
             account = db.query(PlatformAccount).one()
             assert account.external_user_id == "qr-identity-user-1"
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_pc_login_adapter, None)
+        app.dependency_overrides.pop(get_creator_login_adapter, None)
+
+
+def test_xhs_pc_qrcode_login_does_not_create_account_without_web_session(tmp_path):
+    from backend.app.api.login_sessions import get_creator_login_adapter, get_pc_login_adapter
+    from backend.app.core.database import get_db
+    from backend.app.models import AccountCookieVersion, LoginSession, PlatformAccount
+
+    db_dependency = _override_database(tmp_path)
+    app.dependency_overrides[get_pc_login_adapter] = lambda: MissingSessionPcQrAdapter()
+    app.dependency_overrides[get_creator_login_adapter] = lambda: FailingCreatorExchangeAdapter()
+    try:
+        access_token = _register_and_get_access_token("qr-missing-session-operator")
+        created = client.post(
+            "/api/xhs/login-sessions/pc/qrcode",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+
+        poll_response = client.get(
+            f"/api/xhs/login-sessions/{created['session_id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert poll_response.status_code == 200
+        assert poll_response.json()["status"] == "scanned"
+        assert poll_response.json()["account"] is None
+
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_session = db.get(LoginSession, created["session_id"])
+            assert stored_session.status == "scanned"
+            assert db.query(PlatformAccount).count() == 0
+            assert db.query(AccountCookieVersion).count() == 0
         finally:
             db.close()
     finally:
