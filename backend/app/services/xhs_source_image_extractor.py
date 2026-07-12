@@ -7,6 +7,8 @@ from urllib.parse import urlparse, urlunparse
 
 
 MAX_SOURCE_IMAGES = 50
+MAX_PAYLOAD_DEPTH = 10
+MAX_RAW_IMAGE_CANDIDATES = MAX_SOURCE_IMAGES * 4
 DEFAULT_TIMEOUT = 15
 XHS_SOURCE_HEADERS = {
     "User-Agent": (
@@ -42,17 +44,101 @@ def extract_xhs_note_image_urls_from_html(html: str) -> list[str]:
         return _unique_image_urls(_find_xhs_image_urls(html))
 
     note = _find_note_payload(state)
-    image_items = note.get("imageList") if isinstance(note, dict) else None
-    urls: list[str] = []
-    if isinstance(image_items, list):
-        for item in image_items:
-            for value in _candidate_image_values(item):
-                token_url = _image_url_from_value(value)
-                if token_url:
-                    urls.append(token_url)
-                    break
+    if note:
+        urls = extract_xhs_note_image_urls_from_payload(note)
+        if not urls:
+            urls.extend(_find_xhs_image_urls(json.dumps(note, ensure_ascii=False)))
+        return _unique_image_urls(urls)
+
+    urls = extract_xhs_note_image_urls_from_payload(state)
     if not urls:
-        urls.extend(_find_xhs_image_urls(json.dumps(note, ensure_ascii=False) if note else html))
+        urls.extend(_find_xhs_image_urls(html))
+    return _unique_image_urls(urls)
+
+
+def extract_xhs_note_image_urls_from_payload(payload: Any) -> list[str]:
+    urls: list[str] = []
+    raw_candidate_count = 0
+    image_list_keys = ("image_list", "imageList", "images")
+    nested_image_keys = ("info_list", "infoList", "url_list", "urlList")
+    image_value_keys = (
+        "master_url",
+        "masterUrl",
+        "url_default",
+        "urlDefault",
+        "url_pre",
+        "urlPre",
+        "url",
+        "trace_id",
+        "traceId",
+        "file_id",
+        "fileId",
+    )
+
+    def candidate_limit_reached() -> bool:
+        return raw_candidate_count >= MAX_RAW_IMAGE_CANDIDATES
+
+    def add_value(value: Any) -> None:
+        nonlocal raw_candidate_count
+        if candidate_limit_reached():
+            return
+        raw_candidate_count += 1
+        if not isinstance(value, str):
+            return
+        image_url = _image_url_from_value(value.strip())
+        if image_url:
+            urls.append(image_url)
+
+    def walk_image(value: Any, depth: int) -> None:
+        if depth > MAX_PAYLOAD_DEPTH or candidate_limit_reached():
+            return
+        if isinstance(value, list):
+            for child in value:
+                walk_image(child, depth + 1)
+                if candidate_limit_reached():
+                    break
+            return
+        if isinstance(value, str):
+            add_value(value)
+            return
+        if not isinstance(value, dict):
+            return
+        for key in image_value_keys:
+            if key in value:
+                add_value(value[key])
+            if candidate_limit_reached():
+                return
+        for key in nested_image_keys:
+            if key in value:
+                walk_image(value[key], depth + 1)
+                if candidate_limit_reached():
+                    return
+        for key in image_list_keys:
+            if key in value:
+                walk_image(value[key], depth + 1)
+                if candidate_limit_reached():
+                    return
+
+    def walk_payload(value: Any, depth: int = 0) -> None:
+        if depth > MAX_PAYLOAD_DEPTH or candidate_limit_reached():
+            return
+        if isinstance(value, list):
+            for child in value:
+                walk_payload(child, depth + 1)
+                if candidate_limit_reached():
+                    break
+            return
+        if not isinstance(value, dict):
+            return
+        for key, child in value.items():
+            if key in image_list_keys or key in nested_image_keys:
+                walk_image(child, depth + 1)
+            else:
+                walk_payload(child, depth + 1)
+            if candidate_limit_reached():
+                break
+
+    walk_payload(payload)
     return _unique_image_urls(urls)
 
 
@@ -132,21 +218,6 @@ def _find_first_dict_with_key(value: Any, key: str) -> dict[str, Any] | None:
     return None
 
 
-def _candidate_image_values(item: Any) -> list[str]:
-    if not isinstance(item, dict):
-        return []
-    keys = ("urlDefault", "url", "traceId", "fileId", "id")
-    values = [str(item.get(key) or "").strip() for key in keys if item.get(key)]
-    url_list = item.get("urlList")
-    if isinstance(url_list, list):
-        for value in url_list:
-            if isinstance(value, str):
-                values.append(value.strip())
-            elif isinstance(value, dict):
-                values.extend(_candidate_image_values(value))
-    return values
-
-
 def _image_url_from_value(value: str) -> str:
     if not value:
         return ""
@@ -161,8 +232,9 @@ def _image_url_from_value(value: str) -> str:
 def _find_xhs_image_urls(text: str) -> list[str]:
     if not text:
         return []
-    pattern = re.compile(r"https?://(?:sns-[^\\\"'\\s<>]+?\\.xhscdn\\.com|ci\\.xiaohongshu\\.com)/[^\\\"'\\s<>]+")
-    return [_normalize_image_url(match.group(0)) for match in pattern.finditer(text)]
+    normalized_text = text.replace("\\u002F", "/").replace("\\/", "/")
+    pattern = re.compile(r"https?://(?:sns-[^\"'\s<>]+?\.xhscdn\.com|ci\.xiaohongshu\.com)/[^\"'\s<>]+")
+    return [_normalize_image_url(match.group(0)) for match in pattern.finditer(normalized_text)]
 
 
 def _normalize_image_url(url: str) -> str:
