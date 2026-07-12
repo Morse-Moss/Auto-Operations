@@ -13,6 +13,26 @@ from xhs_utils.xhs_util import generate_headers, generate_xs_xs_common, splice_s
 from xhs_utils.common_util import generate_a1, generate_web_id
 
 
+def _extract_web_session(response_cookies, payload):
+    cookie_session = response_cookies.get('web_session')
+    if isinstance(cookie_session, str) and cookie_session.strip():
+        return cookie_session.strip()
+
+    data = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return None
+
+    containers = [data.get('login_info'), data.get('loginInfo'), data, data.get('result')]
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in ('session', 'web_session', 'webSession'):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 class XHSLoginApi:
     def __init__(self):
         self.base_url = "https://edith.xiaohongshu.com"
@@ -184,10 +204,10 @@ class XHSLoginApi:
             cookies[key] = value
 
         res = resp.json()
-        if res.get('success') and 'login_info' in res.get('data', {}):
-            login_info = res['data']['login_info']
-            if 'session' in login_info and 'web_session' not in cookies:
-                cookies['web_session'] = login_info['session']
+        if res.get('success'):
+            session = _extract_web_session(cookies, res)
+            if session:
+                cookies['web_session'] = session
 
         return cookies
 

@@ -108,6 +108,28 @@ def test_xhs_pc_login_sdk_preserves_qrcode_identity_metadata(monkeypatch):
     assert api.last_qrcode_status_data == {"codeStatus": 1, "userId": "qr-user-1", "result": {}}
 
 
+@pytest.mark.parametrize(
+    ("response_cookies", "payload", "expected"),
+    [
+        ({"web_session": "cookie-session"}, {}, "cookie-session"),
+        ({}, {"data": {"login_info": {"session": "legacy-session"}}}, "legacy-session"),
+        ({}, {"data": {"loginInfo": {"session": "camel-session"}}}, "camel-session"),
+        ({}, {"data": {"web_session": "snake-session"}}, "snake-session"),
+        ({}, {"data": {"webSession": "camel-web-session"}}, "camel-web-session"),
+        ({}, {"data": {"session": "direct-session"}}, "direct-session"),
+        ({}, {"data": {"result": {"session": "result-session"}}}, "result-session"),
+    ],
+)
+def test_xhs_pc_login_extracts_web_session_from_supported_response_shapes(
+    response_cookies,
+    payload,
+    expected,
+):
+    from apis.xhs_pc_login_apis import _extract_web_session
+
+    assert _extract_web_session(response_cookies, payload) == expected
+
+
 def test_xhs_pc_login_adapter_maps_qrcode_user_id(monkeypatch):
     from apis.xhs_pc_login_apis import XHSLoginApi
     from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
