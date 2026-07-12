@@ -191,7 +191,7 @@ def test_half_applied_migration_reuses_table_and_preserves_bindings(
                     SENTINEL_BINDING,
                 )
 
-        command.upgrade(config, "head")
+        command.upgrade(config, HEAD_REVISION)
 
         assert _revision(engine) == HEAD_REVISION
         assert _bindings(engine) == {
@@ -219,7 +219,7 @@ def test_fresh_upgrade_creates_table_and_backfills_only_unique_candidates(
     try:
         config_ids = _seed_admin_and_model_configs(engine)
 
-        command.upgrade(config, "head")
+        command.upgrade(config, HEAD_REVISION)
 
         assert _revision(engine) == HEAD_REVISION
         assert _bindings(engine) == {
@@ -251,7 +251,7 @@ def test_upgrade_rejects_incompatible_existing_capability_table(
             RuntimeError,
             match="incompatible model_capability_defaults",
         ):
-            command.upgrade(config, "head")
+            command.upgrade(config, HEAD_REVISION)
     finally:
         engine.dispose()
 
@@ -267,7 +267,7 @@ def test_upgrade_creates_exact_named_index_before_downgrade(
     try:
         _create_capability_table(engine, index_name=ALTERNATE_CAPABILITY_INDEX)
 
-        command.upgrade(config, "head")
+        command.upgrade(config, HEAD_REVISION)
 
         index_names = {
             index["name"]
@@ -302,7 +302,7 @@ def test_upgrade_rejects_incompatible_column_shape(
             RuntimeError,
             match="incompatible model_capability_defaults",
         ):
-            command.upgrade(config, "head")
+            command.upgrade(config, HEAD_REVISION)
     finally:
         engine.dispose()
 
@@ -326,6 +326,6 @@ def test_upgrade_rejects_named_index_on_wrong_column(
             RuntimeError,
             match="incompatible model_capability_defaults",
         ):
-            command.upgrade(config, "head")
+            command.upgrade(config, HEAD_REVISION)
     finally:
         engine.dispose()
