@@ -70,8 +70,8 @@
 ## XHS 原生能力安全规则
 
 - 不保存账号密码、明文 Cookie、Token、API Key 到代码或文档。
-- 生产环境必须覆盖默认 `SECRET_KEY`；开发默认值不能用于真实部署。
-- Fernet 加密依赖稳定 secret 配置，迁移 secret 会影响已加密 Cookie/API Key 解密。
+- 占位 `SECRET_KEY` + 非 loopback 监听会被启动硬闸直接拒绝（`backend/app/core/config.py` 的 `validate_secret_key_for_host`，独立于 ENVIRONMENT）。当前部署的真实密钥在根目录 `.env`（`SECRET_KEY` + `FERNET_KEY`，2026-07-26 配置，gitignored）——不要删除该文件；配置优先级为 YAML < `.env` < 环境变量。
+- Fernet 加密依赖稳定 secret 配置，迁移 secret 会影响已加密 Cookie/API Key 解密。当前 `.env` 中 `FERNET_KEY` 已固定为旧默认 secret 的派生值，轮换 `SECRET_KEY` 不影响存量加密数据；轮换 `FERNET_KEY` 才会。
 - XHS PC/Creator 操作默认低频、串行，不做高频批量请求。
 - XHS SDK 或签名接口失败时，先定位接口/签名/账号状态变化，不盲目重试。
 - `apis/`、`xhs_utils/`、`static/` 属于脆弱底层 SDK/签名层，默认不要直接修改；优先通过 `backend/app/adapters/xhs/` 做兼容适配。确需修改底层签名或 SDK 时，必须先写设计并说明影响范围。
