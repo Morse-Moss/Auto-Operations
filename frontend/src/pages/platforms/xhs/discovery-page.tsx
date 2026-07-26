@@ -227,16 +227,16 @@ export function XhsDiscoveryPage() {
       <Card style={{ marginBottom: 24 }}>
         <form onSubmit={(e) => { e.preventDefault(); void runSearch(1, false); }}>
           <Row gutter={[12, 12]}>
-            <Col span={6}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>搜索账号</Text></div><Select value={selectedAccountId} onChange={setSelectedAccountId} placeholder="选择 PC 账号" style={{ width: "100%" }} options={pcAccountOptions} /></Col>
-            <Col span={6}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>关键词</Text></div><Input.Search value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="低卡早餐、通勤穿搭" loading={isSearching} onSearch={() => void runSearch(1, false)} enterButton /></Col>
-            <Col span={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>排序</Text></div><Select value={filters.sort_type_choice} onChange={(v) => setFilters((c) => ({ ...c, sort_type_choice: v }))} style={{ width: "100%" }} options={sortOptions} /></Col>
-            <Col span={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>类型</Text></div><Select value={filters.note_type} onChange={(v) => setFilters((c) => ({ ...c, note_type: v }))} style={{ width: "100%" }} options={noteTypeOptions} /></Col>
-            <Col span={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>时间</Text></div><Select value={filters.note_time} onChange={(v) => setFilters((c) => ({ ...c, note_time: v }))} style={{ width: "100%" }} options={noteTimeOptions} /></Col>
-            <Col span={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>范围</Text></div><Select value={filters.note_range} onChange={(v) => setFilters((c) => ({ ...c, note_range: v }))} style={{ width: "100%" }} options={noteRangeOptions} /></Col>
+            <Col xs={24} sm={12} lg={6}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>搜索账号</Text></div><Select value={selectedAccountId} onChange={setSelectedAccountId} placeholder="选择 PC 账号" style={{ width: "100%" }} options={pcAccountOptions} /></Col>
+            <Col xs={24} sm={12} lg={6}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>关键词</Text></div><Input.Search value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="低卡早餐、通勤穿搭" loading={isSearching} onSearch={() => void runSearch(1, false)} enterButton /></Col>
+            <Col xs={12} sm={6} lg={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>排序</Text></div><Select value={filters.sort_type_choice} onChange={(v) => setFilters((c) => ({ ...c, sort_type_choice: v }))} style={{ width: "100%" }} options={sortOptions} /></Col>
+            <Col xs={12} sm={6} lg={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>类型</Text></div><Select value={filters.note_type} onChange={(v) => setFilters((c) => ({ ...c, note_type: v }))} style={{ width: "100%" }} options={noteTypeOptions} /></Col>
+            <Col xs={12} sm={6} lg={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>时间</Text></div><Select value={filters.note_time} onChange={(v) => setFilters((c) => ({ ...c, note_time: v }))} style={{ width: "100%" }} options={noteTimeOptions} /></Col>
+            <Col xs={12} sm={6} lg={3}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>范围</Text></div><Select value={filters.note_range} onChange={(v) => setFilters((c) => ({ ...c, note_range: v }))} style={{ width: "100%" }} options={noteRangeOptions} /></Col>
           </Row>
-          <Row gutter={12} style={{ marginTop: 12 }} align="bottom">
-            <Col span={6}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>笔记 URL</Text></div><Input value={noteUrl} onChange={(e) => setNoteUrl(e.target.value)} placeholder="https://www.xiaohongshu.com/explore/..." /></Col>
-            <Col><Button icon={<SearchOutlined />} loading={isFetchingUrl} disabled={noPcAccount} onClick={handleFetchUrlDetail}>URL 直查</Button></Col>
+          <Row gutter={[12, 12]} style={{ marginTop: 12 }} align="bottom">
+            <Col xs={24} sm={16} lg={12}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>笔记 URL</Text></div><Input value={noteUrl} onChange={(e) => setNoteUrl(e.target.value)} placeholder="https://www.xiaohongshu.com/explore/..." /></Col>
+            <Col xs={24} sm={8} lg={4}><Button block icon={<SearchOutlined />} loading={isFetchingUrl} disabled={noPcAccount} onClick={handleFetchUrlDetail}>URL 直查</Button></Col>
           </Row>
         </form>
         {error && <Alert message={error} type="error" showIcon style={{ marginTop: 12 }} closable onClose={() => setError(null)} />}

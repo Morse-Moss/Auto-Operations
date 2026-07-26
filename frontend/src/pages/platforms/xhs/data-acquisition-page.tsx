@@ -134,7 +134,12 @@ function parseKeywordGroupId(searchParams: URLSearchParams): number | null {
   return Number.isFinite(parsedKeywordGroupId) && parsedKeywordGroupId > 0 ? parsedKeywordGroupId : null;
 }
 
-export function XhsDataAcquisitionPage() {
+type XhsDataAcquisitionPageProps = {
+  embedded?: boolean;
+  showDirectXhsSection?: boolean;
+};
+
+export function XhsDataAcquisitionPage({ embedded = false, showDirectXhsSection = true }: XhsDataAcquisitionPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [form] = Form.useForm<{ keyword: string; limit: number; sort: string; note_type: string }>();
   const keywordGroupId = parseKeywordGroupId(searchParams);
@@ -472,19 +477,21 @@ export function XhsDataAcquisitionPage() {
 
   return (
     <div>
-      <Row justify="space-between" align="middle" gutter={[16, 16]} style={{ marginBottom: 20 }}>
-        <Col>
-          <Title level={4} style={{ margin: 0 }}>
-            小红书数据获取
-          </Title>
-          <Text type="secondary">先获取候选，再人工确认入库；失败时任务停止，不自动切换其他路径。</Text>
-        </Col>
-        <Col>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadPageData()} loading={loading}>
-            刷新
-          </Button>
-        </Col>
-      </Row>
+      {!embedded ? (
+        <Row justify="space-between" align="middle" gutter={[16, 16]} style={{ marginBottom: 20 }}>
+          <Col>
+            <Title level={4} style={{ margin: 0 }}>
+              小红书数据获取
+            </Title>
+            <Text type="secondary">先获取候选，再人工确认入库；失败时任务停止，不自动切换其他路径。</Text>
+          </Col>
+          <Col>
+            <Button icon={<ReloadOutlined />} onClick={() => void loadPageData()} loading={loading}>
+              刷新
+            </Button>
+          </Col>
+        </Row>
+      ) : null}
 
       <Card title={<Space><SearchOutlined />获取笔记数据</Space>} style={{ marginBottom: 20 }}>
         <Alert
@@ -671,7 +678,7 @@ export function XhsDataAcquisitionPage() {
         </Col>
       </Row>
 
-      <Collapse
+      {showDirectXhsSection ? <Collapse
         items={[
           {
             key: "direct-xhs-account",
@@ -695,7 +702,7 @@ export function XhsDataAcquisitionPage() {
             ),
           },
         ]}
-      />
+      /> : null}
 
       <div style={{ marginTop: 16 }}>
         <Link to="/platforms/xhs/library">前往内容库</Link>

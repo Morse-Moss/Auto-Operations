@@ -36,7 +36,7 @@ import { useThemeMode } from "../../app/providers";
 import { useAuth } from "../../hooks/use-auth";
 import { useUsageBalance } from "../../hooks/use-usage-balance";
 import { fetchNotifications, markAllNotificationsRead, markNotificationRead } from "../../lib/api";
-import { getPlatformIdFromPath, getPlatformNavItems } from "../../platform-core/registry/platform-sections";
+import { getPlatformIdFromPath, getPlatformNavItems, getPlatformSelectedNavPath } from "../../platform-core/registry/platform-sections";
 import type { AppNotification } from "../../types";
 
 const { Sider, Header, Content } = Layout;
@@ -181,7 +181,7 @@ export function AppShell() {
   const handleMenuClick: MenuProps["onClick"] = ({ key }) => {
     navigate(key);
   };
-  const selectedKeys = [location.pathname];
+  const selectedKeys = [getPlatformSelectedNavPath(location.pathname)];
   const platformId = getPlatformIdFromPath(location.pathname);
   const isAdmin = role === "admin";
   const mainNavItems = getPlatformNavItems(platformId, { includeAdminOnly: isAdmin });

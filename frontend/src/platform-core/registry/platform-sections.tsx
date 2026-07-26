@@ -5,7 +5,6 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   FileTextOutlined,
-  KeyOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
   SendOutlined,
@@ -34,9 +33,7 @@ export const platformSectionRegistry: Record<string, PlatformSectionConfig[]> = 
   "xhs": [
     { key: "dashboard", path: "/platforms/xhs/dashboard", icon: <DashboardOutlined />, label: "小红书总览", title: "小红书总览", description: "小红书运营数据、账号状态和生产链路总览。", status: "available" },
     { key: "accounts", path: "/platforms/xhs/accounts", icon: <SafetyCertificateOutlined />, label: "小红书账号矩阵", title: "小红书账号矩阵", description: "管理 PC 与 Creator 账号、Cookie 状态、健康检查和账号作用域。", status: "available" },
-    { key: "discovery", path: "/platforms/xhs/discovery", icon: <SearchOutlined />, label: "小红书笔记发现", title: "小红书笔记发现", description: "关键词搜索、URL 直达、账号笔记抓取和批量入库。", status: "available" },
-    { key: "keywords", path: "/platforms/xhs/keywords", icon: <KeyOutlined />, label: "小红书关键词组", title: "小红书关键词组", description: "管理关键词组与热词候选发现。", status: "available" },
-    { key: "crawler", path: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "小红书数据获取", title: "小红书数据获取", description: "获取笔记候选、人工确认入库，并保留高风险直连入口。", status: "available" },
+    { key: "sources", path: "/platforms/xhs/crawler", icon: <CloudDownloadOutlined />, label: "系统数据源", title: "系统数据源", description: "统一使用系统发现与有风险的小红书实时数据。", status: "available" },
     { key: "library", path: "/platforms/xhs/library", icon: <DatabaseOutlined />, label: "小红书内容库", title: "小红书内容库", description: "标签、筛选、批量导出和素材下载的统一资产库。", status: "available" },
     { key: "analytics", path: "/platforms/xhs/analytics", icon: <BarChartOutlined />, label: "小红书分析中心", title: "小红书分析中心", description: "围绕关键词组、笔记和评论生成有证据的分析报告。", status: "available" },
     { key: "drafts", path: "/platforms/xhs/drafts", icon: <FileTextOutlined />, label: "小红书草稿工坊", title: "小红书草稿工坊", description: "把收藏笔记转化为可编辑草稿。", status: "available" },
@@ -71,6 +68,13 @@ export function getPlatformSections(platformId: string, options?: { includeAdmin
     return sections.filter((section) => !section.adminOnly);
   }
   return sections;
+}
+
+export function getPlatformSelectedNavPath(pathname: string): string {
+  if (pathname === "/platforms/xhs/discovery" || pathname === "/platforms/xhs/keywords") {
+    return "/platforms/xhs/crawler";
+  }
+  return pathname;
 }
 
 export function getPlatformNavItems(platformId: string, options?: { includeAdminOnly?: boolean }): MenuProps["items"] {
