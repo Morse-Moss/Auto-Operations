@@ -17,7 +17,7 @@ class Task(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     platform: Mapped[str] = mapped_column(String(32), index=True)
     task_type: Mapped[str] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(32), default="pending")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)

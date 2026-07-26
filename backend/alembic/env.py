@@ -44,7 +44,8 @@ def run_migrations_online() -> None:
         @event.listens_for(connectable, "connect")
         def _set_sqlite_pragma(dbapi_connection, _connection_record):
             cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode=MEMORY")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
 
     with connectable.connect() as connection:

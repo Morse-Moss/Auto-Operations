@@ -12,14 +12,19 @@ class Base(DeclarativeBase):
 
 settings = get_settings()
 
-_connect_args = {}
+
+def _database_engine_options(database_url: str) -> dict[str, object]:
+    if database_url.startswith("sqlite"):
+        return {"connect_args": {"check_same_thread": False}}
+    return {"pool_pre_ping": True, "pool_recycle": 3600}
+
+
 if settings.database_url.startswith("sqlite"):
-    _connect_args["check_same_thread"] = False
     import os
     db_path = settings.database_url.replace("sqlite:///", "")
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
-engine = create_engine(settings.database_url, connect_args=_connect_args)
+engine = create_engine(settings.database_url, **_database_engine_options(settings.database_url))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -29,7 +34,8 @@ def _configure_sqlite_connection(dbapi_connection, connection_record) -> None:
         return
 
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=MEMORY")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
 
 
