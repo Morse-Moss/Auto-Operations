@@ -82,6 +82,7 @@ export type DraftWorkbenchController<TDraft extends DraftWorkbenchDraft = DraftW
   setTitle(title: string): void;
   setBody(body: string): void;
   setTags(tags: NonNullable<Draft["tags"]>): void;
+  applySavedDraft(draft: TDraft): void;
   refreshDrafts(): Promise<void>;
   saveSelectedDraft(): Promise<void>;
   duplicateSelectedDraft(): Promise<void>;

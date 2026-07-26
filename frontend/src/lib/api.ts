@@ -396,8 +396,18 @@ export async function fetchAdminInviteCodes(): Promise<Paginated<AdminInviteCode
   return response.data;
 }
 
-export async function createAdminInviteCode(payload: { code: string; max_uses: number }): Promise<AdminInviteCode> {
+export async function createAdminInviteCode(payload: { code?: string; max_uses: number }): Promise<AdminInviteCode> {
   const response = await http.post<AdminInviteCode>("/admin/invite-codes", payload);
+  return response.data;
+}
+
+export async function disableAdminInviteCode(inviteId: number): Promise<AdminInviteCode> {
+  const response = await http.post<AdminInviteCode>(`/admin/invite-codes/${inviteId}/disable`);
+  return response.data;
+}
+
+export async function activateAdminInviteCode(inviteId: number): Promise<AdminInviteCode> {
+  const response = await http.post<AdminInviteCode>(`/admin/invite-codes/${inviteId}/activate`);
   return response.data;
 }
 
@@ -1274,6 +1284,31 @@ export async function updateDraft(
   payload: { draft_name?: string; title?: string; body?: string; tags?: { id?: string; name: string }[] },
 ): Promise<Draft> {
   const response = await http.patch<Draft>(`/drafts/${draftId}`, payload);
+  return response.data;
+}
+
+export type DraftRewriteCandidatePayload = {
+  title: string;
+  body: string;
+  tags: { id?: string; name: string }[];
+  generated_at: string;
+};
+
+export type DraftRewriteCandidatesResponse = {
+  draft_id: number;
+  candidates: Partial<Record<"safe" | "polish" | "seed", DraftRewriteCandidatePayload>>;
+};
+
+export async function fetchDraftRewriteCandidates(draftId: number): Promise<DraftRewriteCandidatesResponse> {
+  const response = await http.get<DraftRewriteCandidatesResponse>(`/drafts/${draftId}/rewrite-candidates`, { _silent: true } as never);
+  return response.data;
+}
+
+export async function discardDraftRewriteCandidate(
+  draftId: number,
+  mode: "safe" | "polish" | "seed",
+): Promise<DraftRewriteCandidatesResponse> {
+  const response = await http.delete<DraftRewriteCandidatesResponse>(`/drafts/${draftId}/rewrite-candidates/${mode}`, { _silent: true } as never);
   return response.data;
 }
 

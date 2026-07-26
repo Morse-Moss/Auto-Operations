@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ from backend.app.services.ai_service import TextAiClient
 from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.asset_storage_policy import create_signed_media_url, valid_media_owner_prefixes
 from backend.app.services.draft_ai_scoring_service import DraftAiScoringService
+from backend.app.services.draft_rewrite_candidate_service import clear_rewrite_candidate, serialize_rewrite_candidates
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
@@ -338,6 +339,40 @@ def get_drafts(
         statement = statement.where(AiDraft.platform == platform)
     drafts = db.scalars(statement.order_by(AiDraft.created_at.desc())).all()
     return paginated([_serialize_draft(draft, db) for draft in drafts], page, page_size)
+
+
+@router.get("/{draft_id}/rewrite-candidates")
+def get_draft_rewrite_candidates(
+    draft_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = db.get(AiDraft, draft_id)
+    if draft is None or draft.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
+    return {
+        "draft_id": draft.id,
+        "candidates": serialize_rewrite_candidates(draft.rewrite_candidates),
+    }
+
+
+@router.delete("/{draft_id}/rewrite-candidates/{mode}")
+def delete_draft_rewrite_candidate(
+    draft_id: int,
+    mode: Literal["safe", "polish", "seed"],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = db.scalar(select(AiDraft).where(AiDraft.id == draft_id).with_for_update())
+    if draft is None or draft.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")
+
+    draft.rewrite_candidates = clear_rewrite_candidate(draft.rewrite_candidates, mode)
+    db.commit()
+    return {
+        "draft_id": draft.id,
+        "candidates": serialize_rewrite_candidates(draft.rewrite_candidates),
+    }
 
 
 @router.post("")

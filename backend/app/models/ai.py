@@ -56,6 +56,7 @@ class AiDraft(Base):
     title: Mapped[str] = mapped_column(String(256), default="")
     body: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    rewrite_candidates: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     source_note_id: Mapped[Optional[int]] = mapped_column(ForeignKey("notes.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now)
 

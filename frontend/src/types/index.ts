@@ -645,6 +645,8 @@ export type PlatformAccount = {
   avatar_url?: string;
   status: "active" | "healthy" | "expired" | "risk" | "unknown" | string;
   status_message?: string;
+  login_ready?: boolean;
+  login_readiness_message?: string;
   profile?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
@@ -1514,6 +1516,7 @@ export type DoubaoMainModelConfigResult = {
 
 export type RewriteDraftPayload = {
   draft_id: number;
+  mode?: "safe" | "polish" | "seed";
   instruction?: string;
 };
 

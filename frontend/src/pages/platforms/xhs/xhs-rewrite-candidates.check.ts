@@ -1,6 +1,7 @@
 import {
   clearRewriteCandidate,
   getRewriteCandidate,
+  parseRewriteCandidates,
   setRewriteCandidate,
   toRewriteCandidate,
 } from "./xhs-rewrite-candidates.js";
@@ -45,3 +46,23 @@ assert(getRewriteCandidate(withoutPolish, "polish") === null, "clearing polish s
 assert(getRewriteCandidate(withoutPolish, "safe")?.body === "安全改写正文", "clearing polish should not remove safe candidate");
 assert(withoutPolish !== withSafeAndPolish, "clearing should return a new map object");
 assert(withSafe !== emptyCandidates, "setting should return a new map object");
+
+const restored = parseRewriteCandidates({
+  safe: {
+    title: "restored title",
+    body: "restored body",
+    tags: [{ name: "restored" }],
+    generated_at: "2026-07-22T16:00:00+08:00",
+  },
+  unknown: {
+    title: "invalid mode",
+    body: "invalid mode body",
+    tags: [],
+    generated_at: "2026-07-22T16:00:00+08:00",
+  },
+});
+
+assert(getRewriteCandidate(restored, "safe")?.title === "restored title", "persisted safe candidate should restore");
+assert(Number.isFinite(getRewriteCandidate(restored, "safe")?.generatedAt), "persisted generated_at should become a timestamp");
+assert(Object.keys(restored).length === 1, "unknown rewrite modes should be ignored during restore");
+assert(Object.keys(parseRewriteCandidates(null)).length === 0, "missing persisted candidates should restore as empty");

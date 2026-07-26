@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   DraftWorkbenchAdapter,
@@ -7,6 +7,10 @@ import type {
   DraftWorkbenchDraftPatch,
   DraftWorkbenchDryRunResult,
 } from "./draft-workbench-types";
+
+export function replaceDraftById<TDraft extends { id: number }>(drafts: readonly TDraft[], savedDraft: TDraft): TDraft[] {
+  return drafts.map((draft) => (draft.id === savedDraft.id ? savedDraft : draft));
+}
 
 export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: DraftWorkbenchAdapter<TDraft>): DraftWorkbenchController<TDraft> {
   const [drafts, setDrafts] = useState<TDraft[]>([]);
@@ -18,6 +22,8 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const selectedDraftIdRef = useRef<number | null>(null);
+  selectedDraftIdRef.current = selectedDraftId;
 
   const selectedDraft = useMemo(
     () => drafts.find((draft) => draft.id === selectedDraftId) ?? null,
@@ -25,6 +31,7 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
   );
 
   const syncDraftState = useCallback((draft: TDraft | null) => {
+    selectedDraftIdRef.current = draft?.id ?? null;
     if (!draft) {
       setSelectedDraftId(null);
       setTitle("");
@@ -39,6 +46,13 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
     setBody(draft.body);
     setTags(Array.isArray(draft.tags) ? draft.tags : []);
   }, []);
+
+  const applySavedDraft = useCallback((savedDraft: TDraft) => {
+    setDrafts((current) => replaceDraftById(current, savedDraft));
+    if (selectedDraftIdRef.current === savedDraft.id) {
+      syncDraftState(savedDraft);
+    }
+  }, [syncDraftState]);
 
   const refreshDrafts = useCallback(async () => {
     setIsLoading(true);
@@ -184,6 +198,7 @@ export function useDraftWorkbench<TDraft extends DraftWorkbenchDraft>(adapter: D
     setTitle,
     setBody,
     setTags,
+    applySavedDraft,
     refreshDrafts,
     saveSelectedDraft,
     duplicateSelectedDraft,

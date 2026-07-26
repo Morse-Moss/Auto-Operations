@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Card, Collapse, Empty, Input, Modal, Progress, Select, Space, Tag, Tabs, Typography, Upload, message as antMessage } from "antd";
+import { Alert, Button, Card, Collapse, Empty, Input, Modal, Progress, Select, Space, Spin, Tag, Tabs, Typography, Upload, message as antMessage } from "antd";
 import { DeleteOutlined, EditOutlined, LinkOutlined, PictureOutlined, ReloadOutlined, SaveOutlined, TrophyOutlined, UploadOutlined } from "@ant-design/icons";
 
 import { DraftWorkbenchShell, useDraftWorkbench } from "../../../components/draft-workbench";
@@ -8,7 +8,9 @@ import { useUsageBalance } from "../../../hooks/use-usage-balance";
 import {
   addDraftAsset,
   deleteDraftAsset,
+  discardDraftRewriteCandidate,
   fetchDraftAssets,
+  fetchDraftRewriteCandidates,
   fetchLatestDraftAiScore,
   fetchSavedNote,
   apiErrorMessage,
@@ -31,8 +33,8 @@ import { createXhsDraftWorkbenchAdapter } from "./xhs-draft-workbench-adapter";
 import type { RewriteTemplateKey } from "./rewrite-templates";
 import { DEFAULT_REWRITE_TEMPLATE_KEY, REWRITE_TEMPLATES } from "./rewrite-templates";
 import {
-  clearRewriteCandidate,
   getRewriteCandidate,
+  parseRewriteCandidates,
   setRewriteCandidate,
   toRewriteCandidate,
 } from "./xhs-rewrite-candidates";
@@ -317,6 +319,10 @@ export function XhsDraftsPage() {
   const [titleOptions, setTitleOptions] = useState<string[]>([]);
   const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [isRewriting, setIsRewriting] = useState(false);
+  const [isAdoptingRewriteCandidate, setIsAdoptingRewriteCandidate] = useState(false);
+  const [isDiscardingRewriteCandidate, setIsDiscardingRewriteCandidate] = useState(false);
+  const [isLoadingRewriteCandidates, setIsLoadingRewriteCandidates] = useState(false);
+  const [rewriteCandidatesError, setRewriteCandidatesError] = useState<string | null>(null);
   const [isSendingPublish, setIsSendingPublish] = useState(false);
   const [isSendingImageStudio, setIsSendingImageStudio] = useState(false);
   const [rewriteCandidates, setRewriteCandidates] = useState<RewriteCandidateMap>({});
@@ -327,10 +333,13 @@ export function XhsDraftsPage() {
   const [draftAiScore, setDraftAiScore] = useState<DraftAiScoreResult | null>(null);
   const [isLoadingDraftAiScore, setIsLoadingDraftAiScore] = useState(false);
   const [isScoringDraft, setIsScoringDraft] = useState(false);
+  const selectedDraftIdRef = useRef<number | null>(null);
+  const rewriteCandidatesRequestRef = useRef(0);
   const usage = useUsageBalance();
   const creditsRemaining = usage.bucketRemaining("credits");
 
   const selectedDraft = controller.selectedDraft;
+  selectedDraftIdRef.current = selectedDraft?.id ?? null;
   const selectedSourceNoteId = selectedDraft?.source_note_id ?? null;
   const currentSourceNote = sourceNote && selectedSourceNoteId !== null && sourceNote.id === selectedSourceNoteId ? sourceNote : null;
   const activeRewriteTemplate = REWRITE_TEMPLATES[rewriteTemplate];
@@ -375,9 +384,34 @@ export function XhsDraftsPage() {
     };
   }, [selectedDraft?.id, selectedDraft?.source_note_id]);
 
+  async function restoreRewriteCandidates(draftId: number) {
+    const requestId = ++rewriteCandidatesRequestRef.current;
+    setIsLoadingRewriteCandidates(true);
+    setRewriteCandidatesError(null);
+    try {
+      const response = await fetchDraftRewriteCandidates(draftId);
+      if (selectedDraftIdRef.current === draftId && rewriteCandidatesRequestRef.current === requestId) {
+        setRewriteCandidates(parseRewriteCandidates(response.candidates));
+      }
+    } catch {
+      if (selectedDraftIdRef.current === draftId && rewriteCandidatesRequestRef.current === requestId) {
+        setRewriteCandidates({});
+        setRewriteCandidatesError("最近的 AI 改写候选恢复失败，请重新加载。");
+      }
+    } finally {
+      if (selectedDraftIdRef.current === draftId && rewriteCandidatesRequestRef.current === requestId) {
+        setIsLoadingRewriteCandidates(false);
+      }
+    }
+  }
+
   useEffect(() => {
+    rewriteCandidatesRequestRef.current += 1;
     setRewriteCandidates({});
+    setRewriteCandidatesError(null);
+    setIsLoadingRewriteCandidates(false);
     setDraftAssetUrl("");
+    if (selectedDraft) void restoreRewriteCandidates(selectedDraft.id);
   }, [selectedDraft?.id]);
 
   useEffect(() => {
@@ -516,17 +550,25 @@ export function XhsDraftsPage() {
 
   async function handleRewrite() {
     if (!selectedDraft) return;
+    const draftId = selectedDraft.id;
+    const mode = rewriteTemplate;
     setIsRewriting(true);
     try {
-      await updateDraft(selectedDraft.id, {
+      const savedDraft = await updateDraft(draftId, {
         draft_name: controller.draftName,
         title: controller.title,
         body: controller.body,
         tags: controller.tags,
       });
-      const rewritten = await rewriteDraftWithAi({ draft_id: selectedDraft.id, instruction: `${systemPrompt}\n${instruction}` });
+      controller.applySavedDraft(savedDraft);
+      const rewritten = await rewriteDraftWithAi({ draft_id: draftId, mode: rewriteTemplate, instruction: `${systemPrompt}\n${instruction}` });
       const candidate = toRewriteCandidate(rewritten, Date.now());
-      setRewriteCandidates((current) => setRewriteCandidate(current, rewriteTemplate, candidate));
+      if (selectedDraftIdRef.current === draftId) {
+        rewriteCandidatesRequestRef.current += 1;
+        setRewriteCandidates((current) => setRewriteCandidate(current, mode, candidate));
+        setRewriteCandidatesError(null);
+        setIsLoadingRewriteCandidates(false);
+      }
       antMessage.success("AI 改写候选已生成，点击采纳后才会覆盖中间草稿。");
       void usage.refresh();
     } catch (error) {
@@ -538,17 +580,45 @@ export function XhsDraftsPage() {
     }
   }
 
-  function handleAdoptRewriteCandidate() {
-    if (!activeRewriteCandidate) return;
-    controller.setTitle(activeRewriteCandidate.title);
-    controller.setBody(activeRewriteCandidate.body);
-    controller.setTags(activeRewriteCandidate.tags);
-    antMessage.success("已采纳到中间编辑区，请检查后保存。");
+  async function handleAdoptRewriteCandidate() {
+    if (!selectedDraft || !activeRewriteCandidate) return;
+    const draftId = selectedDraft.id;
+    const candidate = activeRewriteCandidate;
+    setIsAdoptingRewriteCandidate(true);
+    try {
+      const saved = await updateDraft(draftId, {
+        title: candidate.title,
+        body: candidate.body,
+        tags: candidate.tags,
+      });
+      controller.applySavedDraft(saved);
+      antMessage.success("已采纳并保存到当前草稿。");
+    } catch (error) {
+      antMessage.error(apiErrorMessage(error, "候选采纳失败，当前草稿未被修改。"));
+    } finally {
+      setIsAdoptingRewriteCandidate(false);
+    }
   }
 
-  function handleDiscardRewriteCandidate() {
-    setRewriteCandidates((current) => clearRewriteCandidate(current, rewriteTemplate));
-    antMessage.success("已放弃当前模式候选。");
+  async function handleDiscardRewriteCandidate() {
+    if (!selectedDraft) return;
+    const draftId = selectedDraft.id;
+    const mode = rewriteTemplate;
+    setIsDiscardingRewriteCandidate(true);
+    try {
+      const response = await discardDraftRewriteCandidate(draftId, mode);
+      if (selectedDraftIdRef.current === draftId) {
+        rewriteCandidatesRequestRef.current += 1;
+        setRewriteCandidates(parseRewriteCandidates(response.candidates));
+        setRewriteCandidatesError(null);
+        setIsLoadingRewriteCandidates(false);
+      }
+      antMessage.success("已放弃当前模式候选。");
+    } catch (error) {
+      antMessage.error(apiErrorMessage(error, "候选放弃失败，请重试。"));
+    } finally {
+      setIsDiscardingRewriteCandidate(false);
+    }
   }
 
   function handleAdoptTagOption(option: string) {
@@ -857,7 +927,23 @@ export function XhsDraftsPage() {
                       </Card>
                     ) : null}
 
-                    {activeRewriteCandidate ? (
+                    {isLoadingRewriteCandidates ? (
+                      <Space align="center">
+                        <Spin size="small" />
+                        <Text type="secondary">正在恢复最近的 AI 改写候选...</Text>
+                      </Space>
+                    ) : rewriteCandidatesError ? (
+                      <Alert
+                        type="warning"
+                        showIcon
+                        message={rewriteCandidatesError}
+                        action={selectedDraft ? (
+                          <Button size="small" onClick={() => void restoreRewriteCandidates(selectedDraft.id)}>
+                            重新加载
+                          </Button>
+                        ) : undefined}
+                      />
+                    ) : activeRewriteCandidate ? (
                       <Card
                         size="small"
                         title={`改写结果 · ${activeRewriteTemplate.label}`}
@@ -894,10 +980,23 @@ export function XhsDraftsPage() {
                             </Space>
                           ) : null}
                           <Space wrap>
-                            <Button type="primary" aria-label="adopt rewrite candidate" onClick={handleAdoptRewriteCandidate}>
+                            <Button
+                              type="primary"
+                              aria-label="adopt rewrite candidate"
+                              loading={isAdoptingRewriteCandidate}
+                              disabled={isDiscardingRewriteCandidate}
+                              onClick={() => void handleAdoptRewriteCandidate()}
+                            >
                               采纳
                             </Button>
-                            <Button aria-label="discard rewrite candidate" onClick={handleDiscardRewriteCandidate}>放弃</Button>
+                            <Button
+                              aria-label="discard rewrite candidate"
+                              loading={isDiscardingRewriteCandidate}
+                              disabled={isAdoptingRewriteCandidate}
+                              onClick={() => void handleDiscardRewriteCandidate()}
+                            >
+                              放弃
+                            </Button>
                           </Space>
                         </Space>
                       </Card>
