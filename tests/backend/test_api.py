@@ -19,6 +19,28 @@ from test_support.beta_invites import create_test_invite_code
 client = TestClient(app)
 
 
+def _read_frontend_domain_sources(barrel_path: str, domain_dir: str) -> str:
+    """Read a barrel file plus all its domain-split modules as one string.
+
+    Frontend api/types were split into domain files behind re-export barrels;
+    source-content assertions must see the union of all of them.
+    """
+    chunks = [open(barrel_path, encoding="utf-8").read()]
+    if os.path.isdir(domain_dir):
+        for name in sorted(os.listdir(domain_dir)):
+            if name.endswith(".ts"):
+                chunks.append(open(os.path.join(domain_dir, name), encoding="utf-8").read())
+    return "\n".join(chunks)
+
+
+def _frontend_api_source() -> str:
+    return _read_frontend_domain_sources("frontend/src/lib/api.ts", "frontend/src/lib/api")
+
+
+def _frontend_types_source() -> str:
+    return _read_frontend_domain_sources("frontend/src/types/index.ts", "frontend/src/types")
+
+
 def test_health_endpoint_returns_ok():
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -210,8 +232,8 @@ def test_xhs_data_acquisition_page_hides_internal_source_terms_and_keeps_high_ri
     router_source = open("frontend/src/app/router.tsx", encoding="utf-8").read()
     registry_source = open("frontend/src/platform-core/registry/platform-sections.tsx", encoding="utf-8").read()
 
-    assert 'path="/platforms/xhs/crawler" element={<XhsDataAcquisitionPage />}' in router_source
-    assert "小红书数据获取" in registry_source
+    assert 'path="/platforms/xhs/crawler" element={<XhsDataSourcesPage />}' in router_source
+    assert "系统数据源" in registry_source
     assert "获取笔记数据" in source
     assert "待确认候选" in source
     assert "小红书账号直连" in source
@@ -246,8 +268,8 @@ def test_xhs_data_acquisition_keyword_group_links_open_data_account_workbench():
 
 def test_model_config_page_defaults_to_doubao_seed_main_model():
     source = open("frontend/src/pages/models/model-config-page.tsx", encoding="utf-8").read()
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
-    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
+    types_source = _frontend_types_source()
 
     assert 'const DOUBAO_MAIN_MODEL = "doubao-seed-2-0-mini-260428"' in source
     assert 'const VOLCENGINE_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"' in source
@@ -276,8 +298,8 @@ def test_task_center_links_data_acquisition_tasks_back_to_candidate_workbench():
 
 
 def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
-    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
+    types_source = _frontend_types_source()
     keywords_page_source = open("frontend/src/pages/platforms/xhs/keywords-page.tsx", encoding="utf-8").read()
     crawler_page_source = open("frontend/src/pages/platforms/xhs/crawler-page.tsx", encoding="utf-8").read()
 
@@ -327,7 +349,7 @@ def test_frontend_exposes_huitun_discovery_and_crawl_diagnostics_clients():
 def test_image_studio_draft_asset_url_resolver_contract():
     source = open("frontend/src/components/image-studio/draft-image-studio-context.ts", encoding="utf-8").read()
     xhs_source = open("frontend/src/pages/platforms/xhs/xhs-image-studio-context.ts", encoding="utf-8").read()
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
 
     assert "export function draftAssetImageUrl(asset: DraftAsset): string" in source
     assert "if (isUsableImageUrl(asset.url)) return asset.url;" in source
@@ -346,8 +368,8 @@ def test_image_studio_draft_asset_url_resolver_contract():
 
 
 def test_frontend_exposes_task_10_to_14_api_and_type_contracts():
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
-    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
+    types_source = _frontend_types_source()
 
     assert "fetchHuitunKeywordDiscoveryRuns" in api_source
     assert "duplicateDraft" in api_source
@@ -436,7 +458,7 @@ def test_keywords_page_supports_batch_huitun_discovery_runs_and_seed_diagnostics
 
 
 def test_real_drafts_route_exposes_duplicate_draft_action():
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
     router_source = open("frontend/src/app/router.tsx", encoding="utf-8").read()
     workbench_source = open("frontend/src/pages/platforms/xhs/xhs-draft-workbench.tsx", encoding="utf-8").read()
     hook_source = open("frontend/src/components/draft-workbench/use-draft-workbench.ts", encoding="utf-8").read()
@@ -485,8 +507,8 @@ def test_rewrite_page_splits_generate_reference_inputs_before_combining():
 
 
 def test_frontend_exposes_feishu_integration_contracts():
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
-    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
+    types_source = _frontend_types_source()
 
     assert "FeishuIntegrationConfig" in types_source
     assert "FeishuIntegrationConfigPayload" in types_source
@@ -629,7 +651,7 @@ def test_draft_workbench_labels_are_platform_adapter_owned():
     xhs_adapter_source = open("frontend/src/pages/platforms/xhs/xhs-draft-workbench-adapter.ts", encoding="utf-8").read()
     wechat_adapter_source = open("frontend/src/pages/wechat-official/wechat-official-draft-workbench-adapter.ts", encoding="utf-8").read()
     wechat_workbench_source = open("frontend/src/pages/wechat-official/wechat-official-draft-workbench.tsx", encoding="utf-8").read()
-    types_app_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    types_app_source = _frontend_types_source()
 
     assert "editorLabels" in types_source
     assert "adapter.editorLabels" in shell_source
@@ -679,7 +701,7 @@ def test_discovery_preserves_note_detail_and_media_logic():
 def test_library_page_preserves_delete_and_media_logic():
     page_source = open("frontend/src/pages/platforms/xhs/library-page.tsx", encoding="utf-8").read()
     adapter_source = open("frontend/src/pages/platforms/xhs/xhs-content-library-adapter.ts", encoding="utf-8").read()
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
 
     assert "deleteSavedNote" in api_source
     assert "ContentLibraryShell" in page_source
@@ -878,7 +900,7 @@ def test_wechat_official_library_reuses_content_library_shell_without_publish_ac
     library_page_source = open("frontend/src/pages/wechat-official/wechat-official-library-page.tsx", encoding="utf-8").read()
     panel_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-panel.tsx", encoding="utf-8").read()
     adapter_source = open("frontend/src/pages/wechat-official/wechat-official-content-library-adapter.tsx", encoding="utf-8").read()
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
     shell_source = open("frontend/src/components/content-library/content-library-shell.tsx", encoding="utf-8").read()
     controller_source = open("frontend/src/components/content-library/use-content-library.ts", encoding="utf-8").read()
 
@@ -997,8 +1019,8 @@ def test_wechat_official_image_studio_reuses_generic_draft_context_without_mater
 
 
 def test_wechat_official_readiness_dashboard_contract():
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
-    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
+    types_source = _frontend_types_source()
     dashboard_source = open("frontend/src/pages/wechat-official/wechat-official-dashboard.tsx", encoding="utf-8").read()
     readiness_panel_source = open("frontend/src/platform-core/readiness/platform-readiness-panel.tsx", encoding="utf-8").read()
     action_hub_source = open("frontend/src/platform-core/actions/platform-action-hub.tsx", encoding="utf-8").read()
@@ -1030,8 +1052,8 @@ def test_wechat_official_readiness_dashboard_contract():
 
 
 def test_wechat_official_redfox_collect_jobs_frontend_contract():
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
-    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
+    types_source = _frontend_types_source()
     discovery_source = open("frontend/src/pages/wechat-official/wechat-official-discovery-panel.tsx", encoding="utf-8").read()
 
     assert "fetchWechatOfficialRedfoxCollectJobs" in api_source
@@ -10062,9 +10084,9 @@ def test_runninghub_default_wait_window_allows_long_image_jobs():
 
 
 def test_frontend_ai_image_generate_uses_async_task_polling_for_long_runninghub_jobs():
-    api_source = open("frontend/src/lib/api.ts", encoding="utf-8").read()
+    api_source = _frontend_api_source()
     page_source = open("frontend/src/pages/platforms/xhs/image-studio-page.tsx", encoding="utf-8").read()
-    types_source = open("frontend/src/types/index.ts", encoding="utf-8").read()
+    types_source = _frontend_types_source()
 
     assert "generate-async" in api_source
     assert "startImageGenerationTask" in page_source

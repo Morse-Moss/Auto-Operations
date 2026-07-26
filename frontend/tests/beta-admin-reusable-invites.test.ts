@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const pageSource = readFileSync("frontend/src/pages/admin/beta-admin-page.tsx", "utf8");
-const apiSource = readFileSync("frontend/src/lib/api.ts", "utf8");
+const apiSource = readFileSync("frontend/src/lib/api/admin.ts", "utf8");
 
 assert.match(
   apiSource,

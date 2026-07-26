@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const pageSource = readFileSync(path.resolve(__dirname, "../src/pages/platforms/xhs/xhs-draft-workbench.tsx"), "utf8");
-const apiSource = readFileSync(path.resolve(__dirname, "../src/lib/api.ts"), "utf8");
+const apiSource = readFileSync(path.resolve(__dirname, "../src/lib/api/shared.ts"), "utf8");
 const controllerSource = readFileSync(path.resolve(__dirname, "../src/components/draft-workbench/use-draft-workbench.ts"), "utf8");
 const controllerTypesSource = readFileSync(path.resolve(__dirname, "../src/components/draft-workbench/draft-workbench-types.ts"), "utf8");
 

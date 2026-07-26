@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const mainSource = readFileSync("frontend/src/main.tsx", "utf8");
-const apiSource = readFileSync("frontend/src/lib/api.ts", "utf8");
+const apiSource = readFileSync("frontend/src/lib/api/client.ts", "utf8");
 const diagnosticsSource = readFileSync("frontend/src/lib/diagnostics.ts", "utf8");
 const errorBoundarySource = readFileSync("frontend/src/components/ui/error-boundary.tsx", "utf8");
 
