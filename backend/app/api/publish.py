@@ -13,10 +13,10 @@ from sqlalchemy.orm import Session
 from backend.app.adapters.xhs.creator_api_adapter import XhsCreatorApiAdapter
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import AccountCookieVersion, PlatformAccount, PublishAsset, PublishJob, Task, User
+from backend.app.models import PlatformAccount, PublishAsset, PublishJob, Task, User
 from backend.app.schemas.common import paginated
+from backend.app.services.account_service import latest_cookie_header
 from backend.app.services.asset_storage_policy import owned_media_api_path
 from backend.app.services.publish_orchestration_service import PublishOrchestrationService
 
@@ -192,16 +192,6 @@ def serialize_app_draft_handoff(job: PublishJob, assets: list[PublishAsset]) -> 
     }
 
 
-def _cookies_to_string(value: str) -> str:
-    stripped = value.strip()
-    if not stripped:
-        return stripped
-    if stripped.startswith("{"):
-        cookies = json.loads(stripped)
-        return "; ".join(f"{key}={cookie_value}" for key, cookie_value in cookies.items())
-    return stripped
-
-
 def _extract_creator_media_id(payload: dict[str, Any]) -> str:
     for key in ("creator_media_id", "fileIds", "file_id", "media_id", "video_id"):
         value = payload.get(key)
@@ -273,14 +263,10 @@ def _owned_media_path_or_404(file_path: str, current_user: User) -> str:
 
 
 def _get_latest_account_cookies(db: Session, account_id: int) -> str:
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account_id)
-        .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
-    ).first()
-    if cookie_version is None:
+    cookies = latest_cookie_header(db, account_id)
+    if cookies is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator 账号缺少 Cookie，请在账号矩阵重新登录后再发布")
-    return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+    return cookies
 
 
 def _claim_publish_job_for_external_action(db: Session, job: PublishJob) -> None:

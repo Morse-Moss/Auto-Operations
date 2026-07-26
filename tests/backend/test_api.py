@@ -3913,6 +3913,156 @@ def _create_pc_account_with_cookie(tmp_path, username="search-owner"):
     return db_dependency, access_token, account_id
 
 
+def test_xhs_account_list_reports_readiness_without_mutating_storage(tmp_path):
+    from backend.app.core.database import get_db
+    from backend.app.core.security import encrypt_text
+    from backend.app.models import AccountCookieVersion, PlatformAccount
+    from backend.app.services.account_service import XHS_PC_RELOGIN_MESSAGE
+
+    db_dependency = _override_database(tmp_path)
+    access_token = _register_and_get_access_token("account-readiness-list-owner")
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        ready = PlatformAccount(
+            user_id=1,
+            platform="xhs",
+            sub_type="pc",
+            external_user_id="ready-pc",
+            nickname="可用账号",
+            status="active",
+        )
+        unready = PlatformAccount(
+            user_id=1,
+            platform="xhs",
+            sub_type="pc",
+            external_user_id="unready-pc",
+            nickname="需登录账号",
+            status="active",
+        )
+        creator = PlatformAccount(
+            user_id=1,
+            platform="xhs",
+            sub_type="creator",
+            external_user_id="creator",
+            nickname="Creator",
+            status="active",
+        )
+        db.add_all([ready, unready, creator])
+        db.flush()
+        ready_cookie = AccountCookieVersion(
+            platform_account_id=ready.id,
+            encrypted_cookies=encrypt_text('{"a1":"ready-a1","web_session":"ready-session"}'),
+        )
+        unready_cookie = AccountCookieVersion(
+            platform_account_id=unready.id,
+            encrypted_cookies=encrypt_text('{"a1":"unready-a1"}'),
+        )
+        db.add_all([ready_cookie, unready_cookie])
+        db.commit()
+        ready_id = ready.id
+        unready_id = unready.id
+        creator_id = creator.id
+        unready_updated_at = unready.updated_at
+        encrypted_cookie_before = unready_cookie.encrypted_cookies
+    finally:
+        db.close()
+
+    try:
+        response = client.get(
+            "/api/accounts?platform=xhs",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        items = {item["id"]: item for item in response.json()["items"]}
+        assert items[ready_id]["login_ready"] is True
+        assert items[ready_id]["login_readiness_message"] == ""
+        assert items[unready_id]["login_ready"] is False
+        assert items[unready_id]["login_readiness_message"] == XHS_PC_RELOGIN_MESSAGE
+        assert "login_ready" not in items[creator_id]
+        assert "login_readiness_message" not in items[creator_id]
+        assert "ready-session" not in response.text
+        assert "unready-a1" not in response.text
+
+        verify_db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_account = verify_db.get(PlatformAccount, unready_id)
+            stored_cookie = verify_db.scalar(
+                select(AccountCookieVersion).where(AccountCookieVersion.platform_account_id == unready_id)
+            )
+            assert stored_account.status == "active"
+            assert stored_account.status_message == ""
+            assert stored_account.updated_at == unready_updated_at
+            assert stored_cookie.encrypted_cookies == encrypted_cookie_before
+        finally:
+            verify_db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_xhs_pc_operation_rejects_unready_cookie_before_constructing_adapter(tmp_path):
+    from backend.app.api.platforms.xhs.pc import get_xhs_pc_api_adapter_factory
+    from backend.app.core.database import get_db
+    from backend.app.core.security import encrypt_text
+    from backend.app.models import AccountCookieVersion, PlatformAccount
+    from backend.app.services.account_service import XHS_PC_RELOGIN_MESSAGE
+
+    class UnexpectedAdapter:
+        constructions = 0
+
+        def __init__(self, _cookies):
+            type(self).constructions += 1
+
+    db_dependency = _override_database(tmp_path)
+    access_token = _register_and_get_access_token("unready-operation-owner")
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        account = PlatformAccount(
+            user_id=1,
+            platform="xhs",
+            sub_type="pc",
+            external_user_id="unready-operation-pc",
+            nickname="需登录账号",
+            status="active",
+        )
+        db.add(account)
+        db.flush()
+        db.add(
+            AccountCookieVersion(
+                platform_account_id=account.id,
+                encrypted_cookies=encrypt_text('{"a1":"secret-a1-without-session"}'),
+            )
+        )
+        db.commit()
+        account_id = account.id
+    finally:
+        db.close()
+
+    app.dependency_overrides[get_xhs_pc_api_adapter_factory] = lambda: UnexpectedAdapter
+    try:
+        response = client.post(
+            "/api/xhs/pc/search/notes",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"account_id": account_id, "keyword": "低卡早餐"},
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": XHS_PC_RELOGIN_MESSAGE}
+        assert "secret-a1-without-session" not in response.text
+        assert UnexpectedAdapter.constructions == 0
+
+        verify_db = next(app.dependency_overrides[get_db]())
+        try:
+            stored_account = verify_db.get(PlatformAccount, account_id)
+            assert stored_account.status == "expired"
+            assert stored_account.status_message == XHS_PC_RELOGIN_MESSAGE
+        finally:
+            verify_db.close()
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+        app.dependency_overrides.pop(get_xhs_pc_api_adapter_factory, None)
+
+
 def test_xhs_notes_feishu_analysis_filters_are_dynamic_and_multi_select(tmp_path):
     db_dependency, access_token, account_id = _create_pc_account_with_cookie(tmp_path, "analysis-filter-owner")
     try:
@@ -10008,24 +10158,30 @@ def test_generated_image_media_storage_rejects_content_type_spoofed_bytes(tmp_pa
 
 
 def test_download_public_http_image_rejects_private_resolved_ip(monkeypatch):
+    import socket
+
     import backend.app.api.ai as ai_api
+    from backend.app.services import public_url_guard
 
     def fake_getaddrinfo(hostname, port, *args, **kwargs):
-        return [(ai_api.socket.AF_INET, ai_api.socket.SOCK_STREAM, 6, "", ("127.0.0.1", int(port or 80)))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", int(port or 80)))]
 
-    monkeypatch.setattr(ai_api.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(public_url_guard.socket, "getaddrinfo", fake_getaddrinfo)
 
     with pytest.raises(ValueError, match="内网地址"):
         ai_api._download_public_http_image("http://example.test/spoof.png")
 
 
 def test_download_public_http_image_rejects_non_global_resolved_ip(monkeypatch):
+    import socket
+
     import backend.app.api.ai as ai_api
+    from backend.app.services import public_url_guard
 
     def fake_getaddrinfo(hostname, port, *args, **kwargs):
-        return [(ai_api.socket.AF_INET, ai_api.socket.SOCK_STREAM, 6, "", ("100.64.0.1", int(port or 80)))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("100.64.0.1", int(port or 80)))]
 
-    monkeypatch.setattr(ai_api.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(public_url_guard.socket, "getaddrinfo", fake_getaddrinfo)
 
     with pytest.raises(ValueError, match="内网地址"):
         ai_api._download_public_http_image("http://example.test/spoof.png")

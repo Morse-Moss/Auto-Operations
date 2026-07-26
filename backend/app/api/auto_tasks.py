@@ -174,18 +174,14 @@ def _verify_account_ownership(db: Session, current_user: User, account_id: int, 
 
 
 def _get_account_cookies(db: Session, account_id: int) -> str:
-    from backend.app.api.publish import _cookies_to_string
+    from backend.app.services.account_service import latest_cookie_header
 
     account = db.get(PlatformAccount, account_id)
     account_label = _account_type_label(account.sub_type or "") if account is not None else "小红书账号"
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account_id)
-        .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
-    ).first()
-    if cookie_version is None:
+    cookies = latest_cookie_header(db, account_id)
+    if cookies is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{account_label}缺少登录 Cookie，请重新登录账号。")
-    return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+    return cookies
 
 
 def _calculate_next_run_at(task: AutoTask) -> None:

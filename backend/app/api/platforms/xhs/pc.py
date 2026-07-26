@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.xhs.mappers import normalize_xhs_comment_payload
 from backend.app.adapters.xhs.pc_api_adapter import XhsPcApiAdapter
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.core.security import decrypt_text
-from backend.app.models import AccountCookieVersion, PlatformAccount, User
+from backend.app.core.time import shanghai_now
+from backend.app.models import PlatformAccount, User
+from backend.app.services.account_service import cookie_header_from_text, get_xhs_pc_login_readiness
 from backend.app.services.mock_data import sample_notes
 from backend.app.services.xhs_crawl_quality_service import search_failure_kind
 from backend.app.services.xhs_detail_recovery import (
@@ -63,13 +62,7 @@ def get_xhs_pc_api_adapter_factory():
 
 
 def _cookies_to_string(value: str) -> str:
-    stripped = value.strip()
-    if not stripped:
-        return stripped
-    if stripped.startswith("{"):
-        cookies = json.loads(stripped)
-        return "; ".join(f"{key}={cookie_value}" for key, cookie_value in cookies.items())
-    return stripped
+    return cookie_header_from_text(value)
 
 
 def _metric(value: Any) -> int:
@@ -256,14 +249,18 @@ def _get_owned_pc_account_and_cookies(
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
 
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account.id)
-        .order_by(AccountCookieVersion.created_at.desc())
-    ).first()
-    if cookie_version is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account has no cookies")
-    return account, _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+    readiness = get_xhs_pc_login_readiness(db, account)
+    if not readiness.login_ready or readiness.cookie_text is None:
+        if account.status == "active":
+            account.status = "expired"
+            account.status_message = readiness.login_readiness_message
+            account.updated_at = shanghai_now()
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=readiness.login_readiness_message,
+        )
+    return account, readiness.cookie_text
 
 
 def _get_owned_pc_account_cookies(db: Session, current_user: User, account_id: int) -> str:

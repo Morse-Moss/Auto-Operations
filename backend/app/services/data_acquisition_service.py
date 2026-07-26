@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import (
-    AccountCookieVersion,
     DataAcquisitionCandidate,
     DataAcquisitionRun,
     Note,
@@ -22,6 +21,7 @@ from backend.app.models import (
     User,
 )
 from backend.app.services import huitun_live_note_source
+from backend.app.services.account_service import latest_cookie_version
 from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.platform_data_account_service import get_platform_data_account_cookie_text
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, get_or_create_default_tenant_context
@@ -57,11 +57,7 @@ def _latest_cookie_text(db: Session, current_user: User, account_id: int | None)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据账号不存在。")
     if account.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数据账号登录状态已过期，请重新登录。")
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account.id)
-        .order_by(AccountCookieVersion.created_at.desc())
-    ).first()
+    cookie_version = latest_cookie_version(db, account.id)
     if cookie_version is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数据账号登录状态已过期，请重新登录。")
     return decrypt_text(cookie_version.encrypted_cookies)

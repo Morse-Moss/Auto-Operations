@@ -13,7 +13,6 @@ from backend.app.api.platforms.xhs.pc import (
 )
 from backend.app.core.time import shanghai_now
 from backend.app.models import (
-    AccountCookieVersion,
     MonitoringSnapshot,
     MonitoringTarget,
     Note,
@@ -42,24 +41,18 @@ def _find_pc_account(db: Session, target: MonitoringTarget, user: User) -> Platf
 
 def _decrypt_cookies(db: Session, account: PlatformAccount) -> str | None:
     from backend.app.core.security import decrypt_text
+    from backend.app.services.account_service import cookie_header_from_text, latest_cookie_version
 
-    version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account.id)
-        .order_by(AccountCookieVersion.created_at.desc())
-        .limit(1)
-    ).first()
+    version = latest_cookie_version(db, account.id)
     if not version:
         return None
     raw = decrypt_text(version.encrypted_cookies)
     try:
-        import json
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            return "; ".join(f"{k}={v}" for k, v in parsed.items())
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return raw
+        return cookie_header_from_text(raw)
+    except Exception:
+        # Preserve legacy behavior: fall back to the raw decrypted text when the
+        # stored cookie payload cannot be parsed as JSON.
+        return raw
 
 
 def _classify_error(exc: Exception) -> str:

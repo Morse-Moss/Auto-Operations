@@ -16,7 +16,6 @@ from backend.app.core.database import SessionLocal
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import (
-    AccountCookieVersion,
     AiDraft,
     AutoTask,
     MonitoringSnapshot,
@@ -29,29 +28,20 @@ from backend.app.models import (
     Task,
     User,
 )
+from backend.app.services.account_service import (
+    decode_cookie_text,
+    latest_cookie_header,
+    latest_cookie_version,
+)
 from backend.app.services.model_config_service import get_model_config_for_capability
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
 
-def _cookies_to_string(value: str) -> str:
-    stripped = value.strip()
-    if not stripped:
-        return stripped
-    if stripped.startswith("{"):
-        cookies = json.loads(stripped)
-        return "; ".join(f"{key}={cookie_value}" for key, cookie_value in cookies.items())
-    return stripped
-
-
 def _latest_account_cookies(db: Session, account_id: int) -> str:
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account_id)
-        .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
-    ).first()
-    if cookie_version is None:
+    cookies = latest_cookie_header(db, account_id)
+    if cookies is None:
         raise RuntimeError("Account has no cookies")
-    return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+    return cookies
 
 
 def _asset_upload_info(asset: PublishAsset) -> dict[str, Any]:
@@ -435,16 +425,6 @@ def _get_text_model_for_user(db: Session, user_id: int):
     return config, decrypt_text(config.encrypted_api_key)
 
 
-def _scheduler_cookies_to_string(value: str) -> str:
-    stripped = value.strip()
-    if not stripped:
-        return stripped
-    if stripped.startswith("{"):
-        cookies = json.loads(stripped)
-        return "; ".join(f"{k}={v}" for k, v in cookies.items())
-    return stripped
-
-
 def _execute_auto_task_background(db: Session, task: AutoTask) -> None:
     """Simplified auto-task execution for background scheduler."""
     import random
@@ -458,14 +438,9 @@ def _execute_auto_task_background(db: Session, task: AutoTask) -> None:
     account = db.get(PlatformAccount, task.pc_account_id)
     if not account:
         return
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account.id)
-        .order_by(AccountCookieVersion.created_at.desc())
-    ).first()
-    if not cookie_version:
+    cookies = latest_cookie_header(db, account.id)
+    if cookies is None:
         return
-    cookies = _scheduler_cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
 
     # Pick keyword
     keywords = task.keywords or []
@@ -524,10 +499,15 @@ def _execute_auto_task_background(db: Session, task: AutoTask) -> None:
                 )
                 if titles:
                     draft.title = titles[0]
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                logger.warning(
+                    f"Auto task {task.id} AI title generation failed "
+                    f"({type(exc).__name__}): {exc}"
+                )
+    except Exception as exc:
+        logger.warning(
+            f"Auto task {task.id} AI rewrite failed ({type(exc).__name__}): {exc}"
+        )
 
     creator_account = db.get(PlatformAccount, task.creator_account_id)
     if not creator_account:
@@ -588,13 +568,23 @@ def run_due_auto_tasks() -> None:
         for task in due_tasks:
             try:
                 _execute_auto_task_background(db, task)
-            except Exception as exc:
-                logger.warning(f"Auto task {task.id} execution failed: {exc}")
-            finally:
-                # Always calculate next run
                 _calculate_next_run_at(task)
-
-        db.commit()
+                db.commit()
+            except Exception as exc:
+                logger.warning(
+                    f"Auto task {task.id} execution failed ({type(exc).__name__}): {exc}"
+                )
+                db.rollback()
+                try:
+                    # Still advance next_run_at so a failing task does not run hot.
+                    _calculate_next_run_at(task)
+                    db.commit()
+                except Exception as schedule_exc:
+                    logger.warning(
+                        f"Auto task {task.id} next-run scheduling failed "
+                        f"({type(schedule_exc).__name__}): {schedule_exc}"
+                    )
+                    db.rollback()
     except Exception as exc:
         logger.error(f"run_due_auto_tasks failed: {exc}")
     finally:
@@ -605,13 +595,8 @@ def _check_single_account(db: Session, account: PlatformAccount, now: datetime) 
     """Check one account's cookie validity. Returns the new status."""
     from backend.app.adapters.xhs.pc_login_adapter import XhsPcLoginAdapter
     from backend.app.adapters.xhs.creator_login_adapter import XhsCreatorLoginAdapter
-    from backend.app.services.account_service import decode_cookie_text
 
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account.id)
-        .order_by(AccountCookieVersion.created_at.desc())
-    ).first()
+    cookie_version = latest_cookie_version(db, account.id)
     if cookie_version is None:
         account.status = "expired"
         account.status_message = "No stored cookie version"

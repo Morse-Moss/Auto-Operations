@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.adapters.xhs.creator_api_adapter import XhsCreatorApiAdapter
 from backend.app.api.tasks import serialize_task
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user
-from backend.app.core.security import decrypt_text
-from backend.app.models import AccountCookieVersion, PlatformAccount, Task, User
+from backend.app.models import PlatformAccount, Task, User
+from backend.app.services.account_service import latest_cookie_header
 from backend.app.services.asset_storage_policy import owned_media_api_path
 from backend.app.services.production_safety import ensure_production_external_actions_allowed
 
@@ -62,16 +60,6 @@ def get_creator_api_adapter_factory():
     return XhsCreatorApiAdapter
 
 
-def _cookies_to_string(value: str) -> str:
-    stripped = value.strip()
-    if not stripped:
-        return stripped
-    if stripped.startswith("{"):
-        cookies = json.loads(stripped)
-        return "; ".join(f"{key}={cookie_value}" for key, cookie_value in cookies.items())
-    return stripped
-
-
 def _get_owned_creator_account(db: Session, current_user: User, account_id: int) -> PlatformAccount:
     account = db.get(PlatformAccount, account_id)
     if (
@@ -85,14 +73,10 @@ def _get_owned_creator_account(db: Session, current_user: User, account_id: int)
 
 
 def _get_latest_creator_cookies(db: Session, account: PlatformAccount) -> str:
-    cookie_version = db.scalars(
-        select(AccountCookieVersion)
-        .where(AccountCookieVersion.platform_account_id == account.id)
-        .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
-    ).first()
-    if cookie_version is None:
+    cookies = latest_cookie_header(db, account.id)
+    if cookies is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator account has no cookies")
-    return _cookies_to_string(decrypt_text(cookie_version.encrypted_cookies))
+    return cookies
 
 
 def _adapter_for_account(
