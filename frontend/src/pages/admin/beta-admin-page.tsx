@@ -1,5 +1,13 @@
 import {
+  CheckCircleOutlined,
+  CopyOutlined,
+  PlusOutlined,
+  StopOutlined,
+  UserAddOutlined,
+} from "@ant-design/icons";
+import {
   Alert,
+  App,
   Button,
   Form,
   Input,
@@ -11,16 +19,18 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
-  message,
 } from "antd";
 import { useEffect, useState } from "react";
 
 import {
+  activateAdminInviteCode,
   activateAdminTenant,
   activateAdminUser,
   adjustAdminTenantCredit,
   createAdminInviteCode,
+  disableAdminInviteCode,
   disableAdminUser,
   fetchAdminInviteCodes,
   fetchAdminTenants,
@@ -30,6 +40,7 @@ import {
 import type { AdminInviteCode, AdminTenant, AdminUser } from "../../types";
 
 const { Title, Text } = Typography;
+const RESUME_INVITE_MAX_USES = 100;
 
 const bucketOptions = [
   { label: "积分", value: "credits" },
@@ -47,12 +58,15 @@ function statusTag(status: string) {
 }
 
 export function BetaAdminPage() {
+  const { message } = App.useApp();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [tenants, setTenants] = useState<AdminTenant[]>([]);
   const [invites, setInvites] = useState<AdminInviteCode[]>([]);
   const [loading, setLoading] = useState(false);
   const [creditTenant, setCreditTenant] = useState<AdminTenant | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [latestInvite, setLatestInvite] = useState<AdminInviteCode | null>(null);
+  const [creatingResumeInvite, setCreatingResumeInvite] = useState(false);
   const [creditForm] = Form.useForm();
   const [inviteForm] = Form.useForm();
   const creditOperation = Form.useWatch("operation", creditForm);
@@ -116,10 +130,43 @@ export function BetaAdminPage() {
 
   async function submitInvite() {
     const values = await inviteForm.validateFields();
-    await createAdminInviteCode({ code: values.code.trim(), max_uses: values.max_uses });
+    const invite = await createAdminInviteCode({ code: values.code.trim(), max_uses: values.max_uses });
     message.success("邀请码已创建");
+    setLatestInvite(invite);
     setInviteOpen(false);
     inviteForm.resetFields();
+    await loadAll();
+  }
+
+  async function createResumeInvite() {
+    setCreatingResumeInvite(true);
+    try {
+      const invite = await createAdminInviteCode({ max_uses: RESUME_INVITE_MAX_USES });
+      setLatestInvite(invite);
+      message.success("简历邀请码已生成");
+      await loadAll();
+    } finally {
+      setCreatingResumeInvite(false);
+    }
+  }
+
+  async function copyInviteCode(invite: AdminInviteCode) {
+    if (!navigator.clipboard?.writeText) {
+      message.error("当前浏览器无法复制，请手动选择邀请码");
+      return;
+    }
+    await navigator.clipboard.writeText(invite.code);
+    message.success("邀请码已复制");
+  }
+
+  async function toggleInviteStatus(invite: AdminInviteCode) {
+    if (invite.status === "disabled") {
+      await activateAdminInviteCode(invite.id);
+      message.success("邀请码已恢复");
+    } else {
+      await disableAdminInviteCode(invite.id);
+      message.success("邀请码已停用");
+    }
     await loadAll();
   }
 
@@ -208,15 +255,28 @@ export function BetaAdminPage() {
             label: "邀请码",
             children: (
               <>
-                <Button type="primary" onClick={() => setInviteOpen(true)} style={{ marginBottom: 12 }}>创建邀请码</Button>
+                <Space wrap style={{ marginBottom: 12 }}>
+                  <Button
+                    type="primary"
+                    icon={<UserAddOutlined />}
+                    loading={creatingResumeInvite}
+                    onClick={() => void createResumeInvite()}
+                  >
+                    生成简历邀请码
+                  </Button>
+                  <Button icon={<PlusOutlined />} onClick={() => setInviteOpen(true)}>
+                    自定义邀请码
+                  </Button>
+                </Space>
                 <Table
                   rowKey="id"
                   loading={loading}
                   dataSource={invites}
                   pagination={false}
+                  scroll={{ x: 760 }}
                   expandable={{
                     expandedRowRender: (invite) => (
-                      <Space direction="vertical" size={4}>
+                      <Space orientation="vertical" size={4}>
                         {invite.uses.length === 0 ? (
                           <Text type="secondary">暂无使用记录</Text>
                         ) : invite.uses.map((use) => (
@@ -226,10 +286,57 @@ export function BetaAdminPage() {
                     ),
                   }}
                   columns={[
-                    { title: "邀请码", dataIndex: "code" },
+                    {
+                      title: "邀请码",
+                      dataIndex: "code",
+                      width: 260,
+                      render: (_code, invite: AdminInviteCode) => (
+                        <Space size={4}>
+                          <Text code copyable={false} style={{ whiteSpace: "nowrap" }}>{invite.code}</Text>
+                          <Tooltip title="复制邀请码">
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<CopyOutlined />}
+                              aria-label={`复制邀请码 ${invite.code}`}
+                              onClick={() => void copyInviteCode(invite)}
+                            />
+                          </Tooltip>
+                        </Space>
+                      ),
+                    },
                     { title: "状态", dataIndex: "status", render: statusTag, width: 120 },
                     { title: "已用", dataIndex: "used_count", width: 90 },
+                    {
+                      title: "剩余",
+                      width: 90,
+                      render: (_value, invite: AdminInviteCode) => Math.max(invite.max_uses - invite.used_count, 0),
+                    },
                     { title: "上限", dataIndex: "max_uses", width: 90 },
+                    {
+                      title: "操作",
+                      width: 80,
+                      render: (_value, invite: AdminInviteCode) => {
+                        const isDisabled = invite.status === "disabled";
+                        const actionLabel = isDisabled ? "恢复邀请码" : "停用邀请码";
+                        return (
+                          <Tooltip title={actionLabel}>
+                            <Popconfirm
+                              title={`确认${actionLabel}？`}
+                              onConfirm={() => void toggleInviteStatus(invite)}
+                            >
+                              <Button
+                                type="text"
+                                size="small"
+                                danger={!isDisabled}
+                                icon={isDisabled ? <CheckCircleOutlined /> : <StopOutlined />}
+                                aria-label={`${actionLabel} ${invite.code}`}
+                              />
+                            </Popconfirm>
+                          </Tooltip>
+                        );
+                      },
+                    },
                   ]}
                 />
               </>
@@ -288,6 +395,35 @@ export function BetaAdminPage() {
             <InputNumber min={1} max={100} style={{ width: "100%" }} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="邀请码已生成"
+        open={Boolean(latestInvite)}
+        onCancel={() => setLatestInvite(null)}
+        footer={[
+          <Button key="close" onClick={() => setLatestInvite(null)}>完成</Button>,
+          <Button
+            key="copy"
+            type="primary"
+            icon={<CopyOutlined />}
+            onClick={() => latestInvite && void copyInviteCode(latestInvite)}
+          >
+            复制邀请码
+          </Button>,
+        ]}
+      >
+        {latestInvite ? (
+          <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+            <Alert
+              type="success"
+              showIcon
+              title={`可使用 ${latestInvite.max_uses} 次`}
+              description="可以将同一个邀请码放到简历中；如需停止新用户注册，可随时在列表中停用。"
+            />
+            <Input value={latestInvite.code} readOnly />
+          </Space>
+        ) : null}
       </Modal>
     </div>
   );

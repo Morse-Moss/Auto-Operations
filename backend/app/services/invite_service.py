@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import secrets
+
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -9,6 +11,19 @@ from backend.app.models import InviteCode, InviteCodeUse
 
 def normalize_invite_code(code: str) -> str:
     return code.strip().upper()
+
+
+def generate_invite_code(db: Session, *, prefix: str = "RESUME") -> str:
+    normalized_prefix = normalize_invite_code(prefix)
+    for _ in range(5):
+        token = secrets.token_hex(6).upper()
+        candidate = f"{normalized_prefix}-{token[:4]}-{token[4:8]}-{token[8:]}"
+        if db.scalar(select(InviteCode.id).where(InviteCode.code == candidate)) is None:
+            return candidate
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Unable to generate a unique invitation code",
+    )
 
 
 def create_invite_code(db: Session, *, code: str, max_uses: int, created_by_user_id: int | None = None) -> InviteCode:

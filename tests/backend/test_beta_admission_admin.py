@@ -549,3 +549,71 @@ def test_admin_invite_code_management_lists_usage(tmp_path):
         assert invite["uses"][0]["username"] == "invite-recipient"
     finally:
         app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_admin_can_generate_distinct_reusable_invite_codes(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = _create_user(db, "resume-invite-admin", role="admin")
+            admin_token = create_access_token(admin.id)
+        finally:
+            db.close()
+
+        first = client.post(
+            "/api/admin/invite-codes",
+            headers=_auth_headers(admin_token),
+            json={"max_uses": 100},
+        )
+        second = client.post(
+            "/api/admin/invite-codes",
+            headers=_auth_headers(admin_token),
+            json={"max_uses": 100},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["code"].startswith("RESUME-")
+        assert second.json()["code"].startswith("RESUME-")
+        assert first.json()["code"] != second.json()["code"]
+        assert first.json()["max_uses"] == 100
+        assert first.json()["used_count"] == 0
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)
+
+
+def test_admin_can_disable_and_reactivate_invite_code(tmp_path):
+    db_dependency = _override_database(tmp_path)
+    try:
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            admin = _create_user(db, "invite-status-admin", role="admin")
+            admin_token = create_access_token(admin.id)
+            invite = _create_invite(db, code="RESUME-STATUS", max_uses=100, created_by_user_id=admin.id)
+            invite_id = invite.id
+        finally:
+            db.close()
+
+        disabled = client.post(
+            f"/api/admin/invite-codes/{invite_id}/disable",
+            headers=_auth_headers(admin_token),
+        )
+        assert disabled.status_code == 200
+        assert disabled.json()["status"] == "disabled"
+
+        rejected = _register("disabled-invite-recipient", invite_code="RESUME-STATUS")
+        assert rejected.status_code == 400
+        assert rejected.json()["detail"] == "Invitation code is invalid"
+
+        activated = client.post(
+            f"/api/admin/invite-codes/{invite_id}/activate",
+            headers=_auth_headers(admin_token),
+        )
+        assert activated.status_code == 200
+        assert activated.json()["status"] == "active"
+
+        accepted = _register("reactivated-invite-recipient", invite_code="RESUME-STATUS")
+        assert accepted.status_code == 200
+    finally:
+        app.dependency_overrides.pop(db_dependency, None)

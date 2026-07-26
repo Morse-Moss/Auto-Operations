@@ -12,7 +12,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import require_admin_user
 from backend.app.core.security import hash_password
 from backend.app.models import InviteCode, InviteCodeUse, Tenant, TenantMember, User
-from backend.app.services.invite_service import create_invite_code, normalize_invite_code
+from backend.app.services.invite_service import create_invite_code, generate_invite_code, normalize_invite_code
 from backend.app.services.rate_limit_service import check_rate_limit, record_rate_limit_failure
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, get_or_create_default_tenant_context
 
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 class InviteCodeCreateRequest(BaseModel):
-    code: str = Field(min_length=3, max_length=80)
+    code: str | None = Field(default=None, min_length=3, max_length=80)
     max_uses: int = Field(default=1, ge=1, le=100)
 
 
@@ -82,6 +82,26 @@ def _serialize_invite(invite: InviteCode, uses: list[tuple[InviteCodeUse, User]]
             for usage, user in uses
         ],
     }
+
+
+def _invite_uses(db: Session, invite_id: int) -> list[tuple[InviteCodeUse, User]]:
+    return list(
+        db.execute(
+            select(InviteCodeUse, User)
+            .join(User, User.id == InviteCodeUse.used_by_user_id)
+            .where(InviteCodeUse.invite_code_id == invite_id)
+        ).all()
+    )
+
+
+def _set_invite_status(db: Session, invite_id: int, invite_status: str) -> InviteCode:
+    invite = db.get(InviteCode, invite_id)
+    if invite is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation code not found")
+    invite.status = invite_status
+    db.commit()
+    db.refresh(invite)
+    return invite
 
 
 def _active_admin_ids(db: Session, *, excluding_user_id: int | None = None, excluding_tenant_id: int | None = None) -> set[int]:
@@ -242,18 +262,39 @@ def create_admin_invite_code(
     admin: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ):
+    code = normalize_invite_code(payload.code) if payload.code else generate_invite_code(db)
     invite = create_invite_code(
         db,
-        code=normalize_invite_code(payload.code),
+        code=code,
         max_uses=payload.max_uses,
         created_by_user_id=admin.id,
     )
     return _serialize_invite(invite, [])
 
 
+@router.post("/invite-codes/{invite_id}/disable")
+def disable_admin_invite_code(
+    invite_id: int,
+    _admin: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    invite = _set_invite_status(db, invite_id, "disabled")
+    return _serialize_invite(invite, _invite_uses(db, invite.id))
+
+
+@router.post("/invite-codes/{invite_id}/activate")
+def activate_admin_invite_code(
+    invite_id: int,
+    _admin: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    invite = _set_invite_status(db, invite_id, "active")
+    return _serialize_invite(invite, _invite_uses(db, invite.id))
+
+
 @router.get("/invite-codes")
 def list_invite_codes(_admin: User = Depends(require_admin_user), db: Session = Depends(get_db)):
-    invites = db.scalars(select(InviteCode).order_by(InviteCode.id)).all()
+    invites = db.scalars(select(InviteCode).order_by(InviteCode.id.desc())).all()
     rows = db.execute(select(InviteCodeUse, User).join(User, User.id == InviteCodeUse.used_by_user_id)).all()
     uses_by_invite: dict[int, list[tuple[InviteCodeUse, User]]] = {}
     for usage, user in rows:
