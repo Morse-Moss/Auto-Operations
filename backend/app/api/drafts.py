@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -16,7 +16,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_tenant_context, get_current_user
 from backend.app.api.ai import _recorded_text_task, _text_model_context, get_text_ai_client
 from backend.app.models import AiDraft, DraftAiScoreResult, DraftAsset, Note, NoteAsset, PlatformAccount, PublishAsset, PublishJob, User, WechatOfficialDraftSource
-from backend.app.schemas.common import paginated
+from backend.app.schemas.common import paginate_statement
 from backend.app.services.ai_service import TextAiClient
 from backend.app.services.asset_downloader import download_asset_to_local
 from backend.app.services.asset_storage_policy import create_signed_media_url, valid_media_owner_prefixes
@@ -248,7 +248,7 @@ def _prepare_fallback_publish_assets(db: Session, draft_id: int, current_user: U
         raise
 
 
-def _serialize_draft(draft: AiDraft, db: Session | None = None) -> dict:
+def _serialize_draft(draft: AiDraft, db: Session | None = None, source_article_ids: dict[int, int] | None = None) -> dict:
     payload = {
         "id": draft.id,
         "platform": draft.platform,
@@ -260,15 +260,34 @@ def _serialize_draft(draft: AiDraft, db: Session | None = None) -> dict:
         "created_at": draft.created_at.isoformat(),
     }
     if draft.platform == "wechat_official":
-        source_article_id = None
-        if db is not None:
+        if source_article_ids is not None:
+            source_article_id = source_article_ids.get(draft.id)
+        elif db is not None:
             source_article_id = db.scalar(
                 select(WechatOfficialDraftSource.article_id)
                 .where(WechatOfficialDraftSource.draft_id == draft.id)
                 .order_by(WechatOfficialDraftSource.id.asc())
             )
+        else:
+            source_article_id = None
         payload["source_article_id"] = source_article_id
     return payload
+
+
+def _source_article_ids_for_drafts(db: Session, drafts: Sequence[AiDraft]) -> dict[int, int]:
+    """Batch-prefetch the earliest source article id per wechat_official draft."""
+    wechat_draft_ids = [draft.id for draft in drafts if draft.platform == "wechat_official"]
+    if not wechat_draft_ids:
+        return {}
+    rows = db.execute(
+        select(WechatOfficialDraftSource.draft_id, WechatOfficialDraftSource.article_id)
+        .where(WechatOfficialDraftSource.draft_id.in_(wechat_draft_ids))
+        .order_by(WechatOfficialDraftSource.id.asc())
+    ).all()
+    source_article_ids: dict[int, int] = {}
+    for draft_id, article_id in rows:
+        source_article_ids.setdefault(draft_id, article_id)
+    return source_article_ids
 
 
 def _apply_normalized_content(draft: AiDraft) -> None:
@@ -337,8 +356,12 @@ def get_drafts(
     statement = select(AiDraft).where(AiDraft.user_id == current_user.id)
     if platform:
         statement = statement.where(AiDraft.platform == platform)
-    drafts = db.scalars(statement.order_by(AiDraft.created_at.desc())).all()
-    return paginated([_serialize_draft(draft, db) for draft in drafts], page, page_size)
+
+    def serialize_page(drafts: Sequence[AiDraft]) -> list:
+        source_article_ids = _source_article_ids_for_drafts(db, drafts)
+        return [_serialize_draft(draft, db, source_article_ids=source_article_ids) for draft in drafts]
+
+    return paginate_statement(db, statement.order_by(AiDraft.created_at.desc()), page, page_size, serialize_page)
 
 
 @router.get("/{draft_id}/rewrite-candidates")

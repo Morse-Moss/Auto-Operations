@@ -1941,3 +1941,86 @@ def test_duplicate_draft_returns_404_for_another_users_draft_without_copying(tmp
             db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_list_drafts_paginates_newest_first_with_stable_response_shape(tmp_path):
+    from datetime import datetime, timedelta
+
+    from backend.app.models import WechatOfficialArticle, WechatOfficialDraftSource
+
+    SessionLocal = override_database(tmp_path)
+    try:
+        db = SessionLocal()
+        try:
+            owner = create_user(db, "draft-pagination-owner")
+            other = create_user(db, "draft-pagination-other")
+            headers = auth_headers(owner)
+            base_time = datetime(2026, 7, 1, 12, 0, 0)
+            for index in range(5):
+                db.add(
+                    AiDraft(
+                        user_id=owner.id,
+                        platform="xhs",
+                        title=f"草稿 {index}",
+                        body="正文",
+                        created_at=base_time + timedelta(minutes=index),
+                    )
+                )
+            # Another user's draft must never leak into the list.
+            db.add(
+                AiDraft(
+                    user_id=other.id,
+                    platform="xhs",
+                    title="别人的草稿",
+                    body="正文",
+                    created_at=base_time + timedelta(hours=1),
+                )
+            )
+            # A wechat_official draft with a traced source article.
+            article = WechatOfficialArticle(title="源文章")
+            db.add(article)
+            db.flush()
+            wechat_draft = AiDraft(
+                user_id=owner.id,
+                platform="wechat_official",
+                title="公众号草稿",
+                body="正文",
+                created_at=base_time + timedelta(minutes=10),
+            )
+            db.add(wechat_draft)
+            db.flush()
+            db.add(WechatOfficialDraftSource(draft_id=wechat_draft.id, article_id=article.id))
+            article_id = article.id
+            db.commit()
+        finally:
+            db.close()
+
+        first_page = client.get("/api/drafts", headers=headers, params={"page": 1, "page_size": 2})
+        assert first_page.status_code == 200
+        payload = first_page.json()
+        assert set(payload.keys()) == {"total", "page", "page_size", "items"}
+        assert payload["total"] == 6
+        assert payload["page"] == 1
+        assert payload["page_size"] == 2
+        assert [item["title"] for item in payload["items"]] == ["公众号草稿", "草稿 4"]
+        assert payload["items"][0]["source_article_id"] == article_id
+        assert "source_article_id" not in payload["items"][1]
+
+        second_page = client.get("/api/drafts", headers=headers, params={"page": 2, "page_size": 2})
+        assert second_page.status_code == 200
+        assert [item["title"] for item in second_page.json()["items"]] == ["草稿 3", "草稿 2"]
+
+        beyond_page = client.get("/api/drafts", headers=headers, params={"page": 9, "page_size": 2})
+        assert beyond_page.status_code == 200
+        beyond = beyond_page.json()
+        assert beyond["total"] == 6
+        assert beyond["page"] == 9
+        assert beyond["page_size"] == 2
+        assert beyond["items"] == []
+
+        filtered = client.get("/api/drafts", headers=headers, params={"platform": "xhs", "page": 1, "page_size": 10})
+        assert filtered.status_code == 200
+        assert filtered.json()["total"] == 5
+        assert all(item["platform"] == "xhs" for item in filtered.json()["items"])
+    finally:
+        app.dependency_overrides.pop(get_db, None)
