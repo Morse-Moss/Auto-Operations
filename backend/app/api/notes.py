@@ -115,6 +115,35 @@ def _get_note_assets(db: Session, note: Note) -> list[NoteAsset]:
     return db.scalars(select(NoteAsset).where(NoteAsset.note_id == note.id).order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())).all()
 
 
+def _note_assets_map(db: Session, note_ids: list[int]) -> dict[int, list[NoteAsset]]:
+    assets_map: dict[int, list[NoteAsset]] = {note_id: [] for note_id in note_ids}
+    if not note_ids:
+        return assets_map
+    assets = db.scalars(
+        select(NoteAsset)
+        .where(NoteAsset.note_id.in_(note_ids))
+        .order_by(NoteAsset.sort_order.asc(), NoteAsset.id.asc())
+    )
+    for asset in assets:
+        assets_map.setdefault(asset.note_id, []).append(asset)
+    return assets_map
+
+
+def _note_tags_map(db: Session, note_ids: list[int]) -> dict[int, list[dict]]:
+    tags_map: dict[int, list[dict]] = {note_id: [] for note_id in note_ids}
+    if not note_ids:
+        return tags_map
+    rows = db.execute(
+        select(note_tags.c.note_id, Tag)
+        .join(Tag, Tag.id == note_tags.c.tag_id)
+        .where(note_tags.c.note_id.in_(note_ids))
+        .order_by(Tag.id.asc())
+    )
+    for note_id, tag in rows:
+        tags_map.setdefault(note_id, []).append(_serialize_tag(tag))
+    return tags_map
+
+
 def _asset_display_url(asset: NoteAsset, user_id: int | None = None) -> str:
     if asset.local_path:
         if user_id is not None:
@@ -259,6 +288,42 @@ def _get_effective_analysis_result(db: Session, note_id: int) -> NoteAnalysisRes
     )
 
 
+def _feishu_analysis_results_map(db: Session, note_ids: list[int]) -> dict[int, NoteAnalysisResult | None]:
+    results_map: dict[int, NoteAnalysisResult | None] = {note_id: None for note_id in note_ids}
+    if not note_ids:
+        return results_map
+    rows = db.scalars(
+        select(NoteAnalysisResult)
+        .where(
+            NoteAnalysisResult.note_id.in_(note_ids),
+            NoteAnalysisResult.source == "feishu",
+        )
+        .order_by(NoteAnalysisResult.id.asc())
+    )
+    for result in rows:
+        if results_map.get(result.note_id) is None:
+            results_map[result.note_id] = result
+    return results_map
+
+
+def _effective_analysis_results_map(db: Session, note_ids: list[int]) -> dict[int, NoteAnalysisResult | None]:
+    results_map: dict[int, NoteAnalysisResult | None] = {note_id: None for note_id in note_ids}
+    if not note_ids:
+        return results_map
+    rows = db.scalars(
+        select(NoteAnalysisResult)
+        .where(
+            NoteAnalysisResult.note_id.in_(note_ids),
+            NoteAnalysisResult.source.in_(["system", "feishu"]),
+        )
+        .order_by(NoteAnalysisResult.source.desc(), NoteAnalysisResult.id.asc())
+    )
+    for result in rows:
+        if results_map.get(result.note_id) is None:
+            results_map[result.note_id] = result
+    return results_map
+
+
 def _payload_value(payload: Any, *keys: str) -> Any:
     if not isinstance(payload, dict):
         return None
@@ -338,8 +403,11 @@ def _serialize_note(
     top20_marks: dict[int, list[str]] | None = None,
     mapping_cache: dict[int, XhsContentMapping | None] | None = None,
     include_raw: bool = False,
+    assets_map: dict[int, list[NoteAsset]] | None = None,
+    feishu_analysis_map: dict[int, NoteAnalysisResult | None] | None = None,
+    effective_analysis_map: dict[int, NoteAnalysisResult | None] | None = None,
 ) -> dict:
-    assets = _get_note_assets(db, note)
+    assets = assets_map.get(note.id, []) if assets_map is not None else _get_note_assets(db, note)
     image_assets = [asset for asset in assets if asset.asset_type == "image"]
     video_assets = [asset for asset in assets if asset.asset_type == "video"]
     asset_urls = [_asset_display_url(asset, note.user_id) for asset in assets if asset.url or asset.local_path]
@@ -354,8 +422,8 @@ def _serialize_note(
     response_video_url = _asset_display_url(video_assets[0], note.user_id) if video_assets else mapped_video_url
     media_type = _note_media_type(mapping=mapping, video_assets=video_assets, response_video_url=response_video_url)
     marks = (top20_marks or {}).get(note.id, [])
-    feishu_analysis = _get_feishu_analysis_result(db, note.id)
-    effective_analysis = _get_effective_analysis_result(db, note.id)
+    feishu_analysis = feishu_analysis_map.get(note.id) if feishu_analysis_map is not None else _get_feishu_analysis_result(db, note.id)
+    effective_analysis = effective_analysis_map.get(note.id) if effective_analysis_map is not None else _get_effective_analysis_result(db, note.id)
     payload = {
         "id": note.id,
         "platform": note.platform,
@@ -389,9 +457,22 @@ def _serialize_note_with_tags(
     top20_marks: dict[int, list[str]] | None = None,
     mapping_cache: dict[int, XhsContentMapping | None] | None = None,
     include_raw: bool = False,
+    assets_map: dict[int, list[NoteAsset]] | None = None,
+    feishu_analysis_map: dict[int, NoteAnalysisResult | None] | None = None,
+    effective_analysis_map: dict[int, NoteAnalysisResult | None] | None = None,
+    tags_map: dict[int, list[dict]] | None = None,
 ) -> dict:
-    serialized = _serialize_note(db, note, top20_marks, mapping_cache, include_raw)
-    serialized["tags"] = _get_note_tags(db, note.id)
+    serialized = _serialize_note(
+        db,
+        note,
+        top20_marks,
+        mapping_cache,
+        include_raw,
+        assets_map=assets_map,
+        feishu_analysis_map=feishu_analysis_map,
+        effective_analysis_map=effective_analysis_map,
+    )
+    serialized["tags"] = tags_map.get(note.id, []) if tags_map is not None else _get_note_tags(db, note.id)
     return serialized
 
 
@@ -400,8 +481,9 @@ def _build_notes_csv(db: Session, notes: list[Note]) -> str:
     fieldnames = ["note_id", "title", "author_name", "content", "tags", "created_at"]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
+    tags_map = _note_tags_map(db, [note.id for note in notes])
     for note in notes:
-        tags = ",".join(tag["name"] for tag in _get_note_tags(db, note.id))
+        tags = ",".join(tag["name"] for tag in tags_map.get(note.id, []))
         writer.writerow(
             {
                 "note_id": note.note_id,
@@ -717,9 +799,13 @@ def get_notes(
         search_attribute_values,
     ])
 
+    note_ids = [note.id for note in notes]
+    feishu_analysis_map = _feishu_analysis_results_map(db, note_ids)
+    effective_analysis_map = _effective_analysis_results_map(db, note_ids)
+
     def _matches_analysis_filters(note: Note) -> bool:
-        feishu_result = _get_feishu_analysis_result(db, note.id)
-        result = _get_effective_analysis_result(db, note.id)
+        feishu_result = feishu_analysis_map.get(note.id)
+        result = effective_analysis_map.get(note.id)
         if feishu_push_status and (feishu_result.push_status if feishu_result else "not_synced") != feishu_push_status:
             return False
         if wants_unanalyzed and _is_unanalyzed_analysis(result):
@@ -750,7 +836,27 @@ def get_notes(
     if sort_by != "latest":
         notes = sorted(notes, key=lambda note: (_note_metric(note, sort_by, mapping_cache), note.created_at, note.id), reverse=True)
     include_raw = current_user.role == "admin"
-    return paginated([_serialize_note_with_tags(db, note, top20_marks, mapping_cache, include_raw=include_raw) for note in notes], page, page_size)
+    remaining_note_ids = [note.id for note in notes]
+    assets_map = _note_assets_map(db, remaining_note_ids)
+    tags_map = _note_tags_map(db, remaining_note_ids)
+    return paginated(
+        [
+            _serialize_note_with_tags(
+                db,
+                note,
+                top20_marks,
+                mapping_cache,
+                include_raw=include_raw,
+                assets_map=assets_map,
+                feishu_analysis_map=feishu_analysis_map,
+                effective_analysis_map=effective_analysis_map,
+                tags_map=tags_map,
+            )
+            for note in notes
+        ],
+        page,
+        page_size,
+    )
 
 
 @router.post("/{note_id}/analysis")
@@ -1658,11 +1764,27 @@ def batch_save_notes(
     for note in saved_notes:
         db.refresh(note)
 
+    saved_note_ids = [note.id for note in saved_notes]
+    saved_assets_map = _note_assets_map(db, saved_note_ids)
+    saved_feishu_analysis_map = _feishu_analysis_results_map(db, saved_note_ids)
+    saved_effective_analysis_map = _effective_analysis_results_map(db, saved_note_ids)
+    saved_tags_map = _note_tags_map(db, saved_note_ids)
     return {
         "saved_count": len(saved_notes),
         "skipped_count": len(skipped_items),
         "skipped_items": skipped_items,
-        "items": [_serialize_note_with_tags(db, note, include_raw=current_user.role == "admin") for note in saved_notes],
+        "items": [
+            _serialize_note_with_tags(
+                db,
+                note,
+                include_raw=current_user.role == "admin",
+                assets_map=saved_assets_map,
+                feishu_analysis_map=saved_feishu_analysis_map,
+                effective_analysis_map=saved_effective_analysis_map,
+                tags_map=saved_tags_map,
+            )
+            for note in saved_notes
+        ],
     }
 
 
@@ -1707,9 +1829,25 @@ def batch_tag_notes(
             )
 
     db.commit()
+    tagged_note_ids = [note.id for note in notes]
+    tagged_assets_map = _note_assets_map(db, tagged_note_ids)
+    tagged_feishu_analysis_map = _feishu_analysis_results_map(db, tagged_note_ids)
+    tagged_effective_analysis_map = _effective_analysis_results_map(db, tagged_note_ids)
+    tagged_tags_map = _note_tags_map(db, tagged_note_ids)
     return {
         "updated_count": len(notes),
-        "items": [_serialize_note_with_tags(db, note, include_raw=current_user.role == "admin") for note in notes],
+        "items": [
+            _serialize_note_with_tags(
+                db,
+                note,
+                include_raw=current_user.role == "admin",
+                assets_map=tagged_assets_map,
+                feishu_analysis_map=tagged_feishu_analysis_map,
+                effective_analysis_map=tagged_effective_analysis_map,
+                tags_map=tagged_tags_map,
+            )
+            for note in notes
+        ],
     }
 
 
@@ -1728,12 +1866,28 @@ def export_notes(
     if payload.format == "csv":
         file_path.write_text("\ufeff" + _build_notes_csv(db, notes), encoding="utf-8")
     else:
+        export_note_ids = [note.id for note in notes]
+        export_assets_map = _note_assets_map(db, export_note_ids)
+        export_feishu_analysis_map = _feishu_analysis_results_map(db, export_note_ids)
+        export_effective_analysis_map = _effective_analysis_results_map(db, export_note_ids)
+        export_tags_map = _note_tags_map(db, export_note_ids)
         export_payload = {
             "platform": "xhs",
             "format": payload.format,
             "exported_at": exported_at.isoformat(),
             "total": len(notes),
-            "items": [_serialize_note_with_tags(db, note, include_raw=current_user.role == "admin") for note in notes],
+            "items": [
+                _serialize_note_with_tags(
+                    db,
+                    note,
+                    include_raw=current_user.role == "admin",
+                    assets_map=export_assets_map,
+                    feishu_analysis_map=export_feishu_analysis_map,
+                    effective_analysis_map=export_effective_analysis_map,
+                    tags_map=export_tags_map,
+                )
+                for note in notes
+            ],
         }
         file_path.write_text(json.dumps(export_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
