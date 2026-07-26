@@ -45,6 +45,7 @@ def _load_yaml_config() -> Dict[str, Any]:
         "auth.allow_public_registration": "allow_public_registration",
         "scheduler.enabled": "scheduler_enabled",
         "scheduler.interval_seconds": "scheduler_interval_seconds",
+        "scheduler.crawl_rate_limit_per_minute": "crawl_rate_limit_per_minute",
         "frontend.serve_static": "frontend_serve_static",
         "frontend.build_dir": "frontend_build_dir",
     }
@@ -80,6 +81,35 @@ def _load_yaml_config() -> Dict[str, Any]:
     return flat
 
 
+# Known placeholder secret keys that must never protect a network-reachable deployment.
+PLACEHOLDER_SECRET_KEYS = {"", "dev-only-change-me", "change-me", "secret", "change_me_via_env_var"}
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def is_placeholder_secret_key(secret_key: str) -> bool:
+    return (secret_key or "").strip().lower() in PLACEHOLDER_SECRET_KEYS
+
+
+def validate_secret_key_for_host(settings: "Settings", listen_host: str | None = None) -> None:
+    """Unconditional startup hard gate, independent of ENVIRONMENT.
+
+    A placeholder SECRET_KEY lets anyone on the network forge login tokens and
+    signed media URLs. Loopback-only development keeps working; any server that
+    listens beyond loopback must configure a real secret before it can start.
+    """
+    if not is_placeholder_secret_key(settings.secret_key):
+        return
+    effective_host = (listen_host if listen_host is not None else settings.server_host or "").strip()
+    if effective_host.lower() in LOOPBACK_HOSTS:
+        return
+    raise RuntimeError(
+        f"SECRET_KEY 仍是占位值，而服务监听地址是 {effective_host or '(未知)'}（非本机回环），已拒绝启动，"
+        "否则局域网内任何人都能伪造登录令牌。请设置环境变量 SECRET_KEY=<足够长的随机字符串>"
+        "（例如用 openssl rand -hex 32 生成），或在 config/*.yaml 的 security.secret_key 填入真实密钥；"
+        "如果只在本机使用，也可以把 server.host 改为 127.0.0.1。"
+    )
+
+
 class Settings(BaseSettings):
     app_name: str = "Spider_XHS"
     api_title: str = "Spider_XHS Operations Platform"
@@ -111,6 +141,7 @@ class Settings(BaseSettings):
     # Scheduler
     scheduler_enabled: bool = False
     scheduler_interval_seconds: int = 60
+    crawl_rate_limit_per_minute: int = 5
     allow_production_external_actions: bool = False
 
     # Asset storage
@@ -197,6 +228,34 @@ class Settings(BaseSettings):
             raise ValueError("ALLOW_PRODUCTION_EXTERNAL_ACTIONS must be true before enabling the scheduler in production")
 
 
+def _load_dotenv_overrides() -> Dict[str, str]:
+    """Read project-root .env so its values override YAML defaults.
+
+    Needed because get_settings passes YAML values as constructor kwargs,
+    which outrank pydantic-settings' own env_file loading.
+    """
+    if os.environ.get("XHS_DISABLE_DOTENV") == "1":
+        return {}
+    env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+    if not env_path.exists():
+        return {}
+    fields = getattr(Settings, "model_fields", None) or getattr(Settings, "__fields__", {})
+    field_by_env = {str(name).upper(): str(name) for name in fields}
+    overrides: Dict[str, str] = {}
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            field_name = field_by_env.get(key.strip().upper())
+            if field_name:
+                overrides[field_name] = value.strip().strip('"').strip("'")
+    except OSError:
+        return {}
+    return overrides
+
+
 def _load_environment_overrides() -> Dict[str, str]:
     fields = getattr(Settings, "model_fields", None) or getattr(Settings, "__fields__", {})
     overrides: Dict[str, str] = {}
@@ -210,5 +269,6 @@ def _load_environment_overrides() -> Dict[str, str]:
 @lru_cache
 def get_settings() -> Settings:
     values = _load_yaml_config()
+    values.update(_load_dotenv_overrides())
     values.update(_load_environment_overrides())
     return Settings(**values)

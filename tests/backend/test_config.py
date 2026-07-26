@@ -189,6 +189,106 @@ def test_production_settings_accept_hardened_values(monkeypatch, tmp_path):
         get_settings.cache_clear()
 
 
+def test_placeholder_secret_key_rejected_when_listening_beyond_loopback(monkeypatch, tmp_path):
+    from backend.app.core.config import get_settings, validate_secret_key_for_host
+
+    config_path = tmp_path / "lan.yaml"
+    config_path.write_text(
+        "\n".join([
+            "server:",
+            "  host: 0.0.0.0",
+            "security:",
+            "  secret_key: dev-only-change-me",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    get_settings.cache_clear()
+
+    try:
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            validate_secret_key_for_host(get_settings())
+    finally:
+        get_settings.cache_clear()
+
+
+def test_placeholder_secret_key_allowed_on_loopback_host(monkeypatch, tmp_path):
+    from backend.app.core.config import get_settings, validate_secret_key_for_host
+
+    config_path = tmp_path / "local.yaml"
+    config_path.write_text(
+        "\n".join([
+            "server:",
+            "  host: 127.0.0.1",
+            "security:",
+            "  secret_key: dev-only-change-me",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    get_settings.cache_clear()
+
+    try:
+        validate_secret_key_for_host(get_settings())
+    finally:
+        get_settings.cache_clear()
+
+
+def test_real_secret_key_allowed_when_listening_beyond_loopback(monkeypatch, tmp_path):
+    from backend.app.core.config import get_settings, validate_secret_key_for_host
+
+    config_path = tmp_path / "lan-real.yaml"
+    config_path.write_text(
+        "\n".join([
+            "server:",
+            "  host: 0.0.0.0",
+            "security:",
+            "  secret_key: a-real-secret-key-with-enough-length",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    get_settings.cache_clear()
+
+    try:
+        validate_secret_key_for_host(get_settings())
+    finally:
+        get_settings.cache_clear()
+
+
+def test_placeholder_secret_key_gate_uses_explicit_listen_host(monkeypatch, tmp_path):
+    from backend.app.core.config import get_settings, validate_secret_key_for_host
+
+    config_path = tmp_path / "cli.yaml"
+    config_path.write_text(
+        "\n".join([
+            "server:",
+            "  host: 127.0.0.1",
+            "security:",
+            "  secret_key: change-me",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    get_settings.cache_clear()
+
+    try:
+        settings = get_settings()
+        validate_secret_key_for_host(settings, "127.0.0.1")
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            validate_secret_key_for_host(settings, "192.168.1.20")
+    finally:
+        get_settings.cache_clear()
+
+
 def test_environment_fernet_key_overrides_yaml(monkeypatch, tmp_path):
     from backend.app.core.config import get_settings
 

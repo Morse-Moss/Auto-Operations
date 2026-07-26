@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import base64
 import binascii
-import ipaddress
 import re
-import socket
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, Optional
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import urllib3
@@ -28,7 +25,9 @@ from backend.app.schemas.common import paginated
 from backend.app.services.ai_service import ImageAiClient, OpenAICompatibleImageClient, OpenAICompatibleTextClient, RunningHubImageClient, TextAiClient
 from backend.app.services.asset_storage_policy import asset_owner_prefix
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLeaseGuard, BetaConcurrencyService, acquire_image_generation_leases
+from backend.app.services.draft_rewrite_candidate_service import RewriteMode, set_rewrite_candidate
 from backend.app.services.model_config_service import require_model_capability_context
+from backend.app.services.public_url_guard import resolve_public_http_url
 from backend.app.services.usage_quota_service import CREDITS_BUCKET, UsageQuotaService, credit_cost_for_feature, usage_idempotency_key
 from backend.app.services.xhs_content_normalizer import normalize_xhs_generated_content
 
@@ -45,6 +44,7 @@ GENERATED_IMAGE_ALLOWED_MEDIA_TYPES = {
 
 class RewriteNoteRequest(BaseModel):
     draft_id: int
+    mode: RewriteMode = "safe"
     instruction: str = Field(default="", max_length=800)
 
 
@@ -205,47 +205,9 @@ def _image_content_type_from_bytes(content: bytes) -> str:
     raise ValueError("生成图片内容不是受支持的图片格式")
 
 
-def _is_public_ip_address(value: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(value)
-    except ValueError:
-        return False
-    return bool(ip.is_global) and not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
-
-
 def _resolve_public_http_image_url(url: str) -> tuple[Any, str, str, int]:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("生成图片 URL 不支持保存到媒体资产")
-    if parsed.username or parsed.password:
-        raise ValueError("生成图片 URL 不支持用户信息")
-    if not _is_public_ip_address(parsed.hostname):
-        try:
-            addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
-        except socket.gaierror as exc:
-            raise ValueError("生成图片 URL 无法解析") from exc
-        public_ips = []
-        for address in addresses:
-            ip_text = str(address[4][0])
-            if not _is_public_ip_address(ip_text):
-                raise ValueError("生成图片 URL 不允许指向内网地址")
-            if ip_text not in public_ips:
-                public_ips.append(ip_text)
-        if not public_ips:
-            raise ValueError("生成图片 URL 无法解析")
-        resolved_host = public_ips[0]
-    else:
-        resolved_host = parsed.hostname
-    if not _is_public_ip_address(resolved_host):
-        raise ValueError("生成图片 URL 不允许指向内网地址")
-    return parsed, parsed.hostname, resolved_host, parsed.port or (443 if parsed.scheme == "https" else 80)
+    resolved = resolve_public_http_url(url, label="生成图片 URL ")
+    return resolved.parsed, resolved.hostname, resolved.resolved_ip, resolved.port
 
 
 def _assert_public_http_image_url(url: str) -> None:
@@ -655,8 +617,8 @@ def rewrite_note(
         db=db,
         current_user=current_user,
         feature_key="ai.rewrite_note",
-        idempotency_key=_quota_idempotency_key(request, f"ai.rewrite_note:{current_user.id}:{draft.id}:{payload.instruction}"),
-        request_summary={"draft_id": draft.id, "instruction_length": len(payload.instruction), "body_length": len(draft.body)},
+        idempotency_key=_quota_idempotency_key(request, f"ai.rewrite_note:{current_user.id}:{draft.id}:{payload.mode}:{payload.instruction}"),
+        request_summary={"draft_id": draft.id, "mode": payload.mode, "instruction_length": len(payload.instruction), "body_length": len(draft.body)},
         model_config_id=model_config.id,
         provider=model_config.provider,
     )
@@ -665,7 +627,7 @@ def rewrite_note(
         current_user=current_user,
         platform=draft.platform,
         task_type="ai_rewrite",
-        payload={"draft_id": draft.id, "model_config_id": model_config.id, "instruction": payload.instruction},
+        payload={"draft_id": draft.id, "model_config_id": model_config.id, "mode": payload.mode, "instruction": payload.instruction},
         action=lambda: text_ai_client.rewrite_note(
             model_config=model_config,
             api_key=api_key,
@@ -676,6 +638,16 @@ def rewrite_note(
         usage_reservation_id=usage_reservation.id,
     )
     normalized = normalize_xhs_generated_content(draft.title, rewritten_body, draft.tags or [])
+    db.refresh(draft, attribute_names=["rewrite_candidates"], with_for_update=True)
+    generated_at = shanghai_now().isoformat()
+    draft.rewrite_candidates = set_rewrite_candidate(
+        draft.rewrite_candidates,
+        payload.mode,
+        title=normalized.title,
+        body=normalized.body,
+        tags=normalized.tags,
+        generated_at=generated_at,
+    )
     candidate = {
         **_serialize_draft(draft),
         "title": normalized.title,
@@ -685,6 +657,7 @@ def rewrite_note(
     task.payload = {
         **(task.payload or {}),
         "source_draft_id": draft.id,
+        "rewrite_mode": payload.mode,
         "preview_only": True,
         "result": {
             "title": normalized.title,

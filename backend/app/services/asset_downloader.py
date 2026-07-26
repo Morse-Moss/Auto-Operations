@@ -8,11 +8,17 @@ from loguru import logger
 
 from backend.app.core.config import get_settings
 from backend.app.services.asset_storage_policy import asset_owner_prefix
+from backend.app.services.public_url_guard import (
+    PublicUrlBlockedError,
+    PublicUrlUnresolvedError,
+    assert_public_http_url,
+)
 
 
 DEFAULT_DOWNLOAD_TIMEOUT = (5, 15)
 DEFAULT_MAX_BYTES = 20 * 1024 * 1024
 MIN_ASSET_BYTES = 100
+MAX_DOWNLOAD_REDIRECTS = 3
 DOWNLOAD_HEADERS = {
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Referer": "",
@@ -33,6 +39,15 @@ def download_asset_to_local(
     max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> str | None:
     if not url or not url.startswith(("http://", "https://")):
+        return None
+    # SSRF hard gate: refuse to fetch anything that is not a public network
+    # address (private/loopback/link-local/metadata ranges). Raises
+    # PublicUrlBlockedError with a user-readable Chinese message.
+    try:
+        assert_public_http_url(url, label="图片下载地址")
+    except PublicUrlUnresolvedError as exc:
+        # DNS failure is a normal download failure (same as before), not an attack.
+        logger.warning(f"Asset download skipped, host unresolved for {url[:80]}: {exc}")
         return None
     candidates = _download_url_candidates(url, asset_type)
     for candidate_url in candidates:
@@ -65,7 +80,7 @@ def _download_single_asset_to_local(
     file_path: Path | None = None
     try:
         import requests
-        with requests.get(url, timeout=timeout, headers=DOWNLOAD_HEADERS, stream=True) as resp:
+        with _open_checked_response(requests, url, timeout=timeout) as resp:
             resp.raise_for_status()
             content_length = _content_length(resp.headers.get("content-length"))
             if content_length is not None and content_length > max_bytes:
@@ -95,6 +110,30 @@ def _download_single_asset_to_local(
         else:
             logger.debug(f"Asset download candidate failed for {url[:80]}: {exc}")
         return None
+
+
+def _open_checked_response(requests_module, url: str, *, timeout: tuple[int, int]):
+    """GET with per-hop SSRF validation: redirects are followed manually and
+    every redirect target is re-validated against the public-address guard."""
+    current_url = url
+    for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
+        assert_public_http_url(current_url, label="图片下载地址")
+        resp = requests_module.get(
+            current_url,
+            timeout=timeout,
+            headers=DOWNLOAD_HEADERS,
+            stream=True,
+            allow_redirects=False,
+        )
+        if resp.is_redirect or resp.is_permanent_redirect:
+            location = resp.headers.get("location", "")
+            resp.close()
+            if not location:
+                raise PublicUrlBlockedError("图片下载地址重定向缺少目标")
+            current_url = requests_module.compat.urljoin(current_url, location)
+            continue
+        return resp
+    raise PublicUrlBlockedError("图片下载地址重定向次数过多")
 
 
 def _download_url_candidates(url: str, asset_type: str) -> list[str]:

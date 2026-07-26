@@ -18,9 +18,10 @@ from backend.app.api import accounts, admin, ai, auth, auto_tasks, drafts, feish
 from backend.app.api.platforms import registry
 from backend.app.api.platforms.wechat_official import router as wechat_official_router
 from backend.app.api.platforms.xhs import analysis_center, analytics, crawl, creator, data_acquisition, monitoring, page_import, pc
-from backend.app.core.config import get_settings
+from backend.app.core.config import get_settings, validate_secret_key_for_host
 from backend.app.core.database import init_db
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLimitExceeded
+from backend.app.services.public_url_guard import PublicUrlBlockedError
 from backend.app.services.rate_limit_service import record_rate_limit_failure
 from backend.app.services.scheduler_service import run_due_auto_tasks, shutdown_due_publish_scheduler, start_due_publish_scheduler
 from backend.app.services.usage_quota_service import UsageQuotaInsufficientError
@@ -66,8 +67,9 @@ def _safe_log_text(value: str, max_length: int) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
     settings = get_settings()
+    validate_secret_key_for_host(settings)
+    init_db()
     scheduler = None
     if settings.scheduler_enabled:
         scheduler = start_due_publish_scheduler(settings.scheduler_interval_seconds)
@@ -129,6 +131,10 @@ def create_app() -> FastAPI:
                 response.headers[key] = value
             return response
         return await call_next(request)
+
+    @app.exception_handler(PublicUrlBlockedError)
+    async def _public_url_blocked_handler(_request, exc: PublicUrlBlockedError):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     @app.exception_handler(UsageQuotaInsufficientError)
     async def _usage_quota_insufficient_handler(_request, exc: UsageQuotaInsufficientError):
