@@ -78,3 +78,4 @@ compare-shots/
 # Logs and local documents
 *.log
 *.docx
+.tmp-*
