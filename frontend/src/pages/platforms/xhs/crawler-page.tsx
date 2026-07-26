@@ -17,6 +17,7 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { crawlXhsDataStream, crawlXhsKeywordGroupStream, fetchAccounts, fetchKeywordGroups } from "../../../lib/api";
 import type { KeywordGroup, PlatformAccount, XhsDataCrawlItem, XhsDataCrawlMode, XhsKeywordGroupCrawlSummary } from "../../../types";
+import { buildXhsPcAccountOptions, selectReadyXhsPcAccountId } from "./xhs-pc-account-selection";
 
 const { Title, Text } = Typography;
 
@@ -223,14 +224,6 @@ function savedStatusTag(item: XhsDataCrawlItem) {
   return <Text type="secondary">-</Text>;
 }
 
-function accountStatusLabel(status: string): string {
-  if (status === "active") return "可用";
-  if (status === "expired") return "已过期";
-  if (status === "disabled") return "已停用";
-  if (status === "pending") return "待确认";
-  return status || "未知";
-}
-
 function exportRowsToExcel(items: XhsDataCrawlItem[]) {
   const rows = items.map((item) => [
     item.status,
@@ -323,7 +316,7 @@ export function XhsCrawlerPage({ visibleSource = "all" }: XhsCrawlerPageProps = 
   const [error, setError] = useState<string | null>(null);
 
   const pcAccounts = useMemo(() => accounts.filter((a) => a.platform === "xhs" && a.sub_type === "pc"), [accounts]);
-  const activePcAccounts = useMemo(() => pcAccounts.filter((a) => a.status === "active"), [pcAccounts]);
+  const pcAccountOptions = useMemo(() => buildXhsPcAccountOptions(accounts), [accounts]);
   const selectedAccount = useMemo(() => pcAccounts.find((account) => account.id === selectedAccountId) || null, [pcAccounts, selectedAccountId]);
   const selectedKeywordGroup = useMemo(() => keywordGroups.find((group) => group.id === selectedKeywordGroupId) || null, [keywordGroups, selectedKeywordGroupId]);
   const isKeywordGroupMode = crawlChannel === "keyword_group";
@@ -336,12 +329,7 @@ export function XhsCrawlerPage({ visibleSource = "all" }: XhsCrawlerPageProps = 
     try {
       const loaded = await fetchAccounts("xhs");
       setAccounts(loaded);
-      const pc = loaded.filter((a) => a.sub_type === "pc");
-      const active = pc.filter((a) => a.status === "active");
-      setSelectedAccountId((current) => {
-        if (current && active.some((account) => account.id === current)) return current;
-        return active[0]?.id ?? pc[0]?.id ?? null;
-      });
+      setSelectedAccountId((current) => selectReadyXhsPcAccountId(loaded, current));
     } catch { setError("账号列表加载失败。"); }
     finally { setIsLoadingAccounts(false); }
   }
@@ -389,7 +377,7 @@ export function XhsCrawlerPage({ visibleSource = "all" }: XhsCrawlerPageProps = 
     setSummaryMessage(null);
     setKeywordGroupSummary(null);
     if (!selectedAccountId) { setError("请先选择一个可用的 PC 账号。"); return; }
-    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到可用账号或重新登录。"); return; }
+    if (selectedAccount?.login_ready !== true) { setError("当前 PC 账号需重新登录，请切换到可用账号。"); return; }
     if (!selectedKeywordGroupId) { setError("请先选择一个关键词组。"); return; }
     setIsRunning(true);
     setItems([]);
@@ -435,7 +423,7 @@ export function XhsCrawlerPage({ visibleSource = "all" }: XhsCrawlerPageProps = 
     setKeywordGroupSummary(null);
     if (isKeywordGroupMode) { await handleSimpleRun(); return; }
     if (!selectedAccountId) { setError("请先选择一个可用的 PC 账号。"); return; }
-    if (selectedAccount?.status === "expired") { setError("当前 PC 账号已过期，请切换到可用账号或重新登录。"); return; }
+    if (selectedAccount?.login_ready !== true) { setError("当前 PC 账号需重新登录，请切换到可用账号。"); return; }
     const parsedUrls = splitUrls(urls);
     if (mode !== "search" && parsedUrls.length === 0) { setError("请至少输入一个笔记链接。"); return; }
     if (mode === "search" && !keyword.trim()) { setError("请填写搜索关键词。"); return; }
@@ -563,12 +551,8 @@ export function XhsCrawlerPage({ visibleSource = "all" }: XhsCrawlerPageProps = 
                   value={selectedAccountId}
                   onChange={setSelectedAccountId}
                   placeholder="选择 PC 账号"
-                  status={selectedAccount?.status === "expired" ? "error" : undefined}
-                  options={[...activePcAccounts, ...pcAccounts.filter((a) => a.status !== "active")].map((a) => ({
-                    value: a.id,
-                    label: `${a.nickname || `PC 账号 ${a.id}`} · ${accountStatusLabel(a.status)}`,
-                    disabled: a.status === "expired",
-                  }))}
+                  status={selectedAccount?.login_ready === false ? "error" : undefined}
+                  options={pcAccountOptions}
                 />
               </Form.Item>
             </Col>

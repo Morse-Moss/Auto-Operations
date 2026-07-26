@@ -22,6 +22,7 @@ from backend.app.services.account_service import (
     cookie_header_from_text,
     decode_cookie_text,
     enrich_user_info_with_xhs_self_profile,
+    get_xhs_pc_login_readiness_map,
     serialize_account,
     serialize_accounts,
     upsert_platform_account_from_login,
@@ -109,8 +110,9 @@ def get_accounts(
     if platform:
         statement = statement.where(PlatformAccount.platform == platform)
     accounts = db.scalars(statement.order_by(PlatformAccount.created_at.desc())).all()
+    login_readiness = get_xhs_pc_login_readiness_map(db, accounts)
     return paginated(
-        serialize_accounts(accounts),
+        serialize_accounts(accounts, login_readiness),
         page,
         page_size,
     )

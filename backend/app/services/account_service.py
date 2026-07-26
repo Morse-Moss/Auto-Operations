@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.core.security import encrypt_text
+from backend.app.core.security import decrypt_text, encrypt_text
 from backend.app.core.time import shanghai_now
 from backend.app.models import AccountCookieVersion, PlatformAccount
 from xhs_utils.cookie_util import trans_cookies
@@ -15,6 +16,7 @@ from xhs_utils.cookie_util import trans_cookies
 DATA_ACCOUNT_DISPLAY_NAME = "数据账号"
 PROFILE_SYNC_PENDING = "pending"
 PROFILE_SYNC_PENDING_MESSAGE = "账号已登录，完整资料待同步。"
+XHS_PC_RELOGIN_MESSAGE = "账号登录信息不可用，请重新登录"
 DATA_ACCOUNT_INTERNAL_TEXT_REPLACEMENTS = (
     ("第三方数据源", DATA_ACCOUNT_DISPLAY_NAME),
     ("灰豚", DATA_ACCOUNT_DISPLAY_NAME),
@@ -140,6 +142,102 @@ def cookie_header_from_text(value: str) -> str:
     return "; ".join(f"{key}={cookie_value}" for key, cookie_value in cookies.items())
 
 
+def latest_cookie_version(db: Session, account_id: int) -> AccountCookieVersion | None:
+    return db.scalars(
+        select(AccountCookieVersion)
+        .where(AccountCookieVersion.platform_account_id == account_id)
+        .order_by(AccountCookieVersion.created_at.desc(), AccountCookieVersion.id.desc())
+    ).first()
+
+
+def latest_cookie_header(db: Session, account_id: int) -> str | None:
+    cookie_version = latest_cookie_version(db, account_id)
+    if cookie_version is None:
+        return None
+    return cookie_header_from_text(decrypt_text(cookie_version.encrypted_cookies))
+
+
+@dataclass(frozen=True)
+class XhsPcLoginReadiness:
+    login_ready: bool
+    login_readiness_message: str
+    cookie_text: str | None = None
+
+
+def _unready_xhs_pc_login() -> XhsPcLoginReadiness:
+    return XhsPcLoginReadiness(
+        login_ready=False,
+        login_readiness_message=XHS_PC_RELOGIN_MESSAGE,
+    )
+
+
+def _evaluate_xhs_pc_login_readiness(
+    account: PlatformAccount,
+    cookie_version: AccountCookieVersion | None,
+) -> XhsPcLoginReadiness:
+    if account.status != "active" or cookie_version is None:
+        return _unready_xhs_pc_login()
+    try:
+        decrypted_cookie_text = decrypt_text(cookie_version.encrypted_cookies)
+        cookies = decode_cookie_text(decrypted_cookie_text)
+        web_session = cookies.get("web_session")
+        if not isinstance(web_session, str) or not web_session.strip():
+            return _unready_xhs_pc_login()
+        cookie_text = cookie_header_from_text(decrypted_cookie_text)
+    except Exception:
+        return _unready_xhs_pc_login()
+    return XhsPcLoginReadiness(
+        login_ready=True,
+        login_readiness_message="",
+        cookie_text=cookie_text,
+    )
+
+
+def get_xhs_pc_login_readiness_map(
+    db: Session,
+    accounts: list[PlatformAccount],
+) -> dict[int, XhsPcLoginReadiness]:
+    pc_accounts = [
+        account
+        for account in accounts
+        if account.id is not None and account.platform == "xhs" and account.sub_type == "pc"
+    ]
+    if not pc_accounts:
+        return {}
+
+    account_ids = [account.id for account in pc_accounts]
+    cookie_versions = db.scalars(
+        select(AccountCookieVersion)
+        .where(AccountCookieVersion.platform_account_id.in_(account_ids))
+        .order_by(
+            AccountCookieVersion.platform_account_id.asc(),
+            AccountCookieVersion.created_at.desc(),
+            AccountCookieVersion.id.desc(),
+        )
+    ).all()
+    latest_cookie_by_account_id: dict[int, AccountCookieVersion] = {}
+    for cookie_version in cookie_versions:
+        latest_cookie_by_account_id.setdefault(cookie_version.platform_account_id, cookie_version)
+
+    return {
+        account.id: _evaluate_xhs_pc_login_readiness(
+            account,
+            latest_cookie_by_account_id.get(account.id),
+        )
+        for account in pc_accounts
+    }
+
+
+def get_xhs_pc_login_readiness(
+    db: Session,
+    account: PlatformAccount,
+) -> XhsPcLoginReadiness:
+    return get_xhs_pc_login_readiness_map(db, [account]).get(
+        account.id,
+        _unready_xhs_pc_login(),
+    )
+
+
 def _first_present(*values: Any) -> Any:
     for value in values:
         if value is not None and value != "":
@@ -242,10 +340,17 @@ def serialize_account(account: PlatformAccount, action: str | None = None) -> di
     return payload
 
 
-def serialize_accounts(accounts: list[PlatformAccount]) -> list[dict[str, Any]]:
+def serialize_accounts(
+    accounts: list[PlatformAccount],
+    login_readiness_by_account_id: dict[int, XhsPcLoginReadiness] | None = None,
+) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     for account in accounts:
         payload = serialize_account(account)
+        readiness = (login_readiness_by_account_id or {}).get(account.id)
+        if readiness is not None:
+            payload["login_ready"] = readiness.login_ready
+            payload["login_readiness_message"] = readiness.login_readiness_message
         profile = payload["profile"]
         has_profile_details = bool(
             payload["nickname"]

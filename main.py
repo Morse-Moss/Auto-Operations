@@ -51,6 +51,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Resolve host/port: CLI args take precedence, then YAML/env config defaults
     host = args.host
     port = args.port
+    settings = None
     try:
         from backend.app.core.config import get_settings
         settings = get_settings()
@@ -61,6 +62,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             port = settings.server_port
     except Exception:
         pass
+
+    if settings is not None:
+        from backend.app.core.config import validate_secret_key_for_host
+        try:
+            validate_secret_key_for_host(settings, host)
+        except RuntimeError as exc:
+            print(f"启动被拒绝：{exc}")
+            return 1
 
     frontend_process = start_frontend(args.frontend_port) if args.with_frontend else None
 

@@ -19,6 +19,7 @@ import { Link } from "react-router-dom";
 
 import { fetchAccounts, fetchSavedNoteIds, fetchXhsNoteComments, fetchXhsNoteDetail, saveXhsNotesToLibrary, searchXhsNotes } from "../../../lib/api";
 import type { NoteComment, PlatformAccount, XhsSearchNote, XhsSearchOptions } from "../../../types";
+import { buildXhsPcAccountOptions, selectReadyXhsPcAccountId } from "./xhs-pc-account-selection";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -95,20 +96,14 @@ export function XhsDiscoveryPage() {
   const [commentPreviewErrors, setCommentPreviewErrors] = useState<Record<string, string>>({});
   const [loadingCommentNoteIds, setLoadingCommentNoteIds] = useState<string[]>([]);
 
-  const pcAccounts = useMemo(() => accounts.filter((a) => a.platform === "xhs" && a.sub_type === "pc"), [accounts]);
-  const pcAccountOptions = useMemo(() => pcAccounts.map((a) => ({ value: a.id, label: `${a.nickname || `PC ${a.id}`} · ${a.status}` })), [pcAccounts]);
+  const pcAccountOptions = useMemo(() => buildXhsPcAccountOptions(accounts), [accounts]);
 
   async function loadAccounts() {
     setIsLoadingAccounts(true); setError(null);
     try {
       const loaded = await fetchAccounts("xhs");
       setAccounts(loaded);
-      const active = loaded.find((account) => account.sub_type === "pc" && account.status === "active");
-      const first = loaded.find((account) => account.sub_type === "pc");
-      setSelectedAccountId((currentId) => {
-        const current = loaded.find((account) => account.id === currentId && account.sub_type === "pc");
-        return current?.status === "active" ? current.id : active?.id ?? first?.id ?? null;
-      });
+      setSelectedAccountId((currentId) => selectReadyXhsPcAccountId(loaded, currentId));
     }
     catch { setError("账号列表加载失败。"); } finally { setIsLoadingAccounts(false); }
   }
@@ -212,7 +207,7 @@ export function XhsDiscoveryPage() {
     return () => window.removeEventListener("focus", refreshAccounts);
   }, []);
 
-  const noPcAccount = !isLoadingAccounts && pcAccounts.length === 0;
+  const noReadyPcAccount = !isLoadingAccounts && selectedAccountId === null;
   const selImgUrls = selectedNote ? getNoteImageUrls(selectedNote) : [];
   const selVideoUrl = selectedNote ? getNoteVideoUrl(selectedNote) : "";
   const selMediaIdx = selImgUrls.length ? Math.min(detailMediaIndex, selImgUrls.length - 1) : 0;
@@ -236,11 +231,11 @@ export function XhsDiscoveryPage() {
           </Row>
           <Row gutter={[12, 12]} style={{ marginTop: 12 }} align="bottom">
             <Col xs={24} sm={16} lg={12}><div style={{ marginBottom: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>笔记 URL</Text></div><Input value={noteUrl} onChange={(e) => setNoteUrl(e.target.value)} placeholder="https://www.xiaohongshu.com/explore/..." /></Col>
-            <Col xs={24} sm={8} lg={4}><Button block icon={<SearchOutlined />} loading={isFetchingUrl} disabled={noPcAccount} onClick={handleFetchUrlDetail}>URL 直查</Button></Col>
+            <Col xs={24} sm={8} lg={4}><Button block icon={<SearchOutlined />} loading={isFetchingUrl} disabled={noReadyPcAccount} onClick={handleFetchUrlDetail}>URL 直查</Button></Col>
           </Row>
         </form>
         {error && <Alert message={error} type="error" showIcon style={{ marginTop: 12 }} closable onClose={() => setError(null)} />}
-        {noPcAccount && <Empty description="还没有可用的 PC 账号" style={{ marginTop: 24 }}><Link to="/platforms/xhs/accounts"><Button type="primary" icon={<LinkOutlined />}>去绑定账号</Button></Link></Empty>}
+        {noReadyPcAccount && <Empty description="还没有可用的 PC 账号" style={{ marginTop: 24 }}><Link to="/platforms/xhs/accounts"><Button type="primary" icon={<LinkOutlined />}>去绑定账号</Button></Link></Empty>}
       </Card>
 
       <Card title={<Space><Title level={5} style={{ margin: 0 }}>{searchedKeyword ? `"${searchedKeyword}" 的搜索结果` : "搜索结果"}</Title><Tag>{notes.length} 篇</Tag></Space>}>
