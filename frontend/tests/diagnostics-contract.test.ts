@@ -23,7 +23,7 @@ assert.match(
 );
 assert.match(
   apiSource,
-  /recordResponseRequestId\(response\.headers\["x-request-id"\]\)/,
+  /recordResponseRequestId\(response\.headers\?\.\["x-request-id"\]\)/,
   "API response interceptor should retain backend request ids for diagnostics",
 );
 assert.match(

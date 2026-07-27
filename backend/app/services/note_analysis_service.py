@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.security import decrypt_text
 from backend.app.core.time import shanghai_now
-from backend.app.models import ModelConfig, Note, NoteAnalysisResult
+from backend.app.models import Note, NoteAnalysisResult
 from backend.app.services.ai_service import OpenAICompatibleImageClient, OpenAICompatibleTextClient
 from backend.app.services.feishu_bitable_service import (
     REUSABLE_MODEL_OPTIONS,

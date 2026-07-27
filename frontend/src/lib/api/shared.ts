@@ -1,5 +1,5 @@
-import { http } from "./client";
-import { fallbackPlatforms } from "../platforms";
+import { http } from "./client.ts";
+import { fallbackPlatforms } from "../platforms.ts";
 import type {
   AutoTask,
   AutoTaskCreatePayload,
@@ -42,7 +42,7 @@ import type {
   TaskRecord,
   UsageBalance,
   UsagePricing
-} from "../../types";
+} from "../../types/index.ts";
 
 export async function fetchUsageBalance(): Promise<UsageBalance> {
   const response = await http.get<UsageBalance>("/usage/balance", { _silent: true } as never);

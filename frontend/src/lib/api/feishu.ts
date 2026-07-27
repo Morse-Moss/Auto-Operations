@@ -1,4 +1,4 @@
-import { http } from "./client";
+import { http } from "./client.ts";
 import type {
   FeishuCreateAnalysisBasePayload,
   FeishuCreateAnalysisBaseResponse,
@@ -12,7 +12,7 @@ import type {
   FeishuPushNotesPayload,
   FeishuPushWechatOfficialArticlesPayload,
   FeishuSyncResponse
-} from "../../types";
+} from "../../types/index.ts";
 
 export async function fetchFeishuConfig(): Promise<FeishuIntegrationConfig> {
   const response = await http.get<FeishuIntegrationConfig>("/integrations/feishu/config");

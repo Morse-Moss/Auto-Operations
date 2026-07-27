@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.main import app
 from test_support.beta_invites import create_test_invite_code
-from backend.app.models import AiDraft, PublishJob, WechatOfficialArticle, WechatOfficialArticleSnapshot, WechatOfficialDraftSource
+from backend.app.models import AiDraft, PublishJob, WechatOfficialArticle, WechatOfficialDraftSource
 
 client = TestClient(app)
 

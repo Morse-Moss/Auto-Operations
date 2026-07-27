@@ -332,7 +332,7 @@ class RunningHubImageClient:
             raise ValueError(f"当前 RunningHub 图生图工作流最多支持 {max_images} 张参考图")
 
         node_info: list[dict[str, Any]] = []
-        for node_id, filename in zip(RUNNINGHUB_IMAGE_INPUT_NODES, uploaded_filenames):
+        for node_id, filename in zip(RUNNINGHUB_IMAGE_INPUT_NODES, uploaded_filenames, strict=False):
             node_info.append({"nodeId": node_id, "fieldName": "image", "fieldValue": filename})
         node_info.extend([
             {"nodeId": RUNNINGHUB_IMAGE_PROMPT_NODE_ID, "fieldName": "prompt", "fieldValue": prompt},

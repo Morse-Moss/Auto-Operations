@@ -174,7 +174,7 @@ def test_complete_backend_login_saves_expired_status_when_expires_at_is_past(tmp
             assert login_session.status == "expired"
             try:
                 get_valid_session(db, user_id=1, session_id=login_session_id)
-                assert False, "expected expired session to be rejected"
+                raise AssertionError("expected expired session to be rejected")
             except HTTPException as exc:
                 assert exc.status_code == 400
     finally:
@@ -321,7 +321,7 @@ def test_get_valid_session_rejects_invalid_status(tmp_path):
             assert login_session is not None
             try:
                 get_valid_session(db, user_id=1, session_id=login_session_id)
-                assert False, "expected pending session to be rejected"
+                raise AssertionError("expected pending session to be rejected")
             except HTTPException as exc:
                 assert exc.status_code == 400
             assert login_session.status == "pending"

@@ -1,4 +1,4 @@
-import { http } from "./client";
+import { http } from "./client.ts";
 import type {
   NotesExportResponse,
   WechatOfficialArticleComment,
@@ -44,7 +44,7 @@ import type {
   WechatOfficialRedfoxKeywordCollectPayload,
   WechatOfficialRedfoxUrlImportPayload,
   WechatOfficialSearchAccountsPayload
-} from "../../types";
+} from "../../types/index.ts";
 
 export async function fetchWechatOfficialOverview(): Promise<WechatOfficialOverview> {
   const response = await http.get<WechatOfficialOverview>("/wechat-official/overview");

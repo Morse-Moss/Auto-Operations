@@ -1,4 +1,4 @@
-import { http } from "./client";
+import { http } from "./client.ts";
 import type {
   Draft,
   DescribeImagePayload,
@@ -19,7 +19,7 @@ import type {
   Paginated,
   PolishTextPayload,
   RewriteDraftPayload
-} from "../../types";
+} from "../../types/index.ts";
 
 export async function rewriteDraftWithAi(payload: RewriteDraftPayload): Promise<Draft> {
   const response = await http.post<Draft>("/ai/rewrite-note", payload);

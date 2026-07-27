@@ -1,4 +1,4 @@
-import { http } from "./client";
+import { http } from "./client.ts";
 import type {
   AdminCreditAdjustment,
   AdminCreditAdjustmentPayload,
@@ -6,7 +6,7 @@ import type {
   AdminTenant,
   AdminUser,
   Paginated
-} from "../../types";
+} from "../../types/index.ts";
 
 export async function fetchAdminUsers(): Promise<Paginated<AdminUser>> {
   const response = await http.get<Paginated<AdminUser>>("/admin/users");

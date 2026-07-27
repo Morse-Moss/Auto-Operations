@@ -1,4 +1,4 @@
-import type { PlatformMeta } from "../types";
+import type { PlatformMeta } from "../types/index.ts";
 
 export const WECHAT_OFFICIAL_PUBLIC_ENABLED = false;
 

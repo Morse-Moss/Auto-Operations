@@ -1,11 +1,11 @@
 import axios, { AxiosHeaders } from "axios";
 import { message } from "antd";
 
-import { ensureRequestId, recordResponseRequestId } from "../diagnostics";
+import { ensureRequestId, recordResponseRequestId } from "../diagnostics.ts";
 import type {
   AuthPayload,
   UsageLimitError
-} from "../../types";
+} from "../../types/index.ts";
 
 export const http = axios.create({
   baseURL: "/api",
@@ -65,7 +65,7 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (response) => {
-    recordResponseRequestId(response.headers["x-request-id"]);
+    recordResponseRequestId(response.headers?.["x-request-id"]);
     return response;
   },
   async (error) => {
@@ -123,7 +123,7 @@ export async function refreshAccessToken(): Promise<string> {
         headers: { "X-Request-ID": ensureRequestId() }
       }
     );
-    recordResponseRequestId(response.headers["x-request-id"]);
+    recordResponseRequestId(response.headers?.["x-request-id"]);
     setAccessToken(response.data.access_token);
     authExpiredMessageShown = false;
     return response.data.access_token;

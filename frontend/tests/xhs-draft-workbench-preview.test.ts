@@ -60,8 +60,14 @@ assert.match(
 
 assert.match(
   source,
-  /renderSourcePanel=\{\(\) => \([\s\S]*?title="草稿内容"[\s\S]*?renderDraftSourceAssetPreview\(draftAssets\)/,
-  "XHS drafts page should render source draft content in DraftWorkbenchShell renderSourcePanel",
+  /renderContextPanel=\{\(\) => renderSourceContextStrip\(currentSourceNote, draftAssets\)\}/,
+  "XHS drafts page should render source draft content through the DraftWorkbenchShell context panel",
+);
+
+assert.match(
+  source,
+  /function renderSourceContextStrip\([\s\S]*?renderDraftSourceAssetPreview\(draftAssets\)/,
+  "Source context strip should include the draft asset preview",
 );
 
 assert.match(

@@ -284,7 +284,6 @@ def test_hotspot_analysis_uses_admin_default_doubao_for_regular_user(tmp_path, m
         article_id = _create_article(headers, title="AI早餐案例", url="https://mp.weixin.qq.com/s/doubao-admin-default", read_count=120000)
 
         with TestingSessionLocal() as db:
-            owner = db.scalar(select(User).where(User.username == "content-library-doubao-user"))
             admin = User(username="content-library-doubao-admin", password_hash="hashed", role="admin", status="active")
             db.add(admin)
             db.flush()

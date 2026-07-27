@@ -8,12 +8,12 @@ export {
   refreshAccessToken,
   apiErrorMessage,
   getUsageLimitError,
-} from "./api/client";
-export type { AuthCredentials } from "./api/client";
-export * from "./api/auth";
-export * from "./api/admin";
-export * from "./api/shared";
-export * from "./api/xhs";
-export * from "./api/wechat-official";
-export * from "./api/feishu";
-export * from "./api/ai";
+} from "./api/client.ts";
+export type { AuthCredentials } from "./api/client.ts";
+export * from "./api/auth.ts";
+export * from "./api/admin.ts";
+export * from "./api/shared.ts";
+export * from "./api/xhs.ts";
+export * from "./api/wechat-official.ts";
+export * from "./api/feishu.ts";
+export * from "./api/ai.ts";

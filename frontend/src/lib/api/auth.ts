@@ -5,12 +5,12 @@ import {
   http,
   persistAuthPayload,
   refreshAccessToken,
-} from "./client";
-import type { AuthCredentials } from "./client";
+} from "./client.ts";
+import type { AuthCredentials } from "./client.ts";
 import type {
   AuthPayload,
   PlatformUser
-} from "../../types";
+} from "../../types/index.ts";
 
 export async function login(credentials: AuthCredentials): Promise<AuthPayload> {
   const response = await http.post<AuthPayload>("/auth/login", credentials);

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
 from backend.app.core.time import shanghai_now
-from backend.app.models.tenant import Tenant, TenantMember
+from backend.app.models.tenant import Tenant as Tenant, TenantMember as TenantMember  # re-exported for consumers
 
 
 class BetaCreditAccount(Base):

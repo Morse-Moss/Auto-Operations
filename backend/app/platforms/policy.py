@@ -35,7 +35,7 @@ def _value(item: Any) -> str:
 
 
 def _capability_key(capability: Any) -> str:
-    return _value(getattr(capability, "key"))
+    return _value(capability.key)
 
 
 class CoreRegistryProvider:

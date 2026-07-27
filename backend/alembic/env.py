@@ -4,7 +4,7 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, event, pool, text
+from sqlalchemy import engine_from_config, event, pool
 
 from backend.app.core.database import Base
 from backend.app.core.alembic_compat import prepare_mysql_alembic_connection

@@ -15,9 +15,12 @@ assert.match(
 );
 
 assert.ok(
-  source.includes("const shouldRestoreExistingDraftContext = Boolean(draftContextRef.current) || shouldLoadDraftContext || isPageReloadNavigation();") &&
+  source.includes("const shouldRestoreExistingDraftContext = shouldRestoreDraftImageStudioContext({") &&
+    source.includes("hasCurrentContext: Boolean(draftContextRef.current),") &&
+    source.includes("fromDraft: shouldLoadDraftContext,") &&
+    source.includes("isReload: isPageReloadNavigation(),") &&
     source.includes("const context = shouldRestoreExistingDraftContext ? loadDraftContextForCurrentRoute(isWechatOfficialRoute) : null;"),
-  "Image studio should restore draft context only for explicit draft handoff, reload recovery, or an existing in-memory draft context",
+  "Image studio should restore draft context via the shared shouldRestoreDraftImageStudioContext helper",
 );
 
 const draftHandoffNavigateIndex = source.indexOf('navigate("/platforms/xhs/image-studio", { replace: true });');
@@ -164,7 +167,7 @@ assert.match(
 );
 
 const handleClearDraftContextBody = source.match(
-  /function handleClearDraftContext\(\) \{([\s\S]*?)\n  \}\n\n  async function handleAttachGeneratedToWechatDraft/,
+  /function handleClearDraftContext\(\) \{([\s\S]*?)\r?\n  \}\r?\n\r?\n  async function handleAttachGeneratedToWechatDraft/,
 )?.[1] ?? "";
 
 assert.ok(

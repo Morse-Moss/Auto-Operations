@@ -19,7 +19,6 @@ from backend.app.models import (
     PublishJob,
     UsageLedger,
 )
-from backend.app.services.asset_storage_policy import asset_owner_prefix
 from test_support.beta_invites import create_test_invite_code
 from test_support.model_capabilities import bind_test_model_capability
 

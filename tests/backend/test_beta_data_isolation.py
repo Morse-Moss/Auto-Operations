@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.core.database import Base, get_db
@@ -18,7 +18,6 @@ from backend.app.models import (
     PublishAsset,
     PublishJob,
     Task,
-    User,
 )
 from backend.app.models.analysis_report import AnalysisReport
 from test_support.beta_invites import create_test_invite_code

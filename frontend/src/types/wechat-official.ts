@@ -1,4 +1,4 @@
-import type { PlatformCapabilityStatus, Draft } from "./shared";
+import type { PlatformCapabilityStatus, Draft } from "./shared.ts";
 
 export type WechatOfficialCapabilityOverview = {
   key: string;

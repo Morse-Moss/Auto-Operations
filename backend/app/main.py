@@ -23,7 +23,7 @@ from backend.app.core.database import init_db
 from backend.app.services.beta_concurrency_service import BetaConcurrencyLimitExceeded
 from backend.app.services.public_url_guard import PublicUrlBlockedError
 from backend.app.services.rate_limit_service import record_rate_limit_failure
-from backend.app.services.scheduler_service import run_due_auto_tasks, shutdown_due_publish_scheduler, start_due_publish_scheduler
+from backend.app.services.scheduler_service import shutdown_due_publish_scheduler, start_due_publish_scheduler
 from backend.app.services.usage_quota_service import UsageQuotaInsufficientError
 
 

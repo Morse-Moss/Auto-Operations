@@ -1,0 +1,29 @@
+[tool.pytest.ini_options]
+testpaths = ["tests/backend", "tests/frontend"]
+# test modules import `test_support` and `backend` from the repo root
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 140
+# fragile XHS SDK/signature layers and legacy system are out of lint scope
+extend-exclude = [
+    "apis",
+    "xhs_utils",
+    "static",
+    "legacy",
+    "backend/alembic/versions",
+]
+
+[tool.ruff.lint]
+# start with correctness-focused rules only; expand once the baseline is clean
+select = [
+    "E9",   # syntax errors
+    "F",    # pyflakes: undefined names, unused imports/variables
+    "B",    # bugbear: likely bugs
+    "PLE",  # pylint errors
+]
+ignore = [
+    "B008",  # FastAPI Depends(...) in argument defaults is idiomatic
+    "B904",  # raise-without-from inside except; widespread in existing handlers
+]

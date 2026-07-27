@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from backend.app.api.platforms.xhs.crawl import _data_items, _normalize_search_item
 from backend.app.api.platforms.xhs.pc import (
-    _get_owned_pc_account_cookies,
     get_xhs_pc_api_adapter_factory,
 )
 from backend.app.core.database import get_db

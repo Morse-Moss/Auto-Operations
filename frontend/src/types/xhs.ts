@@ -1,4 +1,4 @@
-import type { PlatformId, PlatformAccount, SavedNote, NoteComment, TaskRecord } from "./shared";
+import type { PlatformId, PlatformAccount, SavedNote, NoteComment, TaskRecord } from "./shared.ts";
 
 export type DashboardOverview = {
   platform: "xhs";

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-from datetime import timedelta
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -855,7 +854,7 @@ def test_describe_image_failure_refunds_credits(tmp_path):
 
 def test_async_image_create_reserves_credits_and_worker_success_commits(tmp_path, monkeypatch):
     from backend.app.api import ai as ai_module
-    from backend.app.api.ai import _run_async_image_generate_task, get_image_ai_client
+    from backend.app.api.ai import get_image_ai_client
 
     class FakeImageClient:
         def generate_image(self, **kwargs):
@@ -882,7 +881,6 @@ def test_async_image_create_reserves_credits_and_worker_success_commits(tmp_path
             db.add(model)
             db.commit()
             tenant_id = context.tenant.id
-            model_id = model.id
         finally:
             db.close()
 
@@ -921,7 +919,7 @@ def test_async_image_create_reserves_credits_and_worker_success_commits(tmp_path
 
 def test_async_image_worker_failure_refunds_reserved_quota(tmp_path, monkeypatch):
     from backend.app.api import ai as ai_module
-    from backend.app.api.ai import _run_async_image_generate_task, get_image_ai_client
+    from backend.app.api.ai import get_image_ai_client
 
     class FailingImageClient:
         def generate_image(self, **kwargs):
@@ -945,7 +943,6 @@ def test_async_image_worker_failure_refunds_reserved_quota(tmp_path, monkeypatch
             )
             db.add(model)
             db.commit()
-            model_id = model.id
         finally:
             db.close()
 

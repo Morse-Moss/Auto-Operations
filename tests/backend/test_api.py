@@ -8466,7 +8466,7 @@ def test_normal_user_cannot_manage_capability_defaults(tmp_path):
 def test_model_configs_create_list_filter_and_encrypt_api_key(tmp_path):
     from backend.app.core.database import get_db
     from backend.app.core.security import decrypt_text
-    from backend.app.models import ModelConfig, User
+    from backend.app.models import ModelConfig
 
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_admin_access_token("model-owner")
@@ -9697,7 +9697,7 @@ def test_draft_ai_score_scopes_comments_through_owned_notes(tmp_path):
     fake_client = FakeDraftScoreClient('{"overall_score":72,"potential_level":"medium","summary":"可优化。"}')
     db_dependency = _override_database(tmp_path)
     owner_token = _register_and_get_access_token("draft-score-comment-owner")
-    intruder_token = _register_and_get_access_token("draft-score-comment-intruder")
+    _register_and_get_access_token("draft-score-comment-intruder")
     admin_token = _register_and_get_admin_access_token("draft-score-comment-admin")
     try:
         app.dependency_overrides[get_text_ai_client] = lambda: fake_client
@@ -10671,9 +10671,9 @@ def test_notifications_crud_and_trigger_helpers(tmp_path):
             task = Task(user_id=1, platform="xhs", task_type="ai_rewrite", status="failed", error_type="network")
             db.add(task)
             db.flush()
-            n1 = notify_task_failed(db, task)
+            notify_task_failed(db, task)
             task.status = "exhausted"
-            n2 = notify_task_exhausted(db, task)
+            notify_task_exhausted(db, task)
             other_n = Notification(user_id=2, title="other", level="info")
             db.add(other_n)
             db.commit()

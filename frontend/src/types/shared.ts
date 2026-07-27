@@ -1,4 +1,4 @@
-import type { FeishuSyncState } from "./feishu";
+import type { FeishuSyncState } from "./feishu.ts";
 
 export type PlatformId =
   | "xhs"

@@ -1,4 +1,4 @@
-import type { PlatformUser, UsageBucketKey } from "./shared";
+import type { PlatformUser, UsageBucketKey } from "./shared.ts";
 
 export type AdminUser = PlatformUser & {
   tenant_count: number;

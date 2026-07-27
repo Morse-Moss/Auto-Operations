@@ -1,4 +1,4 @@
-import { getAccessToken, http } from "./client";
+import { getAccessToken, http } from "./client.ts";
 import type {
   AnalysisDataHealth,
   AnalysisHealthPayload,
@@ -45,7 +45,7 @@ import type {
   XhsSearchOptions,
   XhsSearchNote,
   XhsQrLoginSession
-} from "../../types";
+} from "../../types/index.ts";
 
 export async function fetchXhsOverview(): Promise<DashboardOverview> {
   const response = await http.get<DashboardOverview>("/xhs/analytics/overview");
