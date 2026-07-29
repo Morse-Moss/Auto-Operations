@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt ruff
+          npm ci --ignore-scripts
+      - name: Lint
+        run: python -m ruff check .
+      - name: Alembic single head
+        run: |
+          python -m alembic -c backend/alembic.ini heads | tee /tmp/heads.txt
+          test "$(grep -c '(head)' /tmp/heads.txt)" -eq 1
+      - name: Backend tests
+        run: python -m pytest tests/backend -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check and build
+        run: npm run build
+      - name: Frontend tests
+        run: |
+          cd ..
+          for f in frontend/tests/*.test.ts; do
+            echo "== $f"
+            node --experimental-strip-types "$f" || exit 1
+          done
