@@ -386,13 +386,40 @@ function renderTable(context: ContentLibraryRenderContext<SavedNote>) {
   );
 }
 
+function feishuPushStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    not_synced: "未同步",
+    dry_run: "模拟同步",
+    synced: "已同步",
+    failed: "同步失败",
+  };
+  return labels[status] || status;
+}
+
+function analysisSourceLabel(source: string) {
+  const labels: Record<string, string> = {
+    system: "系统分析",
+    feishu: "飞书回传",
+  };
+  return labels[source] || source;
+}
+
+function feishuPullStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    not_pulled: "未回传",
+    success: "已回传",
+    failed: "回传失败",
+  };
+  return labels[status] || status;
+}
+
 function renderSystemAnalysisDetail(note: SavedNote) {
   const analysis = note.analysis_result;
   return h(Card, { size: "small", title: "系统分析结果", style: { marginBottom: 16, background: "#1f1f1f" } },
     h(Descriptions, { column: 1, size: "small" },
-      h(Descriptions.Item, { label: "分析来源" }, analysis?.source || (analysis ? "system" : "-")),
-      h(Descriptions.Item, { label: "飞书同步状态" }, note.feishu_sync?.push_status || "not_synced"),
-      h(Descriptions.Item, { label: "回传状态" }, note.feishu_sync?.pull_status || "not_pulled"),
+      h(Descriptions.Item, { label: "分析来源" }, analysisSourceLabel(analysis?.source || (analysis ? "system" : "-"))),
+      h(Descriptions.Item, { label: "飞书同步状态" }, feishuPushStatusLabel(note.feishu_sync?.push_status || "not_synced")),
+      h(Descriptions.Item, { label: "回传状态" }, feishuPullStatusLabel(note.feishu_sync?.pull_status || "not_pulled")),
       h(Descriptions.Item, { label: "分析状态" }, analysis?.analysis_status || "未分析"),
       h(Descriptions.Item, { label: "评分" }, typeof analysis?.score === "number" ? `${formatScore(analysis.score)}/10` : "-"),
       h(Descriptions.Item, { label: "评级" }, analysis?.rating || "-"),

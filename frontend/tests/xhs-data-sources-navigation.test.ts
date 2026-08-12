@@ -18,11 +18,15 @@ assert.match(
 );
 assert.doesNotMatch(xhsRegistry, /key: "discovery"|key: "keywords"/, "Legacy discovery and keyword pages should not remain separate sidebar entries");
 
-assert.match(pageSource, /key: "system"[\s\S]*?系统发现/, "Unified page should default to System Discovery");
-assert.match(pageSource, /key: "realtime"[\s\S]*?小红书实时/, "Unified page should expose XHS Realtime as the second mode");
+assert.match(pageSource, /import \{ XhsKeywordsPage \} from "\.\/keywords-page";/, "Unified page should render keyword groups as a data-source mode");
+assert.match(
+  pageSource,
+  /key: "keywords"[\s\S]*?关键词组[\s\S]*?key: "system"[\s\S]*?系统发现[\s\S]*?key: "realtime"[\s\S]*?小红书实时/,
+  "Keyword groups should be the first data-source tab before System Discovery and XHS Realtime",
+);
 assert.match(pageSource, /历史上已出现账号封禁/, "XHS Realtime should disclose the observed account-ban risk");
 assert.match(pageSource, /<XhsDiscoveryPage\s*\/>/, "XHS Realtime should preserve note cards and URL lookup from Note Discovery");
-assert.match(pageSource, /to="\/platforms\/xhs\/keywords"/, "System Discovery should retain an in-page keyword-group management entry");
+assert.doesNotMatch(pageSource, /管理关键词组/, "Keyword groups should not be hidden behind a contextual management button");
 
 assert.match(
   routerSource,

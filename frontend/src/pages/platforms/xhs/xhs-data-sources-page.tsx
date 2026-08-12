@@ -1,16 +1,18 @@
-import { ExclamationCircleOutlined, KeyOutlined } from "@ant-design/icons";
-import { Alert, Button, Col, Collapse, Row, Space, Tabs, Tag, Typography } from "antd";
-import { Link, useSearchParams } from "react-router-dom";
+import { ExclamationCircleOutlined } from "@ant-design/icons";
+import { Alert, Collapse, Space, Tabs, Tag, Typography } from "antd";
+import { useSearchParams } from "react-router-dom";
 
 import { XhsCrawlerPage } from "./crawler-page";
 import { XhsDataAcquisitionPage } from "./data-acquisition-page";
 import { XhsDiscoveryPage } from "./discovery-page";
+import { XhsKeywordsPage } from "./keywords-page";
 
 const { Text, Title } = Typography;
-type DataSourceView = "system" | "realtime";
+type DataSourceView = "keywords" | "system" | "realtime";
 
 function sourceView(searchParams: URLSearchParams): DataSourceView {
-  return searchParams.get("source") === "realtime" ? "realtime" : "system";
+  const source = searchParams.get("source");
+  return source === "keywords" || source === "realtime" ? source : "system";
 }
 
 export function XhsDataSourcesPage() {
@@ -19,30 +21,25 @@ export function XhsDataSourcesPage() {
 
   function selectView(view: string) {
     const next = new URLSearchParams(searchParams);
-    next.set("source", view === "realtime" ? "realtime" : "system");
+    next.set("source", view === "keywords" || view === "realtime" ? view : "system");
     setSearchParams(next, { replace: true });
   }
 
   return (
     <div>
-      <Row justify="space-between" align="middle" gutter={[16, 16]} style={{ marginBottom: 12 }}>
-        <Col>
-          <Title level={4} style={{ margin: 0 }}>系统数据源</Title>
-          <Text type="secondary">统一获取候选笔记；优先使用系统发现，需要即时验证时再使用小红书实时。</Text>
-        </Col>
-        {activeView === "system" ? (
-          <Col>
-            <Link to="/platforms/xhs/keywords">
-              <Button icon={<KeyOutlined />}>管理关键词组</Button>
-            </Link>
-          </Col>
-        ) : null}
-      </Row>
+      <div style={{ marginBottom: 12 }}>
+        <Title level={4} style={{ margin: 0 }}>系统数据源</Title>
+        <Text type="secondary">从关键词组开始管理计划采集；系统发现用于候选入库，小红书实时仅用于必要的即时验证。</Text>
+      </div>
 
       <Tabs
         activeKey={activeView}
         onChange={selectView}
         items={[
+          {
+            key: "keywords",
+            label: "关键词组",
+          },
           {
             key: "system",
             label: <Space size={6}>系统发现<Tag color="success">推荐</Tag></Space>,
@@ -55,7 +52,9 @@ export function XhsDataSourcesPage() {
         style={{ marginBottom: 16 }}
       />
 
-      {activeView === "system" ? (
+      {activeView === "keywords" ? (
+        <XhsKeywordsPage />
+      ) : activeView === "system" ? (
         <XhsDataAcquisitionPage embedded showDirectXhsSection={false} />
       ) : (
         <>

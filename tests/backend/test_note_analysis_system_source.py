@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app.core.database import Base, get_db
 from backend.app.core.security import create_access_token, hash_password, encrypt_text
 from backend.app.main import app
-from backend.app.models import ModelConfig, Note, NoteAnalysisResult, NoteAsset, User
+from backend.app.models import AiDraft, ModelConfig, Note, NoteAnalysisResult, NoteAsset, User
 from backend.app.services import feishu_bitable_service, note_analysis_service, scheduler_service
 from test_support.model_capabilities import bind_test_model_capability
 
@@ -341,6 +341,61 @@ def test_system_note_analysis_uses_default_text_model_and_ignores_text_cover_typ
         assert payload["title_type"] == "清单承诺型"
         assert payload["cover_type"] is None
         assert payload["analysis_note"] == ""
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_system_analysis_does_not_hold_a_write_lock_while_waiting_for_the_text_model(tmp_path):
+    SessionLocal = _override_database(tmp_path, "system-analysis-write-lock.db")
+    try:
+        user_id = _create_user(SessionLocal, "system-analysis-write-lock-owner")
+        note_id = _create_note(SessionLocal, user_id=user_id, title="中文标题", content="中文正文")
+        db = SessionLocal()
+        try:
+            config = ModelConfig(
+                user_id=user_id,
+                name="Default Text",
+                model_type="text",
+                provider="openai-compatible",
+                model_name="fake-text-model",
+                base_url="https://example.test/v1",
+                encrypted_api_key=encrypt_text("fake-key"),
+                is_default=True,
+            )
+            bind_test_model_capability(db, config=config, capability="text")
+            draft = AiDraft(user_id=user_id, platform="xhs", title="改写前标题", body="改写前正文")
+            db.add(draft)
+            db.commit()
+            draft_id = draft.id
+
+            class SavingTextClient:
+                def complete_json_prompt(self, **kwargs):
+                    writer = SessionLocal()
+                    try:
+                        pending_draft = writer.get(AiDraft, draft_id)
+                        pending_draft.title = "分析期间可保存"
+                        writer.commit()
+                    finally:
+                        writer.close()
+                    return "{}"
+
+            note = db.get(Note, note_id)
+            result = note_analysis_service.analyze_note_system(
+                db,
+                user_id=user_id,
+                note=note,
+                text_client=SavingTextClient(),
+                image_client=object(),
+            )
+
+            assert result.analysis_status == SYSTEM_DONE
+            verify_db = SessionLocal()
+            try:
+                assert verify_db.get(AiDraft, draft_id).title == "分析期间可保存"
+            finally:
+                verify_db.close()
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)
 

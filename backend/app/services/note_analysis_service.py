@@ -67,7 +67,6 @@ def analyze_note_system(
     text_client: Any | None = None,
     image_client: Any | None = None,
 ) -> NoteAnalysisResult:
-    result = get_or_create_system_analysis_result(db, user_id=user_id, note_id=note.id)
     metrics = engagement_metrics(note)
     score = engagement_score(metrics)
     analysis = _deterministic_analysis(note)
@@ -76,6 +75,7 @@ def analyze_note_system(
         analysis.update(model_analysis)
 
     cover_type = _cover_type_from_image_model(db, note=note, image_client=image_client)
+    result = get_or_create_system_analysis_result(db, user_id=user_id, note_id=note.id)
     now = shanghai_now()
     result.analysis_status = SYSTEM_ANALYSIS_DONE_STATUS
     result.subject_object = _text(analysis.get("subject_object"))
@@ -222,10 +222,17 @@ def _text_model_analysis(db: Session, *, user_id: int, note: Note, text_client: 
 
 def _system_analysis_prompt(note: Note) -> str:
     return (
-        "Return JSON with keys subject_object, content_type, core_points, target_audience, "
-        "title_hook, title_type, content_structure, reusable_models, reuse_values, search_attribute.\n"
-        f"Title: {note.title}\n"
-        f"Content: {(note.content or '')[:5000]}"
+        "请根据小红书笔记信息输出 JSON，字段名必须是 "
+        "subject_object、content_type、core_points、target_audience、title_hook、title_type、"
+        "content_structure、reusable_models、reuse_values、search_attribute。\n"
+        "所有面向用户的字段值必须使用简体中文，不能输出英文翻译或英文标签。"
+        "content_type、reusable_models、reuse_values、search_attribute 必须从下方给定选项中选择。\n"
+        "content_type：种草|测评|避坑|教程|合集/清单|对比|痛点共鸣|案例故事|经验分享|观点输出|记录日常\n"
+        "reusable_models：问题驱动模型|情绪驱动模型|场景种草模型|对比反差模型|测评背书模型|教程方法模型|故事案例模型|IP/热点借势模型\n"
+        "reuse_values：选题参考|标题参考|正文结构参考|卖点表达参考|可直接改写|行业观察|竞品参考|废弃\n"
+        "search_attribute：强搜索|弱搜索|泛流量\n"
+        f"标题：{note.title}\n"
+        f"正文：{(note.content or '')[:5000]}"
     )
 
 

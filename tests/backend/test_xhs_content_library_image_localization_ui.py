@@ -8,8 +8,8 @@ FORBIDDEN_USER_COPY = ("灰豚", "huitun", "extData", "connector", "第三方数
 
 def test_xhs_content_library_exposes_plain_image_save_action():
     adapter_source = Path("frontend/src/pages/platforms/xhs/xhs-content-library-adapter.ts").read_text(encoding="utf-8")
-    api_source = Path("frontend/src/lib/api.ts").read_text(encoding="utf-8")
-    type_source = Path("frontend/src/types/index.ts").read_text(encoding="utf-8")
+    api_source = Path("frontend/src/lib/api/shared.ts").read_text(encoding="utf-8")
+    type_source = Path("frontend/src/types/shared.ts").read_text(encoding="utf-8")
 
     assert "localizeSavedNoteImages" in adapter_source
     assert "renderSaveImagesButton" in adapter_source
