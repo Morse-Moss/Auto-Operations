@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.core.security import decrypt_text
+from backend.app.core.time import shanghai_now
 from backend.app.main import app
 from test_support.beta_invites import create_test_invite_code
 from backend.app.models import WechatOfficialBackendSession
@@ -141,7 +142,7 @@ def test_complete_backend_login_saves_expired_status_when_expires_at_is_past(tmp
         start_response = client.post("/api/wechat-official/accounts/login/qrcode", headers=headers)
         assert start_response.status_code == 200
         login_session_id = start_response.json()["login_session_id"]
-        expires_at = (datetime.now() - timedelta(minutes=1)).replace(microsecond=0)
+        expires_at = (shanghai_now() - timedelta(minutes=1)).replace(microsecond=0)
 
         complete_response = client.post(
             f"/api/wechat-official/accounts/login/{login_session_id}/complete",
@@ -224,7 +225,7 @@ def test_session_list_downgrades_valid_session_to_expired_when_expires_at_passes
         start_response = client.post("/api/wechat-official/accounts/login/qrcode", headers=headers)
         assert start_response.status_code == 200
         login_session_id = start_response.json()["login_session_id"]
-        future_expires_at = (datetime.now() + timedelta(minutes=10)).replace(microsecond=0)
+        future_expires_at = (shanghai_now() + timedelta(minutes=10)).replace(microsecond=0)
 
         complete_response = client.post(
             f"/api/wechat-official/accounts/login/{login_session_id}/complete",
@@ -241,7 +242,7 @@ def test_session_list_downgrades_valid_session_to_expired_when_expires_at_passes
         assert complete_response.status_code == 200
         assert complete_response.json()["status"] == "valid"
 
-        past_expires_at = (datetime.now() - timedelta(minutes=1)).replace(microsecond=0)
+        past_expires_at = (shanghai_now() - timedelta(minutes=1)).replace(microsecond=0)
         with TestingSessionLocal() as db:
             login_session = db.scalar(select(WechatOfficialBackendSession))
             assert login_session is not None

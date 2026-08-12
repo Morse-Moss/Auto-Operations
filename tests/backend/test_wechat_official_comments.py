@@ -4,9 +4,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from backend.app.core.time import shanghai_now
 from backend.app.main import app
 from test_support.beta_invites import create_test_invite_code
-from datetime import datetime
 
 from backend.app.models import WechatOfficialArticleComment, WechatOfficialArticleCommentReply
 
@@ -51,7 +51,7 @@ def _import_credential(headers: dict) -> int:
             "cookie": "credential-cookie-secret",
             "timestamp": 1780000000,
             "nickname": "Comment Account",
-            "captured_at": datetime.now().replace(microsecond=0).isoformat(),
+            "captured_at": shanghai_now().replace(microsecond=0).isoformat(),
         },
     )
     assert response.status_code == 200

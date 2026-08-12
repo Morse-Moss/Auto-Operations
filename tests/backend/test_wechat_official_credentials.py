@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.core.security import decrypt_text
+from backend.app.core.time import shanghai_now
 from backend.app.main import app
 from test_support.beta_invites import create_test_invite_code
 from backend.app.models import WechatOfficialArticleCredential
@@ -42,7 +43,7 @@ def _register(username: str) -> dict:
 
 
 def _credential_payload(**overrides):
-    captured_at = (datetime.now() + timedelta(minutes=5)).replace(microsecond=0)
+    captured_at = (shanghai_now() + timedelta(minutes=5)).replace(microsecond=0)
     payload = {
         "biz": "MzA-credential",
         "uin": "123456",
@@ -118,7 +119,7 @@ def test_credential_import_encrypts_sensitive_fields_sets_expiry_valid_and_capab
         assert api_payload["status"] == "valid"
         assert api_payload["valid"] is True
         assert api_payload["capabilities"] == ["article.read", "article.metrics", "article.comments"]
-        assert datetime.fromisoformat(api_payload["expires_at"]) > datetime.now()
+        assert datetime.fromisoformat(api_payload["expires_at"]) > shanghai_now()
         serialized = str(api_payload)
         for secret in [
             "article-key-secret",
@@ -134,7 +135,7 @@ def test_credential_import_encrypts_sensitive_fields_sets_expiry_valid_and_capab
             credential = db.scalar(select(WechatOfficialArticleCredential))
             assert credential is not None
             assert credential.valid is True
-            assert credential.expires_at > datetime.now()
+            assert credential.expires_at > shanghai_now()
             assert credential.encrypted_cookie != "credential-cookie-secret"
             assert decrypt_text(credential.encrypted_cookie) == "credential-cookie-secret"
             assert decrypt_text(credential.encrypted_token) == "appmsg-token-secret"
@@ -248,7 +249,7 @@ def test_credential_import_normalizes_utc_captured_at_to_shanghai_expiry(tmp_pat
         assert api_payload["status"] == "valid"
         assert api_payload["valid"] is True
         assert datetime.fromisoformat(api_payload["expires_at"]) == expected_expires_at
-        assert expected_expires_at > datetime.now()
+        assert expected_expires_at > shanghai_now()
 
         with TestingSessionLocal() as db:
             credential = db.scalar(select(WechatOfficialArticleCredential))
@@ -264,7 +265,7 @@ def test_credential_import_saves_expired_credential_as_expired_for_diagnostics(t
     get_db, TestingSessionLocal = _override_database(tmp_path)
     try:
         headers = _register("credential-expired-user")
-        captured_at = (datetime.now() - timedelta(hours=1)).replace(microsecond=0).isoformat()
+        captured_at = (shanghai_now() - timedelta(hours=1)).replace(microsecond=0).isoformat()
 
         response = client.post(
             "/api/wechat-official/credentials/import",
@@ -287,7 +288,7 @@ def test_credential_import_saves_expired_credential_as_expired_for_diagnostics(t
             credential = db.scalar(select(WechatOfficialArticleCredential))
             assert credential is not None
             assert credential.valid is False
-            assert credential.expires_at < datetime.now()
+            assert credential.expires_at < shanghai_now()
     finally:
         app.dependency_overrides.pop(get_db, None)
 

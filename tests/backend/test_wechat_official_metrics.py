@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from backend.app.core.time import shanghai_now
 from backend.app.main import app
 from test_support.beta_invites import create_test_invite_code
 from backend.app.models import WechatOfficialArticleMetric
@@ -75,7 +76,7 @@ def _import_credential(headers: dict, **overrides) -> int:
         "cookie": "credential-cookie-secret",
         "timestamp": 1780000000,
         "nickname": "Metric Account",
-        "captured_at": datetime.now().replace(microsecond=0).isoformat(),
+        "captured_at": shanghai_now().replace(microsecond=0).isoformat(),
     }
     payload.update(overrides)
     response = client.post("/api/wechat-official/credentials/import", headers=headers, json=payload)
@@ -156,7 +157,7 @@ def test_article_metrics_rejects_non_owner_or_expired_credential(tmp_path):
             owner_headers,
             biz="MzA-expired",
             nickname="Expired",
-            captured_at=(datetime.now() - timedelta(hours=1)).replace(microsecond=0).isoformat(),
+            captured_at=(shanghai_now() - timedelta(hours=1)).replace(microsecond=0).isoformat(),
         )
         expired = client.post(
             f"/api/wechat-official/crawl/articles/{article_id}/metrics",

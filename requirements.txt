@@ -5,7 +5,7 @@ python-dotenv
 retry
 openpyxl
 aiohttp
-opencv-python
+opencv-python-headless
 numpy
 qrcode
 fastapi
